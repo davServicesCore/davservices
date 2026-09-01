@@ -31,7 +31,7 @@ jobs:
           coverage: xdebug
           extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
 
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@v4
 
       - name: Infection
         run: vendor/bin/infection --configuration=tests/.config/infection.json5 --min-msi=85 --min-covered-msi=90 --threads=max --no-progress
@@ -63,7 +63,7 @@ jobs:
   #         coverage: none
   #         extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, pdo_sqlite
   #
-  #     - uses: ramsey/composer-install@v3
+  #     - uses: ramsey/composer-install@v4
   #
   #     - name: Start the example server
   #       run: |
