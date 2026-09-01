@@ -1,0 +1,74 @@
+# ==============================================================================
+# davServices embedding application — nginx mit PHP-FPM
+# ==============================================================================
+
+server {
+    listen 443 ssl;
+    server_name dav.example.org;
+
+    # Seit nginx 1.25.1 ist der http2-Parameter an "listen" abgekündigt; die
+    # eigenständige Direktive hat ihn abgelöst. Auf älteren Versionen
+    # stattdessen "listen 443 ssl http2;" schreiben und diese Zeile entfernen.
+    http2 on;
+
+    # ZWINGEND. Ohne Zertifikat bricht nginx den Start ab:
+    #   [emerg] no "ssl_certificate" is defined for the "listen ... ssl" directive
+    ssl_certificate     /etc/ssl/certs/dav.example.org.fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/dav.example.org.key;
+
+    # DAV-Clients auf älteren Mobilsystemen sprechen teilweise kein TLS 1.3.
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    root /srv/dav-application/public;
+    index index.php;
+
+    # Die WIRKSAME Obergrenze für DAV-Uploads. Die laufen per PUT, und dafür
+    # greift weder post_max_size noch upload_max_filesize aus der .user.ini.
+    # Das Gegenstück bei Apache heißt LimitRequestBody; beide Templates und
+    # user.ini.example müssen denselben Wert tragen.
+    client_max_body_size 128M;
+
+    # WebDAV-Methoden dürfen nicht vom nginx-eigenen DAV-Modul behandelt
+    # werden; sie gehören an PHP.
+    dav_methods off;
+
+    charset utf-8;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "same-origin" always;
+    add_header X-Frame-Options "DENY" always;
+
+    # Diensterkennung nach RFC 6764.
+    location = /.well-known/caldav  { return 301 /dav/; }
+    location = /.well-known/carddav { return 301 /dav/; }
+
+    location / {
+        try_files $uri $uri/ /index.php$is_args$args;
+    }
+
+    location ~ ^/index\.php(/|$) {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_split_path_info ^(.+\.php)(/.*)$;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+
+        # Ohne diese Zeile erreicht der Authorization-Header PHP nicht und
+        # es ist keine Anmeldung möglich.
+        fastcgi_param HTTP_AUTHORIZATION $http_authorization;
+
+        fastcgi_param HTTPS on;
+        fastcgi_read_timeout 300;
+        fastcgi_buffering off;   # streamende Auslieferung großer Dateien
+
+        internal;
+    }
+
+    # Kein direkter Zugriff auf andere PHP-Dateien.
+    location ~ \.php$ { return 404; }
+
+    # Datenbestände sind ohnehin außerhalb des Web-Roots; zweites Netz.
+    location ~ \.(sqlite|db|log|ini|yml|neon)$ { deny all; }
+    location ~ /\.(git|env|user\.ini|ht) { deny all; }
+}

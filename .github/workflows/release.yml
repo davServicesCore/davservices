@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    # The `secrets` context is not available in a step-level `if:`. Lifting the
+    # two values into the job environment makes them readable both as `env.*`
+    # in a condition and as ordinary shell variables inside `run:`.
+    env:
+      PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+      PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+      # Xdebug 3 reads this before xdebug.mode; setup-php does not set the ini.
+      XDEBUG_MODE: coverage
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          # Path coverage needs Xdebug; pcov cannot provide it. See ci.yml.
+          coverage: xdebug
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - uses: ramsey/composer-install@v3
+
+      # A tag must never ship something the pipeline would have rejected.
+      - name: Re-run every gate
+        run: |
+          php bin/check-no-runtime-deps.php
+          php bin/check-namespace.php
+          php bin/check-forbidden-terms.php
+          php bin/check-layers.php
+          composer validate --strict --no-check-lock
+          composer analyse
+          composer style
+          vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --coverage-clover=build/logs/clover.xml
+          php bin/check-coverage.php build/logs/clover.xml 100
+
+      - name: Tag matches composer branch-alias
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          MAJOR="${VERSION%%.*}"
+          ALIAS=$(php -r 'echo json_decode(file_get_contents("composer.json"), true)["extra"]["branch-alias"]["dev-main"] ?? "";')
+          if [ "${ALIAS%%.*}" != "$MAJOR" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match branch-alias $ALIAS"
+            exit 1
+          fi
+
+      - name: Build checksum manifest
+        run: php bin/build-manifest.php "${GITHUB_REF_NAME}"
+
+      - name: Build distribution archive
+        run: |
+          mkdir -p build/dist
+          git archive --format=tar --prefix=davservices/ HEAD | tar -x -C build/dist
+          cp MANIFEST.json build/dist/davservices/
+          cd build/dist
+          zip -rq "../davservices-${GITHUB_REF_NAME}.zip" davservices
+          cd ..
+          sha256sum "davservices-${GITHUB_REF_NAME}.zip" > "davservices-${GITHUB_REF_NAME}.zip.sha256"
+
+      - name: Extract changelog section
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[?" v { found=1; next }
+            found && /^## / { exit }
+            # Stop at the trailing link-reference block too, so the notes do
+            # not end with the CHANGELOG comparison links.
+            found && /^\[[^]]+\]: / { exit }
+            found { print }
+          ' CHANGELOG.md > build/release-notes.md
+          if [ ! -s build/release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: build/release-notes.md
+          files: |
+            build/davservices-${{ github.ref_name }}.zip
+            build/davservices-${{ github.ref_name }}.zip.sha256
+            MANIFEST.json
+
+      # Packagist pulls the tag itself via the GitHub webhook. This step is
+      # only a fallback for when the webhook is missing or was rate-limited.
+      - name: Nudge Packagist
+        if: env.PACKAGIST_TOKEN != ''
+        env:
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          curl -sS -XPOST -H'content-type:application/json' \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            -d "{\"repository\":{\"url\":\"${REPOSITORY_URL}\"}}"

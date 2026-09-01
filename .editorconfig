@@ -1,0 +1,33 @@
+# The formatting this repository already enforces, in the form an editor can apply on its own: PSR-12 via .php-cs-fixer.dist.php, LF via .gitattributes. Without this file both only take effect once CI or a commit rejects the work.
+#
+# https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{json,json5}]
+indent_size = 4
+
+[*.md]
+# Markdown gives meaning to two trailing spaces (a hard line break).
+trim_trailing_whitespace = false
+
+[*.{example,conf}]
+indent_size = 4
+
+[LICENSE]
+indent_style = unset
+indent_size = unset
+
+[Makefile]
+indent_style = tab

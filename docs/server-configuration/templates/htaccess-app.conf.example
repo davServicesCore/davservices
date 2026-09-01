@@ -1,0 +1,227 @@
+# ==============================================================================
+# davServices embedding application — .htaccess für das Anwendungsverzeichnis
+# ==============================================================================
+#
+# Diese Datei ist so gebaut, dass sie unabhängig von jeder .htaccess in einem
+# übergeordneten Verzeichnis funktioniert. Jede Direktive, die von oben geerbt
+# werden könnte und das Verhalten verändern würde, wird hier ausdrücklich
+# gesetzt.
+#
+# Ablage: im Verzeichnis, in dem index.php liegt.
+# Getestet gegen Apache 2.4 mit PHP als FastCGI.
+#
+# ------------------------------------------------------------------------------
+# WICHTIG: php_value und php_flag DÜRFEN hier NICHT stehen. Unter FastCGI und
+# PHP-FPM führen sie zu HTTP 500. PHP-Einstellungen gehören in die .user.ini
+# im selben Verzeichnis.
+# ------------------------------------------------------------------------------
+
+
+# ------------------------------------------------------------------------------
+# 1. Geerbte Einstellungen zurücksetzen
+# ------------------------------------------------------------------------------
+
+# Options wird von oben geerbt und muss vollständig neu gesetzt werden.
+#
+#   -Indexes       Keine Verzeichnisauflistung.
+#   -MultiViews    ZWINGEND. Apaches Inhaltsaushandlung verändert bei Dateien
+#                  ohne Endung die aufgelöste Ressource und beschädigt damit
+#                  WebDAV-Pfade — ein Fehler, der sich als sporadisch
+#                  fehlschlagende Synchronisation zeigt.
+#   +FollowSymLinks Voraussetzung für mod_rewrite.
+#
+# Options stammt aus dem Apache-Kern und ist immer verfügbar — eine
+# Fallunterscheidung über <IfModule> wäre wirkungslos.
+Options -Indexes -MultiViews +FollowSymLinks
+
+DirectoryIndex index.php
+
+# PATH_INFO wird für die Pfadauflösung benötigt.
+AcceptPathInfo On
+
+# Ein natives mod_dav würde PROPFIND abfangen, bevor PHP die Anfrage sieht.
+<IfModule mod_dav.c>
+    Dav Off
+</IfModule>
+
+# Obergrenze für den Anfragerumpf, hier 128 MB. Dies ist die WIRKSAME Grenze
+# für DAV-Uploads: die laufen per PUT, und dafür greift weder post_max_size
+# noch upload_max_filesize aus der .user.ini. Ohne diese Zeile gilt Apaches
+# Vorgabe (unbegrenzt). Das Gegenstück bei nginx heißt client_max_body_size;
+# beide Templates und user.ini.example müssen denselben Wert tragen.
+LimitRequestBody 134217728
+
+# Fehlerseiten des übergeordneten Verzeichnisses würden DAV-Antworten
+# verfälschen. Die Anwendung erzeugt eigene Fehlerdokumente.
+ErrorDocument 400 default
+ErrorDocument 401 default
+ErrorDocument 403 default
+ErrorDocument 404 default
+ErrorDocument 500 default
+
+
+# ------------------------------------------------------------------------------
+# 2. Zugangsdaten an PHP durchreichen
+# ------------------------------------------------------------------------------
+#
+# Unter FastCGI verschluckt Apache den Authorization-Header. Ohne ihn kann sich
+# niemand anmelden — auch nicht der Administrator. Beide Wege sind aktiv; sie
+# stören sich nicht.
+
+# Bevorzugt, Apache ab 2.4.13. CGIPassAuth stammt aus dem Kern, nicht aus
+# mod_authz_core — ein <IfModule mod_authz_core.c> wäre auf jedem 2.4-Build
+# wahr und schützt daher gerade NICHT vor dem HTTP 500 auf älteren Versionen.
+# Die Versionsprüfung ist das einzige Mittel, das dort greift.
+<IfModule mod_version.c>
+    <IfVersion >= 2.4.13>
+        CGIPassAuth On
+    </IfVersion>
+</IfModule>
+
+# Ohne mod_version lässt sich die Version nicht abfragen. Ist der Apache
+# nachweislich 2.4.13 oder neuer, die folgende Zeile einkommentieren; führt
+# sie zu HTTP 500, ist die Direktive auf diesem Server nicht erlaubt. Der
+# Rückfallweg über mod_rewrite in Abschnitt 5 arbeitet unabhängig davon.
+# <IfModule !mod_version.c>
+#     CGIPassAuth On
+# </IfModule>
+
+
+# ------------------------------------------------------------------------------
+# 3. Datenbestände schützen
+# ------------------------------------------------------------------------------
+#
+# Zweites Netz. Datenverzeichnis, Nutzdaten, Konfiguration und Bibliothek
+# gehören außerhalb des Web-Roots; siehe Betriebshandbuch.
+
+<FilesMatch "\.(sqlite|sqlite3|db|db-wal|db-shm|sqlite-wal|sqlite-shm|log|ini|yml|yaml|neon|lock|dist)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Punktdateien. <FilesMatch> prüft den Namen der AUFGELÖSTEN Datei; für eine
+# DAV-Anfrage ist das immer index.php, die Regel kann DAV also nicht treffen.
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# KEIN RedirectMatch für Punktdateien und Konfigurationsverzeichnisse.
+#
+# Frühere Fassungen hatten hier:
+#
+#     RedirectMatch 404 /(config|secrets|storage|var|lib|vendor|tests|bin)(/|$)
+#
+# Das prüft die URL, nicht das Dateisystem — und der URL-Raum eines
+# DAV-Servers gehört dem Nutzer. Eine Sammlung /dav/files/felix/var/ oder
+# ein Kalender namens "bin" wäre damit unerreichbar gewesen, und zwar als
+# 404, also als die Fehlerklasse, die man beim Debuggen zuletzt beim
+# Webserver sucht. Der Schutz sitzt jetzt in Abschnitt 5 und arbeitet auf
+# dem Dateisystempfad, wo DAV-Pfade nie existieren.
+
+
+# ------------------------------------------------------------------------------
+# 4. Sicherheitsheader
+# ------------------------------------------------------------------------------
+#
+# Die einbettende Anwendung kann bei Bedarf weitere Sicherheitsheader setzen.
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "same-origin"
+    Header always set X-Frame-Options "DENY"
+
+    # Nur aktivieren, wenn die Installation dauerhaft über HTTPS läuft.
+    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    # Kein Caching für dynamische Antworten; statische Dateien regelt die
+    # Anwendung über ETag und Last-Modified.
+    <FilesMatch "\.php$">
+        Header always set Cache-Control "no-store, no-cache, must-revalidate, private"
+    </FilesMatch>
+</IfModule>
+
+
+# ------------------------------------------------------------------------------
+# 5. Weiterleitung an den Front Controller
+# ------------------------------------------------------------------------------
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # HINWEIS ZUR VERERBUNG
+    #
+    # RewriteRule-Anweisungen aus übergeordneten Verzeichnissen werden
+    # standardmäßig NICHT vererbt — sobald hier "RewriteEngine On" steht,
+    # gelten ausschließlich die Regeln dieser Datei.
+    #
+    # "RewriteOptions IgnoreInherit" wirkt ausschließlich gegen ein
+    # übergeordnetes Verzeichnis, das "InheritDown" setzt, und löst auf
+    # Apache vor 2.4.8 einen HTTP 500 aus. Die Zeile ist daher bewusst
+    # NICHT enthalten; das Diagnoseskript prüft, ob sie im Einzelfall
+    # nötig und unterstützt ist.
+    #
+    # NICHT abschaltbar sind dagegen mod_alias-Direktiven (Redirect,
+    # RedirectMatch) aus einem übergeordneten Verzeichnis: sie laufen in
+    # einer früheren Verarbeitungsphase und lassen sich von hier aus nicht
+    # neutralisieren. Ist eine solche Direktive vorhanden, MUSS sie dort
+    # entfernt oder eingegrenzt werden.
+
+    # Bei Installation in einem Unterverzeichnis anpassen, z. B. /dav/
+    RewriteBase /
+
+    # Rückfallweg für die Zugangsdaten, falls CGIPassAuth nicht greift.
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # OPTIONS * (RFC 9110) darf nicht in den Front Controller laufen.
+    RewriteCond %{REQUEST_METHOD} =OPTIONS
+    RewriteCond %{REQUEST_URI} ^\*$
+    RewriteRule .* - [L]
+
+    # Vorhandene Dateien und Verzeichnisse direkt ausliefern. DAV-Pfade
+    # existieren nie als Datei und fallen daher immer durch.
+    #
+    # Hier sitzt zugleich der Schutz aus Abschnitt 3. Alle Bedingungen prüfen
+    # %{REQUEST_FILENAME}, also den aufgelösten DATEISYSTEMPFAD — nicht die
+    # URL. Damit greift die Ausschlussliste ausschließlich auf echte Dateien
+    # unterhalb des Web-Roots; eine gleichnamige DAV-Sammlung ist nie
+    # betroffen, weil es sie im Dateisystem nicht gibt.
+    #
+    # Was ausgeschlossen ist, wird nicht abgewiesen, sondern fällt an den
+    # Front Controller — der antwortet mit dem DAV-korrekten Status, statt
+    # dass Apache eine rohe Datei ausliefert.
+    #
+    # Auswertung: die impliziten UND-Verknüpfungen binden schwächer als das
+    # [OR], das Ergebnis ist also  !punkt && !ausschluss && (-f || -d).
+    RewriteCond %{REQUEST_FILENAME} !/\.(git|env|user\.ini|htaccess|htpasswd)
+    RewriteCond %{REQUEST_FILENAME} !/(config|secrets|storage|var|lib|vendor|tests|bin)/
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Alles Übrige an den Front Controller — INTERN, ohne R-Flag.
+    #
+    # Ein externer Redirect wäre hier fatal: DAV-Clients folgen Umleitungen
+    # bei PROPFIND, PUT, REPORT und MOVE unzuverlässig bis gar nicht, und
+    # bei MOVE mit Destination-Header ist das Verhalten undefiniert.
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+# Ohne mod_rewrite ist kein Betrieb möglich.
+<IfModule !mod_rewrite.c>
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    ErrorDocument 500 "A davServices embedding application requires mod_rewrite."
+</IfModule>

@@ -1,0 +1,20 @@
+includes:
+    - ../../vendor/phpstan/phpstan-strict-rules/rules.neon
+
+parameters:
+    level: 9
+    phpVersion: 80200
+
+    paths:
+        - ../../src
+        - ../../autoload.php
+        - ..
+        - ../../bin
+
+    # The library ships no baseline. A new violation is fixed, not recorded.
+    treatPhpDocTypesAsCertain: true
+    checkUninitializedProperties: true
+    checkBenevolentUnionTypes: true
+    checkImplicitMixed: true
+    reportPossiblyNonexistentGeneralArrayOffset: true
+    reportPossiblyNonexistentConstantArrayOffset: true
