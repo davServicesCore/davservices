@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
 /**
  * Fails if application-layer vocabulary appears in the protocol library.
  *
@@ -35,7 +44,11 @@ function words(string $identifier): array
     $spaced = preg_replace('/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/', ' ', $identifier);
     $parts = preg_split('/[\s_\-]+/', (string) $spaced, -1, PREG_SPLIT_NO_EMPTY);
 
-    return array_map('strtolower', $parts ?: []);
+    if ($parts === false) {
+        return [];
+    }
+
+    return array_map('strtolower', $parts);
 }
 
 $violations = [];
@@ -66,7 +79,7 @@ foreach (Scanner::productionFiles() as $file) {
                 Scanner::rel($file),
                 $token[2],
                 $identifier,
-                $term
+                $term,
             );
         }
     }

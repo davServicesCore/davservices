@@ -47,6 +47,9 @@ jobs:
       - name: Layer direction
         run: php bin/check-layers.php
 
+      - name: DocBlocks on the public API
+        run: php bin/check-docblocks.php
+
       - name: composer.json is valid
         run: composer validate --strict --no-check-lock
 
@@ -134,11 +137,23 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------
-  # The library must work without optional extensions. This job proves it
-  # rather than trusting the fallback code paths.
+  # R-ENV-03: the library must work without intl. This job proves it rather
+  # than trusting the fallback code paths.
+  #
+  # The `extensions:` input ADDS to whatever the runner image already has —
+  # it does not describe a minimal set. The Ubuntu image ships intl, so
+  # listing it nowhere is not enough; it has to be removed with the `:`
+  # prefix. The first CI run caught exactly this: the job was called
+  # "Without intl" and had been running with it all along.
+  #
+  # openssl is deliberately NOT removed. setup-php disables every extension
+  # depending on it, which takes TLS away from the `composer install` below.
+  # openssl is only ever needed for the bundled TLS transports, and those do
+  # not exist yet — when they do, this needs a second setup-php step after
+  # the install rather than a longer list here.
   # ---------------------------------------------------------------------
   minimal-extensions:
-    name: Without intl and openssl
+    name: Without intl
     runs-on: ubuntu-latest
     needs: gates
     steps:
@@ -148,20 +163,18 @@ jobs:
         with:
           php-version: '8.2'
           coverage: none
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, :intl
 
       - uses: ramsey/composer-install@v3
 
-      # The job name is a promise, so both extensions are asserted absent
-      # rather than only assumed to be. A `run:` block scalar is used because
-      # a plain YAML scalar may not contain ": ".
-      - name: Confirm intl and openssl are absent
+      # The job name is a promise, so the absence is asserted rather than
+      # assumed. A `run:` block scalar is used because a plain YAML scalar
+      # may not contain ": ".
+      - name: Confirm intl is absent
         run: |
-          php -r 'foreach (["intl", "openssl"] as $e) {
-              if (extension_loaded($e)) {
-                  echo "::error::$e is loaded, but this job must prove the library works without it\n";
-                  exit(1);
-              }
+          php -r 'if (extension_loaded("intl")) {
+              echo "::error::intl is loaded, but this job must prove the library works without it\n";
+              exit(1);
           }'
 
       - name: Unit tests

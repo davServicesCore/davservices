@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    API reference for the public library surface. Fulfils R-REL-03, which
+    promises "API-Dokumentation aller öffentlichen Klassen".
+
+    Only src/ is documented. bin/ holds the repository's own quality gates and
+    tests/ the suite; neither is shipped (see .gitattributes) and neither is
+    part of anything a consumer can call.
+
+    phpDocumentor is NOT a Composer dependency. Its own documentation advises
+    against that, because its dependency tree is large and collides easily:
+
+        "phpDocumentor is a complex application, and its libraries are used in
+         countless other libraries and applications ... the chances for a
+         conflict between one of our dependencies and yours is high."
+
+    It is fetched as a pinned, checksum-verified PHAR by
+    .github/workflows/docs.yml. To run it locally, download the same PHAR and
+    point it at this file with its "config" option.
+-->
+<phpdocumentor
+    xmlns="https://www.phpdoc.org"
+    configVersion="3">
+
+    <title>davServices API</title>
+
+    <paths>
+        <output>build/api</output>
+        <cache>build/phpdoc-cache</cache>
+    </paths>
+
+    <version number="1.0.0">
+        <api>
+            <source dsn=".">
+                <path>src</path>
+            </source>
+            <output>.</output>
+            <visibility>public</visibility>
+            <visibility>protected</visibility>
+        </api>
+    </version>
+</phpdocumentor>
