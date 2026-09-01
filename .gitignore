@@ -12,7 +12,8 @@ composer.lock
 
 # --- Build and report output -----------------------------------------------
 # `composer test:coverage` writes build/logs/ and build/coverage/, the release
-# workflow writes build/dist/, and Infection writes build/test/ — the latter
+# workflow writes build/dist/, phpDocumentor writes build/api/, and Infection
+# writes build/test/ — the latter
 # via ../../ prefixes, because Infection resolves log and tmp paths against
 # its own config file in tests/.config/.
 /build/
@@ -25,6 +26,6 @@ composer.lock
 # bin/build-manifest.php writes this into the repository root during a release.
 /MANIFEST.json
 
-# docs/referenzen/download-rfcs.sh fetches 24 specification texts on demand.
+# docs/referenzen/download-rfcs.sh fetches 26 specification texts on demand.
 # The PDFs next to it are committed; the plain-text copies are not.
 /docs/referenzen/rfc/

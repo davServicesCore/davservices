@@ -38,7 +38,7 @@ return (new PhpCsFixer\Config())
         'declare_strict_types'            => true,
         'strict_param'                    => true,
         'strict_comparison'               => true,
-        'header_comment'                  => ['header' => $header, 'separate' => 'both'],
+        'header_comment'                  => ['header' => $header, 'separate' => 'both', 'location' => 'after_open'],
         'ordered_imports'                 => ['sort_algorithm' => 'alpha'],
         'no_unused_imports'               => true,
         'global_namespace_import'         => ['import_classes' => true, 'import_functions' => false],

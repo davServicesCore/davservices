@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
 /**
  * Proves that the library loads and works without Composer.
  *
@@ -19,7 +28,7 @@ $failures = [];
 // Every shipped class must be loadable through the bundled autoloader alone.
 $root = dirname(__DIR__, 2) . '/src/davservices';
 $it = new RecursiveIteratorIterator(
-    new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
 );
 
 $loaded = 0;
@@ -33,7 +42,7 @@ foreach ($it as $entry) {
     $class = 'DavServices\\' . str_replace(
         [DIRECTORY_SEPARATOR, '.php'],
         ['\\', ''],
-        $relative
+        $relative,
     );
 
     if (class_exists($class) || interface_exists($class) || enum_exists($class) || trait_exists($class)) {

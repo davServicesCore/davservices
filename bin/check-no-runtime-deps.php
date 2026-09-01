@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
 /**
  * Fails if production code references anything outside DavServices\ and the PHP core. This is the machine-enforced version of the project's central promise: davServices has no runtime dependencies.
  *
@@ -25,8 +34,21 @@ foreach (Scanner::productionFiles() as $file) {
 }
 
 // composer.json must not carry a single third-party package under "require".
-$composer = json_decode((string) file_get_contents(__DIR__ . '/../composer.json'), true);
-foreach (array_keys($composer['require'] ?? []) as $package) {
+$composer = json_decode(
+    (string) file_get_contents(__DIR__ . '/../composer.json'),
+    true,
+    512,
+    JSON_THROW_ON_ERROR,
+);
+
+$require = is_array($composer) && is_array($composer['require'] ?? null)
+    ? $composer['require']
+    : [];
+
+foreach (array_keys($require) as $package) {
+    if (!is_string($package)) {
+        continue;
+    }
     if ($package !== 'php' && !str_starts_with($package, 'ext-')) {
         $violations[] = sprintf('composer.json  require contains third-party package "%s"', $package);
     }

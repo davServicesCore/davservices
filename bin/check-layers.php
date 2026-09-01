@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
 /**
  * Fails on a dependency that points from a lower layer to a higher one.
  *
@@ -34,14 +43,25 @@ foreach (Scanner::productionFiles() as $file) {
             continue;
         }
 
-        if ($rank[$otherLayer] > $rank[$ownLayer]) {
+        // layerOf() only ever returns a member of LAYERS, but the ranks are
+        // looked up rather than asserted so that a future layer added in one
+        // place and forgotten in the other cannot pass unnoticed.
+        $ownRank = $rank[$ownLayer] ?? null;
+        $otherRank = $rank[$otherLayer] ?? null;
+
+        if ($ownRank === null || $otherRank === null) {
+            $violations[] = sprintf('%s  unknown layer in %s', Scanner::rel($file), $fqcn);
+            continue;
+        }
+
+        if ($otherRank > $ownRank) {
             $violations[] = sprintf(
                 '%s:%d  %s must not depend on %s (%s)',
                 Scanner::rel($file),
                 $line,
                 $ownLayer,
                 $otherLayer,
-                $fqcn
+                $fqcn,
             );
         }
     }

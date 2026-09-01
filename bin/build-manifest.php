@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
 /**
  * Writes MANIFEST.json: version, release date and a SHA-256 checksum for every shipped file.
  *
@@ -40,7 +49,7 @@ function manifestPath(string $root, string $path): string
 }
 
 $it = new RecursiveIteratorIterator(
-    new RecursiveDirectoryIterator($root . '/src', FilesystemIterator::SKIP_DOTS)
+    new RecursiveDirectoryIterator($root . '/src', FilesystemIterator::SKIP_DOTS),
 );
 
 foreach ($it as $entry) {
@@ -74,7 +83,7 @@ $manifest = [
 
 file_put_contents(
     $root . '/MANIFEST.json',
-    json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n"
+    json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n",
 );
 
 printf("MANIFEST.json written: %d files, version %s\n", count($files), $manifest['version']);

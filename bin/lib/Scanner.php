@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
 /**
  * Shared helpers for the repository's own quality gates.
  *
@@ -13,6 +22,27 @@ declare(strict_types=1);
 final class Scanner
 {
     /**
+     * Classes and interfaces that ship with PHP but may not be autoloaded at
+     * the moment a check runs, so class_exists() alone would not find them.
+     *
+     * @var list<string>
+     */
+    private const ALWAYS_CORE = [
+        'ArrayAccess', 'Countable', 'IteratorAggregate', 'Iterator', 'JsonSerializable',
+        'Stringable', 'Traversable', 'Throwable', 'DateTimeInterface', 'DateTimeImmutable',
+        'DateTimeZone', 'DateInterval', 'DatePeriod', 'DOMDocument', 'DOMElement',
+        'XMLReader', 'XMLWriter', 'SplFileInfo', 'SplObjectStorage', 'SplQueue',
+        'ArrayIterator', 'ArrayObject', 'Generator', 'Closure', 'WeakMap',
+        'PDO', 'PDOStatement', 'PDOException', 'InvalidArgumentException',
+        'RuntimeException', 'LogicException', 'UnexpectedValueException',
+        'OutOfBoundsException', 'RangeException', 'DomainException', 'Exception',
+        'Error', 'TypeError', 'ValueError', 'JsonException',
+    ];
+
+    /** @var list<string>|null */
+    private static ?array $coreClassNames = null;
+
+    /**
      * @return list<string> Absolute paths of every .php file below $dir.
      */
     public static function phpFiles(string $dir): array
@@ -25,7 +55,7 @@ final class Scanner
 
         $files = [];
         $it = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($real, FilesystemIterator::SKIP_DOTS)
+            new RecursiveDirectoryIterator($real, FilesystemIterator::SKIP_DOTS),
         );
 
         foreach ($it as $entry) {
@@ -70,10 +100,9 @@ final class Scanner
     {
         $imports = [];
         $tokens = token_get_all((string) file_get_contents($file));
-        $count = count($tokens);
 
-        for ($i = 0; $i < $count; $i++) {
-            if (!is_array($tokens[$i]) || $tokens[$i][0] !== T_USE) {
+        foreach ($tokens as $i => $token) {
+            if (!is_array($token) || $token[0] !== T_USE) {
                 continue;
             }
 
@@ -82,28 +111,10 @@ final class Scanner
                 continue;
             }
 
-            $line = $tokens[$i][2];
-            $name = '';
-
-            for ($j = $i + 1; $j < $count; $j++) {
-                $token = $tokens[$j];
-
-                if ($token === ';' || $token === '{' || $token === ',') {
-                    break;
-                }
-                if (is_array($token) && in_array($token[0], [T_STRING, T_NS_SEPARATOR, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
-                    $name .= $token[1];
-                }
-                if (is_array($token) && in_array($token[0], [T_FUNCTION, T_CONST], true)) {
-                    $name = '';
-                    break;
-                }
-            }
-
-            $name = trim($name, '\\');
+            $name = self::readQualifiedName(array_slice($tokens, $i + 1));
 
             if ($name !== '') {
-                $imports[$line] = $name;
+                $imports[$token[2]] = $name;
             }
         }
 
@@ -111,15 +122,51 @@ final class Scanner
     }
 
     /**
-     * @param array<int, mixed> $tokens
+     * Reads the qualified name at the start of a token run, up to the end of
+     * the statement.
+     *
+     * Returns an empty string for `use function` and `use const`, which import
+     * symbols rather than classes and are outside what the checks care about.
+     *
+     * @param list<array{int, string, int}|string> $tokens
+     */
+    private static function readQualifiedName(array $tokens): string
+    {
+        $name = '';
+
+        foreach ($tokens as $token) {
+            if ($token === ';' || $token === '{' || $token === ',') {
+                break;
+            }
+            if (!is_array($token)) {
+                continue;
+            }
+            if (in_array($token[0], [T_FUNCTION, T_CONST], true)) {
+                return '';
+            }
+            if (in_array($token[0], [T_STRING, T_NS_SEPARATOR, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
+                $name .= $token[1];
+            }
+        }
+
+        return trim($name, '\\');
+    }
+
+    /**
+     * A `use` preceded by a closing parenthesis belongs to a closure signature,
+     * not to an import. Whitespace between the two is skipped.
+     *
+     * @param list<array{int, string, int}|string> $tokens
      */
     private static function isClosureUse(array $tokens, int $index): bool
     {
-        for ($i = $index - 1; $i >= 0 && $i > $index - 6; $i--) {
-            if ($tokens[$i] === ')') {
+        $preceding = array_slice($tokens, max(0, $index - 5), min(5, $index));
+
+        foreach (array_reverse($preceding) as $token) {
+            if ($token === ')') {
                 return true;
             }
-            if (is_array($tokens[$i]) && $tokens[$i][0] === T_WHITESPACE) {
+            if (is_array($token) && $token[0] === T_WHITESPACE) {
                 continue;
             }
 
@@ -132,27 +179,15 @@ final class Scanner
     public static function declaredNamespace(string $file): ?string
     {
         $tokens = token_get_all((string) file_get_contents($file));
-        $count = count($tokens);
 
-        for ($i = 0; $i < $count; $i++) {
-            if (!is_array($tokens[$i]) || $tokens[$i][0] !== T_NAMESPACE) {
+        foreach ($tokens as $i => $token) {
+            if (!is_array($token) || $token[0] !== T_NAMESPACE) {
                 continue;
             }
 
-            $name = '';
+            $name = self::readQualifiedName(array_slice($tokens, $i + 1));
 
-            for ($j = $i + 1; $j < $count; $j++) {
-                $token = $tokens[$j];
-
-                if ($token === ';' || $token === '{') {
-                    break;
-                }
-                if (is_array($token) && in_array($token[0], [T_STRING, T_NS_SEPARATOR, T_NAME_QUALIFIED], true)) {
-                    $name .= $token[1];
-                }
-            }
-
-            return trim($name, '\\') ?: null;
+            return $name === '' ? null : $name;
         }
 
         return null;
@@ -179,27 +214,15 @@ final class Scanner
      */
     private static function coreClassNames(): array
     {
-        static $names = null;
-
-        if ($names === null) {
-            $names = array_map(
-                static fn (string $n): string => $n,
-                get_declared_classes()
-            );
-            $names = array_merge($names, get_declared_interfaces(), [
-                'ArrayAccess', 'Countable', 'IteratorAggregate', 'Iterator', 'JsonSerializable',
-                'Stringable', 'Traversable', 'Throwable', 'DateTimeInterface', 'DateTimeImmutable',
-                'DateTimeZone', 'DateInterval', 'DatePeriod', 'DOMDocument', 'DOMElement',
-                'XMLReader', 'XMLWriter', 'SplFileInfo', 'SplObjectStorage', 'SplQueue',
-                'ArrayIterator', 'ArrayObject', 'Generator', 'Closure', 'WeakMap',
-                'PDO', 'PDOStatement', 'PDOException', 'InvalidArgumentException',
-                'RuntimeException', 'LogicException', 'UnexpectedValueException',
-                'OutOfBoundsException', 'RangeException', 'DomainException', 'Exception',
-                'Error', 'TypeError', 'ValueError', 'JsonException',
-            ]);
+        if (self::$coreClassNames === null) {
+            self::$coreClassNames = array_values(array_unique(array_merge(
+                get_declared_classes(),
+                get_declared_interfaces(),
+                self::ALWAYS_CORE,
+            )));
         }
 
-        return $names;
+        return self::$coreClassNames;
     }
 
     /**

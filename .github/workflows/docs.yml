@@ -1,0 +1,80 @@
+name: API documentation
+
+# R-REL-03 promises API documentation for every public class. This builds it
+# from the DocBlocks that bin/check-docblocks.php enforces and publishes it to
+# GitHub Pages, so the promise is kept by the pipeline rather than by hand.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'phpdoc.dist.xml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time, and never cancel one halfway: an interrupted
+# deploy would leave the published site in an undefined state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # phpDocumentor is deliberately NOT a Composer dependency — its own
+  # documentation warns that its dependency tree collides easily. The PHAR is
+  # pinned and checksum-verified instead, which is the same integrity promise
+  # the project makes to its own users through MANIFEST.json.
+  PHPDOC_VERSION: v3.10.0
+  PHPDOC_SHA256: fe1e7c23ba3329aa6f19ac3c807446159a431a195ec5d9163b0c281a15105207
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - name: Fetch phpDocumentor
+        run: |
+          curl -fsSL -o phpDocumentor.phar \
+            "https://github.com/phpDocumentor/phpDocumentor/releases/download/${PHPDOC_VERSION}/phpDocumentor.phar"
+          echo "${PHPDOC_SHA256}  phpDocumentor.phar" | sha256sum --check --strict
+
+      - name: Build the API reference
+        run: php phpDocumentor.phar --config=phpdoc.dist.xml --no-interaction
+
+      # A silent empty build would publish a blank site, so prove it produced
+      # something before anything is deployed.
+      - name: Confirm the build is not empty
+        run: |
+          test -f build/api/index.html
+          count=$(find build/api/classes -name '*.html' | wc -l)
+          echo "Documented classes: ${count}"
+          test "${count}" -gt 0
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/api
+
+  deploy:
+    name: Deploy to Pages
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
