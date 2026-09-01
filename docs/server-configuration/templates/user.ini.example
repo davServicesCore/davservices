@@ -1,0 +1,82 @@
+; ==============================================================================
+; davServices embedding application — .user.ini
+; ==============================================================================
+;
+; PHP-Einstellungen für das Anwendungsverzeichnis. Unter FastCGI und PHP-FPM ist
+; dies der einzige Weg — php_value in der .htaccess führt dort zu HTTP 500.
+;
+; Achtung: .user.ini wird zwischengespeichert (user_ini.cache_ttl, meist 300 s).
+; Änderungen wirken verzögert.
+;
+; VERERBUNG
+;
+; .user.ini kaskadiert wie die .htaccess: PHP liest die Dateien vom Web-Root
+; bis zu diesem Verzeichnis, spätere Werte überschreiben frühere. Was hier
+; nicht steht, kann daher von oben kommen — und zwar unbemerkt, weil eine
+; .user.ini im Gegensatz zur .htaccess keinen Syntaxfehler auslöst und der
+; Cache die Ursache zusätzlich verschleiert.
+;
+; Deshalb gilt hier dieselbe Regel wie in htaccess-app.conf.example: jede
+; Direktive, die das Verhalten verändern könnte, wird ausdrücklich gesetzt —
+; auch dann, wenn ihr Wert dem PHP-Standard entspricht.
+
+; --- Ressourcen ---------------------------------------------------------------
+memory_limit = 512M
+max_execution_time = 300
+
+; ACHTUNG: Diese beiden Werte begrenzen KEINEN DAV-Upload.
+;
+; DAV lädt per PUT hoch, und für PUT liest PHP den Rumpf aus php://input —
+; daran greift weder post_max_size noch upload_max_filesize. Beide wirken nur
+; auf POST mit multipart/form-data, also auf Formulare der einbettenden
+; Anwendung. Sie stehen hier, damit deren Uploads nicht enger begrenzt sind
+; als die DAV-Grenze, nicht umgekehrt.
+;
+; Die wirksame Obergrenze für PUT setzt der Webserver:
+;   nginx   client_max_body_size   -> nginx.conf.example
+;   Apache  LimitRequestBody       -> htaccess-app.conf.example
+; Beide Templates stehen auf 128M. Wird hier geändert, müssen sie mitziehen,
+; und der Wert MUSS mindestens CALDAV:max-resource-size (10 MB) zuzüglich
+; Reserve betragen.
+upload_max_filesize = 128M
+post_max_size = 128M
+max_input_time = 300
+
+; --- Fehlerbehandlung ---------------------------------------------------------
+; Im Produktivbetrieb DÜRFEN Fehler NICHT ausgegeben werden: sie würden
+; DAV-Antworten verfälschen und Pfade offenlegen.
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+error_reporting = E_ALL
+
+; Ohne error_log entscheidet die SAPI, wo die Meldungen landen — unter PHP-FPM
+; im Pool-Log, unter mod_php im Apache-ErrorLog, im ungünstigsten Fall
+; nirgends. Ein ausdrücklicher Pfad macht es vorhersagbar. Die Datei MUSS
+; außerhalb des Web-Roots liegen und für den PHP-Prozess schreibbar sein.
+error_log = /var/log/dav-application/php-error.log
+
+; --- Zeichensatz und Zeit -----------------------------------------------------
+default_charset = "UTF-8"
+date.timezone = "UTC"
+
+; --- Sonstiges ----------------------------------------------------------------
+; Ausgabepufferung stört das streamende Ausliefern großer Dateien.
+output_buffering = Off
+zlib.output_compression = Off
+
+; DAV ist zustandslos. Startet ein übergeordnetes Verzeichnis Sessions, hängte
+; PHP jeder DAV-Antwort ein Set-Cookie an, das kein Client erwartet.
+session.auto_start = Off
+
+; --- NICHT hier setzbar -------------------------------------------------------
+; expose_php ist PHP_INI_SYSTEM. In einer .user.ini wird die Zeile
+; kommentarlos überlesen — der X-Powered-By-Header bleibt stehen, obwohl die
+; Konfiguration das Gegenteil suggeriert. Deshalb steht sie hier bewusst
+; auskommentiert und nicht als scheinbar wirksame Einstellung.
+;
+; Stattdessen an einer der beiden Stellen setzen:
+;   php.ini          expose_php = Off
+;   PHP-FPM-Pool     php_admin_value[expose_php] = Off
+;
+; expose_php = Off

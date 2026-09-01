@@ -1,0 +1,17 @@
+davServices
+Copyright 2026 Felix Böck
+
+This product includes software developed as part of the davServices project (https://dav.services).
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+This software implements the following IETF specifications. The specifications themselves are published by the IETF and are not covered by this license:
+
+  RFC 4918  HTTP Extensions for Web Distributed Authoring and Versioning
+  RFC 3744  WebDAV Access Control Protocol
+  RFC 4791  Calendaring Extensions to WebDAV (CalDAV)
+  RFC 6352  vCard Extensions to WebDAV (CardDAV)
+  RFC 5545  Internet Calendaring and Scheduling Core Object Specification
+  RFC 6350  vCard Format Specification
+  RFC 6578  Collection Synchronization for WebDAV
+  RFC 6764  Locating Services for Calendaring and Contacts

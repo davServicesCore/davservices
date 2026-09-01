@@ -1,0 +1,35 @@
+name: Interoperability report
+description: A client works, half-works or fails — with or without a diagnosis
+labels: [interop]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports are welcome even without a fix or a diagnosis. Knowing which clients behave how is valuable on its own.
+
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+    validations:
+      required: true
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Works
+        - Works with a workaround
+        - Partially works
+        - Fails
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: Details
+      description: What did you try, what happened, and what did the wire look like?
+    validations:
+      required: true

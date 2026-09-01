@@ -1,0 +1,22 @@
+name: Question
+description: Something is unclear
+labels: [question, documentation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If you had to ask, the documentation was unclear — which makes this a documentation bug as much as a question. Both get fixed.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What would you like to know?
+    validations:
+      required: true
+
+  - type: textarea
+    id: looked
+    attributes:
+      label: Where did you already look?
+      description: >
+        Helps us find the gap. The `referenzen/` directory maps questions to specification sections; the CalConnect DevGuide covers the practical side.

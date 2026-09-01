@@ -1,0 +1,25 @@
+# ==============================================================================
+# davServices embedding application — .htaccess im Web-Root
+# ==============================================================================
+#
+# Nur erforderlich, wenn die Anwendung NICHT im Web-Root liegt, sondern in
+# einem Unterverzeichnis (z. B. /dav/).
+#
+# Zweck: die Diensterkennung nach RFC 6764. Ein Client kennt nur die
+# E-Mail-Adresse des Nutzers, leitet daraus die Domain ab und fragt
+# /.well-known/caldav an. Ohne diese Weiterleitung müsste jeder Nutzer den
+# vollständigen DAV-Pfad von Hand eintippen.
+#
+# Dies ist die EINZIGE Stelle im Projekt, an der eine externe Weiterleitung
+# zulässig ist — RFC 6764 §6 sieht sie ausdrücklich vor.
+
+<IfModule mod_alias.c>
+    RedirectPermanent /.well-known/caldav   /dav/
+    RedirectPermanent /.well-known/carddav  /dav/
+</IfModule>
+
+# Falls mod_alias nicht verfügbar ist:
+# <IfModule mod_rewrite.c>
+#     RewriteEngine On
+#     RewriteRule ^\.well-known/(caldav|carddav)$ /dav/ [R=301,L]
+# </IfModule>

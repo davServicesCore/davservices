@@ -1,0 +1,50 @@
+name: Feature request or wish
+description: Something the library should do and does not
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Wishes are welcome. If it turns out to be out of scope you will get a written reason, not a silent close.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the goal, not the solution. There may be a way already.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should the library do?
+    validations:
+      required: true
+
+  - type: input
+    id: spec
+    attributes:
+      label: Which specification covers this?
+      description: >
+        RFC and section, if one applies. Proprietary extensions are not automatically out of scope, but they need a different justification.
+      placeholder: "RFC 6638 §3.2 — or: none, this is a CalendarServer extension"
+
+  - type: input
+    id: client
+    attributes:
+      label: Which client needs it?
+      description: >
+        "DAVx⁵ expects this property" is a much stronger argument than
+        "it would be nice".
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to implement it?
+      options:
+        - "Yes, if the approach is agreed"
+        - "Maybe, with guidance"
+        - "No, just proposing"
+    validations:
+      required: true

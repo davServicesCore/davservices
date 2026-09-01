@@ -1,0 +1,117 @@
+{
+    "name": "davservices/davservices",
+    "description": "WebDAV, CalDAV and CardDAV server framework for PHP — no runtime dependencies.",
+    "type": "library",
+    "keywords": ["webdav", "caldav", "carddav", "dav", "ical", "icalendar", "vcard", "rfc4918", "rfc4791", "rfc6352"],
+    "homepage": "https://dav.services",
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "Felix Böck",
+            "homepage": "https://dav.services"
+        }
+    ],
+    "support": {
+        "source": "https://github.com/davServicesCore/davservices",
+        "issues": "https://github.com/davServicesCore/davservices/issues",
+        "docs": "https://github.com/davServicesCore/davservices/blob/main/docs/README.md"
+    },
+    "require": {
+        "php": "^8.2",
+        "ext-dom": "*",
+        "ext-libxml": "*",
+        "ext-xml": "*",
+        "ext-xmlreader": "*",
+        "ext-xmlwriter": "*",
+        "ext-mbstring": "*",
+        "ext-json": "*",
+        "ext-filter": "*",
+        "ext-hash": "*"
+    },
+    "suggest": {
+        "ext-intl": "Speeds up i;unicode-casemap collation. Results are identical without it.",
+        "ext-openssl": "Required only if you use the bundled TLS-capable transports.",
+        "ext-pdo": "Required only for the bundled PDO reference backends."
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "phpstan/phpstan": "^2.0",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpunit/phpunit": "^11.4",
+        "infection/infection": "^0.29"
+    },
+    "autoload": {
+        "psr-4": {
+            "DavServices\\": "src/davservices/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "DavServices\\Tests\\Unit\\": "tests/unit/",
+            "DavServices\\Tests\\Integration\\": "tests/integration/",
+            "DavServices\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "infection/extension-installer": true
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "1.x-dev"
+        }
+    },
+    "scripts": {
+        "style": "php-cs-fixer fix --dry-run --diff",
+        "style:fix": "php-cs-fixer fix",
+        "analyse": "phpstan analyse --configuration=tests/.config/phpstan.neon.dist --memory-limit=512M",
+        "check:deps": "php bin/check-no-runtime-deps.php",
+        "check:namespace": "php bin/check-namespace.php",
+        "check:terms": "php bin/check-forbidden-terms.php",
+        "check:layers": "php bin/check-layers.php",
+        "check:metadata": "composer validate --strict --no-check-lock",
+        "check:autoload": "php tests/integration/standalone-autoloader.php",
+        "check:coverage": "php bin/check-coverage.php build/logs/clover.xml 100",
+        "check": [
+            "@check:deps",
+            "@check:namespace",
+            "@check:terms",
+            "@check:layers",
+            "@check:metadata",
+            "@style",
+            "@analyse",
+            "@test:coverage",
+            "@check:autoload"
+        ],
+        "test": "phpunit --configuration=tests/.config/phpunit.xml.dist",
+        "test:coverage": [
+            "@putenv XDEBUG_MODE=coverage",
+            "phpunit --configuration=tests/.config/phpunit.xml.dist --coverage-clover=build/logs/clover.xml --coverage-html=build/coverage",
+            "@check:coverage"
+        ],
+        "mutation": [
+            "@putenv XDEBUG_MODE=coverage",
+            "infection --configuration=tests/.config/infection.json5 --min-msi=85 --min-covered-msi=90 --threads=max"
+        ]
+    },
+    "scripts-descriptions": {
+        "style": "Checks PHP coding style without changing files and shows the required diff.",
+        "style:fix": "Automatically fixes PHP coding style violations.",
+        "analyse": "Runs PHPStan at the configured strictness level.",
+        "check": "Runs every gate the CI pipeline enforces. Needs Xdebug, because the coverage floor is one of them.",
+        "check:deps": "Fails if any production file references a class outside DavServices\\ or the PHP core.",
+        "check:namespace": "Fails if src/ contains a namespace other than DavServices\\.",
+        "check:terms": "Fails if application-layer vocabulary leaks into the protocol library.",
+        "check:layers": "Fails on a dependency pointing from a lower layer to a higher one.",
+        "check:metadata": "Fails if composer.json is not strictly valid.",
+        "check:autoload": "Loads every class through the bundled autoloader, without Composer.",
+        "check:coverage": "Enforces the coverage floor against an existing Clover report.",
+        "test": "Runs the PHPUnit test suite.",
+        "test:coverage": "Runs PHPUnit with line and branch coverage, writes the reports and enforces the floor.",
+        "mutation": "Runs Infection mutation testing and enforces the configured mutation score thresholds."
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

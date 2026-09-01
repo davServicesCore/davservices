@@ -1,0 +1,92 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 100% line coverage is easy to reach without asserting anything.
+  # Mutation testing is what makes the number mean something: it changes
+  # the code and expects a test to fail.
+  # ---------------------------------------------------------------------
+  mutation:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    # Xdebug 3 reads this before xdebug.mode; setup-php does not set the ini.
+    env:
+      XDEBUG_MODE: coverage
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          # Infection drives PHPUnit through tests/.config/phpunit.xml.dist,
+          # which asks for path coverage — that requires Xdebug, not pcov.
+          coverage: xdebug
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - uses: ramsey/composer-install@v3
+
+      - name: Infection
+        run: vendor/bin/infection --configuration=tests/.config/infection.json5 --min-msi=85 --min-covered-msi=90 --threads=max --no-progress
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: infection-report
+          path: build/test/log/infection.html
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Planned: protocol conformance against the reference test suites.
+  #
+  # This block remains documented here until the example server implements
+  # the required DAV protocol and tools/caldavtester/run.sh is committed.
+  # It must be enabled only when Litmus and CalDAVTester can run against a
+  # real server and their reports can be reviewed by the maintainers.
+  # ---------------------------------------------------------------------
+  # conformance:
+  #   name: Litmus and CalDAVTester
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - uses: shivammathur/setup-php@v2
+  #       with:
+  #         php-version: '8.3'
+  #         coverage: none
+  #         extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, pdo_sqlite
+  #
+  #     - uses: ramsey/composer-install@v3
+  #
+  #     - name: Start the example server
+  #       run: |
+  #         php -S 127.0.0.1:8080 -t examples/minimal-webdav &
+  #         for i in $(seq 1 20); do
+  #           curl -fsS -o /dev/null http://127.0.0.1:8080/ && break
+  #           sleep 1
+  #         done
+  #
+  #     - name: Litmus
+  #       run: |
+  #         sudo apt-get update -qq
+  #         sudo apt-get install -y litmus
+  #         litmus http://127.0.0.1:8080/ testuser testpass
+  #
+  #     # CalDAVTester needs Python 2 semantics in older releases; pinned in
+  #     # tools/caldavtester/ so the run is reproducible.
+  #     - name: CalDAVTester
+  #       run: tools/caldavtester/run.sh http://127.0.0.1:8080/
+  #
+  #     - uses: actions/upload-artifact@v4
+  #       if: always()
+  #       with:
+  #         name: conformance-report
+  #         path: build/conformance/
+  #         retention-days: 30

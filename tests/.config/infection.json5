@@ -1,0 +1,29 @@
+{
+    // Infection resolves "logs", "tmpDir" and the PHPUnit config directory
+    // relative to THIS file, but hands "source.directories" straight to
+    // Symfony Finder, which resolves against the working directory. The
+    // ../../ prefixes below therefore point at the repository root, while
+    // "src" stays root-relative because every entry point runs from there.
+    "$schema": "../../vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": ["src"]
+    },
+    "logs": {
+        "text": "../../build/test/log/infection.log",
+        "html": "../../build/test/log/infection.html",
+        "summary": "../../build/test/log/infection-summary.log",
+        "github": true
+    },
+    "tmpDir": "../../build/test/infection",
+    "minMsi": 85,
+    "minCoveredMsi": 90,
+    "testFramework": "phpunit",
+    "mutators": {
+        "@default": true,
+        // Protocol constants come from the RFCs. Mutating them produces
+        // noise, not insight.
+        "ArrayItemRemoval": {
+            "ignoreSourceCodeByRegex": ["\\$supportedReports\\s*=.*"]
+        }
+    }
+}

@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/davServicesCore/davservices/security/advisories/new
+    about: Please report security issues privately, never as a public issue.
+  - name: WebDAV FAQ
+    url: http://www.webdav.org/other/faq.html
+    about: New to DAV? Start here — what it is and how it relates to HTTP.
+  - name: CalConnect Developer's Guide
+    url: https://devguide.calconnect.org/
+    about: The practical cookbook for calendaring standards. Covers what the RFCs leave out.
+  - name: IETF CALEXT mailing list
+    url: https://www.ietf.org/mailman/listinfo/calsify
+    about: Where the specifications themselves are discussed. Open to anyone, no fee.

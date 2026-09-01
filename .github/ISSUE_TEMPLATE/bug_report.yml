@@ -1,0 +1,54 @@
+name: Bug report
+description: Something behaves differently than the RFC or the documentation says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security issues please use [Security Advisories](https://github.com/davServicesCore/davservices/security/advisories/new) instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: davServices version
+      placeholder: "1.2.3"
+    validations:
+      required: true
+
+  - type: input
+    id: php
+    attributes:
+      label: PHP version and SAPI
+      placeholder: "8.3.4, php-fpm"
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: Client
+      description: Which DAV client, if a client is involved
+      placeholder: "iOS 18.2 Calendar / Thunderbird 128 / DAVx5 4.4"
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+      description: If a specification governs this, please cite the section.
+      placeholder: "RFC 4918 §9.6.1 requires a 207 here."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: exchange
+    attributes:
+      label: Request and response
+      description: The raw HTTP exchange, headers included. This is usually the fastest path to a fix.
+      render: http

@@ -1,0 +1,30 @@
+# --- Editors and operating systems -----------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Dependencies ----------------------------------------------------------
+# The lock file is not committed: this is a library, so the resolved set of
+# development tools is the CI runner's business, not the consumer's.
+/vendor/
+composer.lock
+
+# --- Build and report output -----------------------------------------------
+# `composer test:coverage` writes build/logs/ and build/coverage/, the release
+# workflow writes build/dist/, and Infection writes build/test/ — the latter
+# via ../../ prefixes, because Infection resolves log and tmp paths against
+# its own config file in tests/.config/.
+/build/
+
+# --- Tool caches -----------------------------------------------------------
+/.phpunit.cache/
+/.php-cs-fixer.cache
+
+# --- Generated artefacts ---------------------------------------------------
+# bin/build-manifest.php writes this into the repository root during a release.
+/MANIFEST.json
+
+# docs/referenzen/download-rfcs.sh fetches 24 specification texts on demand.
+# The PDFs next to it are committed; the plain-text copies are not.
+/docs/referenzen/rfc/
