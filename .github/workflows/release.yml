@@ -29,7 +29,7 @@ jobs:
           coverage: xdebug
           extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
 
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@v4
 
       # A tag must never ship something the pipeline would have rejected.
       - name: Re-run every gate
