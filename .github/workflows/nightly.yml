@@ -36,7 +36,7 @@ jobs:
       - name: Infection
         run: vendor/bin/infection --configuration=tests/.config/infection.json5 --min-msi=85 --min-covered-msi=90 --threads=max --no-progress
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: infection-report
@@ -84,7 +84,7 @@ jobs:
   #     - name: CalDAVTester
   #       run: tools/caldavtester/run.sh http://127.0.0.1:8080/
   #
-  #     - uses: actions/upload-artifact@v4
+  #     - uses: actions/upload-artifact@v7
   #       if: always()
   #       with:
   #         name: conformance-report
