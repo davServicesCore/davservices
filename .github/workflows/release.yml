@@ -20,7 +20,7 @@ jobs:
       # Xdebug 3 reads this before xdebug.mode; setup-php does not set the ini.
       XDEBUG_MODE: coverage
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: shivammathur/setup-php@v2
         with:
