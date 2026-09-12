@@ -7,6 +7,7 @@ carries on its way out, with no knowledge of WebDAV above it.
 
 | Class | Purpose |
 |---|---|
+| `Sapi` | The seam to PHP itself: builds a `Request` from `$_SERVER`, writes a `Response` back out |
 | `Request` | One request as it arrived: method, target, path, query, headers, body |
 | `Response` | One answer on its way back: status, reason phrase, headers, body |
 | `Headers` | The header fields of one message: case-insensitive lookup, repeated fields kept, immutable |
@@ -16,6 +17,20 @@ carries on its way out, with no knowledge of WebDAV above it.
 | `MalformedResponse` | Refusal of a status that is not three digits — never the client's doing |
 
 ## Entry point
+
+`Sapi` is where a real request begins and ends:
+
+```php
+$sapi = new Sapi();
+
+$request = $sapi->request($_SERVER);
+$sapi->send($server->handle($request));
+```
+
+Everything it touches of the outside world — the call that emits a header
+field, the stream the body goes to, the output buffers it empties — is handed
+in, so the whole of it is tested rather than only described. Left alone it uses
+PHP's own `header()` and `php://output`.
 
 `Request` is built once from what the SAPI hands over and never changes again:
 
@@ -76,8 +91,16 @@ a body that is too long **while** it is being read. Storing an oversized body in
 full and refusing it afterwards would spend exactly the memory and the disk the
 ceiling exists to protect.
 
+## Output buffers
+
+Before a body goes out, `Sapi` empties the output buffers (R-HTTP-13): one that
+is still open collects the body instead of letting it go, which turns streaming
+a large file back into holding the whole of it in memory. They are flushed
+rather than discarded — output a plugin produced by mistake is evidence of a
+bug, and swallowing it would only make that bug harder to find.
+
 ## Boundaries
 
-Reading `$_SERVER`, streaming a body in and writing the response out belong to
-the SAPI adapter. Conditional requests, ranges and the WebDAV `If` header are
-parsed by their own classes in this directory as they land.
+`$_SERVER`, `php://input` and `header()` are known to `Sapi` alone; nothing
+above this directory has to hear of them. Conditional requests, ranges and the
+WebDAV `If` header are parsed by their own classes here as they land.
