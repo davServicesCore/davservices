@@ -29,3 +29,6 @@ composer.lock
 # docs/referenzen/download-rfcs.sh fetches 26 specification texts on demand.
 # The PDFs next to it are committed; the plain-text copies are not.
 /docs/referenzen/rfc/
+
+# --- Local working notes ---------------------------------------------------
+/.TODO-felix/
