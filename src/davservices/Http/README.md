@@ -12,6 +12,7 @@ carries on its way out, with no knowledge of WebDAV above it.
 | `Response` | One answer on its way back: status, reason phrase, headers, body |
 | `Headers` | The header fields of one message: case-insensitive lookup, repeated fields kept, immutable |
 | `Body` | The body of one message, readable as often as it is needed |
+| `ByteRange` | The part of a resource a `Range` header asked for |
 | `MalformedRequest` | Refusal of a request line that cannot be made sense of |
 | `MalformedHeader` | Refusal of a field that may not go into a message |
 | `MalformedResponse` | Refusal of a status that is not three digits — never the client's doing |
@@ -82,6 +83,28 @@ control character other than a tab. A carriage return or a line feed in a value
 ends the field and starts another one — that single character is the whole of
 header injection, and it is refused rather than stripped: a value that had to be
 tampered with is not a value worth sending.
+
+## Ranges
+
+`ByteRange::parse()` has three outcomes, and telling them apart is the whole of
+it (RFC 9110 §14):
+
+```php
+$range = ByteRange::parse($request->headers()->first('Range'), $size);
+```
+
+| Outcome | Meaning | Answer |
+|---|---|---|
+| A `ByteRange` | The client asked for part of the resource | `206` with `Content-Range` |
+| `null` | The header says nothing the server can follow | `200` with the whole resource |
+| `RangeNotSatisfiable` | Well formed, but those bytes are not there | `416` |
+
+The middle one is the one to get right. A unit the server does not know must be
+ignored (§14.2), and a reversed range is *invalid* rather than unsatisfiable
+(§14.1.1) — answering `416` to either would lock a client out of a file it is
+allowed to read, over a header it need not have sent at all. Only one range is
+served: R-HTTP-05 lets multipart go, and the whole resource is always a valid
+answer.
 
 ## Ceilings
 
