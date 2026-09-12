@@ -28,8 +28,9 @@ jobs:
           php-version: '8.3'
           # Infection drives PHPUnit through tests/.config/phpunit.xml.dist,
           # which asks for path coverage — that requires Xdebug, not pcov.
+          # Version pinned for the reason given in ci.yml; bump both together.
           coverage: xdebug
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, xdebug-3.5.3
 
       - uses: ramsey/composer-install@v4
 
