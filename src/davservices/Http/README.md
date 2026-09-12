@@ -13,6 +13,9 @@ carries on its way out, with no knowledge of WebDAV above it.
 | `Headers` | The header fields of one message: case-insensitive lookup, repeated fields kept, immutable |
 | `Body` | The body of one message, readable as often as it is needed |
 | `ByteRange` | The part of a resource a `Range` header asked for |
+| `ConditionalRequest` | What `If-Match`, `If-None-Match` and the two date fields come to |
+| `Precondition` | The three outcomes of that: `Met`, `NotModified`, `Failed` |
+| `ETag` | One entity tag, and the two ways HTTP compares them |
 | `MalformedRequest` | Refusal of a request line that cannot be made sense of |
 | `MalformedHeader` | Refusal of a field that may not go into a message |
 | `MalformedResponse` | Refusal of a status that is not three digits — never the client's doing |
@@ -105,6 +108,30 @@ ignored (§14.2), and a reversed range is *invalid* rather than unsatisfiable
 allowed to read, over a header it need not have sent at all. Only one range is
 served: R-HTTP-05 lets multipart go, and the whole resource is always a valid
 answer.
+
+## Conditions
+
+```php
+$outcome = (new ConditionalRequest($request))->evaluate($etag, $lastModified);
+```
+
+| Outcome | The answer |
+|---|---|
+| `Precondition::Met` | Answer the request as it was meant |
+| `Precondition::NotModified` | `304`, without a body |
+| `Precondition::Failed` | `412` |
+
+The order of RFC 9110 §13.2.2 is normative: `If-Match`, **otherwise**
+`If-Unmodified-Since`, then `If-None-Match`, **otherwise** `If-Modified-Since`.
+Those two "otherwise" are what gets lost. A request carrying both an entity tag
+and a date is decided by the tag alone — a server that consulted the date as
+well would refuse updates that are perfectly in order, because a modification
+time has a resolution of one second and an entity tag has none.
+
+`If-Match` compares strongly and `If-None-Match` weakly (R-HTTP-08): a client
+about to overwrite a resource has to hold the exact bytes it thinks it holds,
+while a client asking whether it may reuse its copy does not. A date that
+cannot be read is ignored rather than refused (§13.1.3).
 
 ## Ceilings
 
