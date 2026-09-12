@@ -8,10 +8,12 @@ carries on its way out, with no knowledge of WebDAV above it.
 | Class | Purpose |
 |---|---|
 | `Request` | One request as it arrived: method, target, path, query, headers, body |
+| `Response` | One answer on its way back: status, reason phrase, headers, body |
 | `Headers` | The header fields of one message: case-insensitive lookup, repeated fields kept, immutable |
 | `Body` | The body of one message, readable as often as it is needed |
 | `MalformedRequest` | Refusal of a request line that cannot be made sense of |
 | `MalformedHeader` | Refusal of a field that may not go into a message |
+| `MalformedResponse` | Refusal of a status that is not three digits — never the client's doing |
 
 ## Entry point
 
@@ -36,6 +38,20 @@ $headers = $headers->withAdded('DAV', '3');
 `Body` copies what it is given into `php://temp` the first time somebody reads
 it, so the chain of plugins that inspects a request each see the whole of it.
 The copy is made on demand: most requests never read a body at all.
+
+`Response` is built the same way — each change hands back a new answer, and
+whoever runs the chain keeps the latest:
+
+```php
+$response = (new Response(207, body: $multiStatus))
+    ->withHeader('Content-Type', 'application/xml; charset=utf-8')
+    ->withHeader('DAV', '1', '3');
+```
+
+Its body is a string or a stream, and the difference is kept rather than
+levelled out: a `PROPFIND` answer is built in memory, a `GET` of a file is not,
+and reading a file into a string to send it would defeat the streaming of
+R-TREE-02.
 
 ## Why immutable
 
