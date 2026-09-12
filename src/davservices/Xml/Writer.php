@@ -37,7 +37,7 @@ final class Writer
     {
         $this->writer->openMemory();
         $this->writer->startElement('method');
-        $this->writer->text($this->request->method);
+        $this->writer->text($this->request->method());
         $this->writer->endElement();
 
         return $this->writer->outputMemory();
