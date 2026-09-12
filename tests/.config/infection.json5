@@ -24,6 +24,15 @@
         // noise, not insight.
         "ArrayItemRemoval": {
             "ignoreSourceCodeByRegex": ["\\$supportedReports\\s*=.*"]
+        },
+        // A variadic parameter is a list already, so dropping array_values()
+        // there changes nothing a test could observe. The call is what lets
+        // the static analyser see the list the constructor asks for. An
+        // equivalent mutant that can never be killed does not measure the
+        // tests — it only hides the next real gap behind a number that is
+        // already below 100.
+        "UnwrapArrayValues": {
+            "ignore": ["DavServices\\Http\\Headers::with"]
         }
     }
 }
