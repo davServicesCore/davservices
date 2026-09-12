@@ -111,8 +111,16 @@ jobs:
           # coverage, and php-code-coverage only offers a path-capable driver
           # when Xdebug is present. With pcov it collects nothing at all and
           # never writes the Clover report.
+          #
+          # The version is pinned because the newest release, 3.6.0alpha1,
+          # ships a rewritten coverage engine that php-code-coverage 11 has
+          # not caught up with: it reported 20 of 52 branches for a class that
+          # Xdebug 3.4 reports as fully covered and on which a mutation run
+          # killed 44 of 44 mutants. A gate has to measure the code rather
+          # than the measuring device. Bump this together with the copies in
+          # nightly.yml and release.yml once 3.6 is stable.
           coverage: ${{ matrix.coverage && 'xdebug' || 'none' }}
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash${{ matrix.coverage && ', xdebug-3.5.3' || '' }}
 
       - uses: ramsey/composer-install@v4
 

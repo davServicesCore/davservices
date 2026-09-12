@@ -25,9 +25,10 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          # Path coverage needs Xdebug; pcov cannot provide it. See ci.yml.
+          # Path coverage needs Xdebug; pcov cannot provide it. The version is
+          # pinned for the reason given in ci.yml; bump both together.
           coverage: xdebug
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, xdebug-3.5.3
 
       - uses: ramsey/composer-install@v4
 
