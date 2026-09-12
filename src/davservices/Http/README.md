@@ -7,22 +7,35 @@ carries on its way out, with no knowledge of WebDAV above it.
 
 | Class | Purpose |
 |---|---|
+| `Request` | One request as it arrived: method, target, path, query, headers, body |
 | `Headers` | The header fields of one message: case-insensitive lookup, repeated fields kept, immutable |
+| `Body` | The body of one message, readable as often as it is needed |
+| `MalformedRequest` | Refusal of a request line that cannot be made sense of |
 | `MalformedHeader` | Refusal of a field that may not go into a message |
-| `Request` | Placeholder; the real value object arrives with the SAPI adapter |
 
 ## Entry point
 
-`Headers` is built once from what the SAPI hands over and then only ever
-replaced, never altered:
+`Request` is built once from what the SAPI hands over and never changes again:
 
 ```php
-$headers = new Headers(['Content-Type' => 'text/xml', 'Depth' => '1']);
+$request = new Request('PROPFIND', '/calendars/alice/?depth=1', $headers, $body);
 
-$headers->first('content-type');          // 'text/xml'   — case does not matter
-$headers->all('DAV');                     // []           — absent is empty, not null
+$request->method();                        // 'PROPFIND'
+$request->path();                          // 'calendars/alice'  — decoded, normalised
+$request->query();                         // 'depth=1'          — raw, unparsed
+$request->headers()->first('content-type');
+$request->body()->contents(10_485_760);    // refused past the ceiling
+```
+
+`Headers` is immutable, so a field is added by taking a new collection:
+
+```php
 $headers = $headers->withAdded('DAV', '3');
 ```
+
+`Body` copies what it is given into `php://temp` the first time somebody reads
+it, so the chain of plugins that inspects a request each see the whole of it.
+The copy is made on demand: most requests never read a body at all.
 
 ## Why immutable
 
@@ -39,8 +52,16 @@ ends the field and starts another one — that single character is the whole of
 header injection, and it is refused rather than stripped: a value that had to be
 tampered with is not a value worth sending.
 
+## Ceilings
+
+R-HTTP-12 gives XML bodies and uploads ceilings of their own, so the ceiling
+belongs to the read rather than to the body: `contents($maximumBytes)` refuses
+a body that is too long **while** it is being read. Storing an oversized body in
+full and refusing it afterwards would spend exactly the memory and the disk the
+ceiling exists to protect.
+
 ## Boundaries
 
-Reading `$_SERVER`, streaming a body and writing the response belong to the SAPI
-adapter. Conditional requests, ranges and the WebDAV `If` header are parsed by
-their own classes in this directory as they land.
+Reading `$_SERVER`, streaming a body in and writing the response out belong to
+the SAPI adapter. Conditional requests, ranges and the WebDAV `If` header are
+parsed by their own classes in this directory as they land.

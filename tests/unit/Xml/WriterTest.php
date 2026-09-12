@@ -29,18 +29,12 @@ final class WriterTest extends TestCase
     }
 
     /**
-     * Anything reaching the writer ends up inside a DAV response body, so a
-     * method token carrying XML metacharacters must not be able to break out
-     * of its element.
+     * The scaffold used to feed markup through this writer to show that it is
+     * escaped. It cannot any more: Request refuses a method that is not a
+     * token, so the guarantee moved to RequestTest, where it now holds for
+     * every reader of a method rather than for this one call. Escaping belongs
+     * to the real writer and is tested there, on the values that do carry text.
      */
-    public function testEscapesMarkupInTheMethodToken(): void
-    {
-        self::assertSame(
-            '<method>&lt;script&gt;&amp;</method>',
-            self::write('<script>&'),
-        );
-    }
-
     public function testProducesWellFormedXml(): void
     {
         $document = new DOMDocument();
@@ -51,6 +45,6 @@ final class WriterTest extends TestCase
 
     private static function write(string $method): string
     {
-        return (new Writer(new XMLWriter(), new Request($method)))->methodElement();
+        return (new Writer(new XMLWriter(), new Request($method, '/')))->methodElement();
     }
 }
