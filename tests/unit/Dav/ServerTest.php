@@ -27,6 +27,7 @@ use DavServices\Http\MalformedRequest;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
+use DavServices\Xml\Reader;
 use DavServices\Xml\Writer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -438,7 +439,7 @@ final class ServerTest extends TestCase
     #[DataProvider('pathsUnderAPrefix')]
     public function testTakesThePathBelowThePrefixItIsMountedAt(string $target, string $path): void
     {
-        $server = new Server(new Tree(new MemoryCollection('')), null, null, '/dav/');
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: '/dav/');
 
         self::assertSame($path, $server->path(new Request('GET', $target)));
     }
@@ -463,7 +464,7 @@ final class ServerTest extends TestCase
     #[DataProvider('pathsOutsideThePrefix')]
     public function testATargetOutsideTheMountLeadsNowhere(string $target): void
     {
-        $server = new Server(new Tree(new MemoryCollection('')), null, null, '/dav/');
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: '/dav/');
 
         $this->expectException(NotFound::class);
 
@@ -502,6 +503,18 @@ final class ServerTest extends TestCase
     }
 
     /**
+     * The caps of R-XML-05 are a setting of the server rather than of each
+     * method: one place to raise or lower them, and no method that can be
+     * forgotten when they change.
+     */
+    public function testHandsOverTheReaderItTakesBodiesWith(): void
+    {
+        $reader = new Reader(1024);
+
+        self::assertSame($reader, (new Server(new Tree(new MemoryCollection('')), null, null, $reader))->reader());
+    }
+
+    /**
      * The way back from a path inside the tree to the URL a client asks for,
      * and the inverse of `path()`. Every `DAV:href` this library sends is made
      * here, because the tree knows nothing of where the server is mounted and
@@ -510,7 +523,7 @@ final class ServerTest extends TestCase
     #[DataProvider('hrefs')]
     public function testTurnsAPathIntoTheUrlItIsAskedForBy(string $baseUri, string $path, string $href): void
     {
-        $server = new Server(new Tree(new MemoryCollection('')), null, null, $baseUri);
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: $baseUri);
 
         self::assertSame($href, $server->href($path));
     }

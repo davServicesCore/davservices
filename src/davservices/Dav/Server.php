@@ -28,6 +28,7 @@ use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
 use DavServices\Uri\Path;
 use DavServices\Xml\Element;
+use DavServices\Xml\Reader;
 use DavServices\Xml\Writer;
 use Throwable;
 
@@ -62,6 +63,8 @@ final class Server
 
     private readonly Writer $writer;
 
+    private readonly Reader $reader;
+
     /** Where this server is mounted, in the form the tree uses. */
     private readonly string $base;
 
@@ -70,8 +73,7 @@ final class Server
      * @param EventEmitter|null $events Null builds one of its own, which is
      *                                  all a server without plugins needs
      * @param Writer|null $writer Null builds one with the usual prefixes
-     */
-    /**
+     * @param Reader|null $reader Null builds one with the usual caps
      * @param string $baseUri Where the application mounted this server, such
      *                        as `/dav/`. The tree knows nothing of it: a
      *                        node's path is its path inside the tree, wherever
@@ -81,10 +83,12 @@ final class Server
         private readonly Tree $tree,
         ?EventEmitter $events = null,
         ?Writer $writer = null,
+        ?Reader $reader = null,
         string $baseUri = '/',
     ) {
         $this->events = $events ?? new EventEmitter();
         $this->writer = $writer ?? new Writer();
+        $this->reader = $reader ?? new Reader();
         $this->base = Path::normalise($baseUri);
     }
 
@@ -157,6 +161,18 @@ final class Server
     public function writer(): Writer
     {
         return $this->writer;
+    }
+
+    /**
+     * The reader this server takes request bodies with.
+     *
+     * The caps of R-XML-05 are a setting of the server rather than of each
+     * method: one place to raise or lower them, and no method left behind when
+     * they change.
+     */
+    public function reader(): Reader
+    {
+        return $this->reader;
     }
 
     /**
