@@ -17,6 +17,9 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Method\Put` | Answers `PUT`: the body becomes the content of a file |
 | `Event\BeforeCreateFile`, `BeforeWriteContent` | Where a plugin checks or changes what is about to be written |
 | `Event\AfterCreateFile`, `AfterWriteContent` | Where a plugin does its own bookkeeping afterwards |
+| `Method\Delete` | Answers `DELETE`: a node goes, a collection with everything below it |
+| `Event\BeforeUnbind` | Raised for every node about to go; a listener refuses by throwing |
+| `Event\AfterUnbind` | Raised for every node that really went, for a plugin to clear up after |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |
