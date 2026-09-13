@@ -12,7 +12,7 @@
 /**
  * Fails on a dependency that points from a lower layer to a higher one.
  *
- * Layer order (lowest first): Http, Xml, Dav, Plugin, Backend.
+ * Layer order (lowest first): Event, Uri, Http, Xml, Dav, Plugin, Backend.
  * Http may not know about Dav; Dav may not know about Plugin; and so on.
  *
  * @license Apache-2.0
@@ -23,7 +23,7 @@ declare(strict_types=1);
 require __DIR__ . '/lib/Scanner.php';
 
 /** Lower index means lower layer. */
-const LAYERS = ['Uri', 'Http', 'Xml', 'Dav', 'Acl', 'CalDav', 'CardDav', 'Plugin', 'Backend'];
+const LAYERS = ['Event', 'Uri', 'Http', 'Xml', 'Dav', 'Acl', 'CalDav', 'CardDav', 'Plugin', 'Backend'];
 
 $rank = array_flip(LAYERS);
 $violations = [];
