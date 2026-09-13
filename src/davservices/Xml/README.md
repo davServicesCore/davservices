@@ -9,7 +9,8 @@ The XML a DAV request is made of, read and written. Requests are read with
 |---|---|
 | `Reader` | Reads a request body into elements, and refuses what it must |
 | `Element` | One element: its name, its attributes, its children, its text |
-| `Writer` | Placeholder; the real writer arrives with the multi-status |
+| `Writer` | Writes an element tree out, escaped, with every namespace declared at the root |
+| `MultiStatus` | Builds the `207` of RFC 4918 §13, whose shape everybody gets wrong |
 
 ## Entry point
 
@@ -28,6 +29,32 @@ $element->attribute('name');
 That is the form the whole library uses, because a prefix means nothing
 (R-XML-03): `D:propfind`, `d:propfind` and `propfind` under a default namespace
 are one element, and a client may pick whichever prefix it likes.
+
+## Writing
+
+```php
+$multiStatus = new MultiStatus();
+$multiStatus->addProperties('/calendars/alice/', [
+    200 => ['{DAV:}displayname' => 'Alice'],
+    404 => ['{DAV:}getctag' => null],
+]);
+
+$body = (new Writer())->write($multiStatus->toElement());
+```
+
+Two rules hold the writer together. **Everything is escaped** — a display name
+a user chose, a path with an ampersand, a message from a backend all go out
+inside XML that clients parse, and a value that could close its own element
+would be a defect in every response at once. And **every namespace is declared
+at the root**: declaring one where it is first used is legal, but a `PROPFIND`
+answer would repeat its declarations on each of two hundred responses, and more
+than one client in the wild reads only what the root declares.
+
+A namespace nobody named a prefix for is given one derived from the namespace
+itself. It is the same prefix wherever that namespace turns up, two namespaces
+never share one, and it always begins with a letter — the hash behind it begins
+with a digit often enough, and a prefix that did would be refused by every
+parser. Its exact spelling is deliberately nobody's business.
 
 ## What is refused
 
