@@ -23,12 +23,15 @@ use DavServices\Exception\NotFound;
 /**
  * A collection that lives in an array, for the tests of this layer.
  *
+ * Not final, because the extended collection of RFC 5689 is the same thing
+ * with one more way of creating a member; see {@see MemoryExtendedCollection}.
+ *
  * It counts how often it has been asked for a member, which is how the tests
  * tell a cached lookup from one that went to the backend. It can also be told
  * to refuse — a backend that will not list what it holds, or will not let it
  * go, is the case the interesting answers are made of.
  */
-final class MemoryCollection implements ICollection, IMember
+class MemoryCollection implements ICollection, IMember
 {
     /** How often `child()` has gone looking, cache or no cache. */
     public int $lookups = 0;

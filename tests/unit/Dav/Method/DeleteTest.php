@@ -521,7 +521,7 @@ final class DeleteTest extends TestCase
         ?EventEmitter $events = null,
         string $baseUri = '/',
     ): Response {
-        $server = new Server(new Tree($root), $events, null, $baseUri);
+        $server = new Server(new Tree($root), $events, baseUri: $baseUri);
         $delete = new Delete($server);
         $server->onMethod('DELETE', $delete(...));
 

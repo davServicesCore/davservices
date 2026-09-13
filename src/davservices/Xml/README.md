@@ -11,6 +11,7 @@ The XML a DAV request is made of, read and written. Requests are read with
 | `Element` | One element: its name, its attributes, its children, its text |
 | `Writer` | Writes an element tree out, escaped, with every namespace declared at the root |
 | `MultiStatus` | Builds the `207` of RFC 4918 §13, whose shape everybody gets wrong |
+| `MkColResponse` | Builds the `DAV:mkcol-response` of RFC 5689 §5.2: why a collection was not made |
 | `ElementRegistry` | What each element means, by name — the seam plugins extend |
 
 ## Entry point
