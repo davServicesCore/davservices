@@ -72,6 +72,15 @@ final class MemoryPropertyStorage implements IPropertyStorageBackend
         }
     }
 
+    public function copyTo(string $from, string $to): void
+    {
+        foreach ($this->kept as $kept => $properties) {
+            if (self::isBelow($kept, $from)) {
+                $this->kept[$to . substr($kept, strlen($from))] = $properties;
+            }
+        }
+    }
+
     public function moveTo(string $from, string $to): void
     {
         foreach ($this->kept as $kept => $properties) {

@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace DavServices\Plugin;
 
 use DavServices\Backend\IPropertyStorageBackend;
+use DavServices\Dav\Event\AfterCopy;
+use DavServices\Dav\Event\AfterMove;
 use DavServices\Dav\Event\AfterUnbind;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
@@ -56,6 +58,8 @@ final class DeadProperties
         $events->on(PropertiesRequested::class, $this->answer(...));
         $events->on(PropertiesChanging::class, $this->keep(...));
         $events->on(AfterUnbind::class, $this->forget(...));
+        $events->on(AfterCopy::class, $this->copy(...));
+        $events->on(AfterMove::class, $this->carry(...));
     }
 
     /**
@@ -115,6 +119,23 @@ final class DeadProperties
     public function forget(AfterUnbind $event): void
     {
         $this->storage->forget($event->path());
+    }
+
+    /**
+     * Duplicates onto the copy what was kept for the original (RFC 4918
+     * §9.8.2).
+     */
+    public function copy(AfterCopy $event): void
+    {
+        $this->storage->copyTo($event->from(), $event->to());
+    }
+
+    /**
+     * Carries to the new path what was kept for the old one (R-PROP-04).
+     */
+    public function carry(AfterMove $event): void
+    {
+        $this->storage->moveTo($event->from(), $event->to());
     }
 
     /**

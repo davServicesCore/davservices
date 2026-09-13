@@ -30,6 +30,10 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Method\PropPatch` | Answers `PROPPATCH`: the properties of one resource, all of them or none |
 | `PropPatchResult` | The changes of one request, and the rule that one failure fails them all |
 | `Event\PropertiesChanging` | Raised before anything is written; a listener refuses or takes one on |
+| `Method\Copy`, `Method\Move` | Answer `COPY` and `MOVE`; what they share is in `Method\Transfer` |
+| `Event\BeforeCopy`, `AfterCopy` | Raised around a copy, with both ends of it |
+| `Event\BeforeMove`, `AfterMove` | Raised around a move; a move is not a removal and a creation |
+| `Event\BeforeBind`, `AfterBind` | Raised wherever a member appears, whatever method put it there |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |

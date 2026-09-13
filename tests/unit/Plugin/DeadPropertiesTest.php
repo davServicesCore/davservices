@@ -13,10 +13,14 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Plugin;
 
+use DavServices\Dav\Event\AfterCopy;
+use DavServices\Dav\Event\AfterMove;
 use DavServices\Dav\Event\AfterUnbind;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\Method\Copy;
 use DavServices\Dav\Method\Delete;
+use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
 use DavServices\Dav\PropFindForm;
@@ -263,6 +267,52 @@ final class DeadPropertiesTest extends TestCase
     }
 
     /**
+     * R-PROP-04 the whole way through: what a `MOVE` carried keeps its
+     * properties, and the old path keeps none.
+     */
+    public function testCarriesThePropertiesOfWhatWasMoved(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', ['{DAV:}displayname' => 'Work']);
+
+        $root = $this->tree();
+        $events = new EventEmitter();
+        (new DeadProperties($storage))->registerOn($events);
+
+        $server = $this->serverFor($root, $events);
+        $move = new Move($server);
+        $server->onMethod('MOVE', $move(...));
+
+        $server->handle(new Request('MOVE', '/work.ics', new Headers(['Destination' => '/archive.ics'])));
+
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('archive.ics'));
+        self::assertSame([], $storage->propertyNames('work.ics'));
+    }
+
+    /**
+     * RFC 4918 §9.8.2: a `COPY` duplicates them, and the original keeps its
+     * own.
+     */
+    public function testDuplicatesThePropertiesOntoACopy(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', ['{DAV:}displayname' => 'Work']);
+
+        $root = $this->tree();
+        $events = new EventEmitter();
+        (new DeadProperties($storage))->registerOn($events);
+
+        $server = $this->serverFor($root, $events);
+        $copy = new Copy($server);
+        $server->onMethod('COPY', $copy(...));
+
+        $server->handle(new Request('COPY', '/work.ics', new Headers(['Destination' => '/archive.ics'])));
+
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('archive.ics'));
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('work.ics'));
+    }
+
+    /**
      * Xdebug measures no branch of a listener that is only ever reached through
      * a first-class callable, so each one is asked for directly as well.
      */
@@ -296,6 +346,27 @@ final class DeadPropertiesTest extends TestCase
 
         (new DeadProperties($storage))->forget(new AfterUnbind('work.ics'));
 
+        self::assertSame([], $storage->propertyNames('work.ics'));
+    }
+
+    public function testAskedDirectlyItDuplicatesOntoACopy(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', ['{DAV:}displayname' => 'Work']);
+
+        (new DeadProperties($storage))->copy(new AfterCopy('work.ics', 'archive.ics'));
+
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('archive.ics'));
+    }
+
+    public function testAskedDirectlyItCarriesWhatWasMoved(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', ['{DAV:}displayname' => 'Work']);
+
+        (new DeadProperties($storage))->carry(new AfterMove('work.ics', 'archive.ics'));
+
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('archive.ics'));
         self::assertSame([], $storage->propertyNames('work.ics'));
     }
 

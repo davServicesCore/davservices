@@ -481,6 +481,39 @@ final class ServerTest extends TestCase
         yield 'a name that merely begins the same way' => ['/davos/thing'];
     }
 
+    /**
+     * The `Destination` of a `COPY` arrives as a URL in a header rather than as
+     * the target of the request, and it is still encoded when it does.
+     */
+    #[DataProvider('targets')]
+    public function testTurnsATargetThatCameInAHeaderIntoAPath(string $baseUri, string $target, string $path): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: $baseUri);
+
+        self::assertSame($path, $server->pathOf($target));
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function targets(): iterable
+    {
+        yield 'a file on a server at the root' => ['/', '/calendars/work.ics', 'calendars/work.ics'];
+        yield 'a file on a mounted server' => ['/dav/', '/dav/calendars/work.ics', 'calendars/work.ics'];
+        yield 'the mount point itself' => ['/dav/', '/dav', ''];
+        yield 'a name that arrived encoded' => ['/', '/work%20week.ics', 'work week.ics'];
+        yield 'a collection with its trailing slash' => ['/dav/', '/dav/calendars/', 'calendars'];
+    }
+
+    public function testRefusesATargetThatIsNotServedHere(): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: '/dav/');
+
+        $this->expectException(NotFound::class);
+
+        $server->pathOf('/elsewhere/work.ics');
+    }
+
     public function testHandsOverTheTreeItServes(): void
     {
         $tree = new Tree(new MemoryCollection(''));

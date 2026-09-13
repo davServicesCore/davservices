@@ -13,7 +13,9 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Dav\Method;
 
+use DavServices\Dav\Event\AfterBind;
 use DavServices\Dav\Event\AfterCreateCollection;
+use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeCreateCollection;
 use DavServices\Dav\Method\MkCol;
 use DavServices\Dav\Server;
@@ -466,6 +468,28 @@ final class MkColTest extends TestCase
 
         self::assertSame(403, $response->status());
         self::assertStringContainsString('mkcol-response', (string) $response->body());
+    }
+
+    /**
+     * R-ARC-04: the same seam as for a `PUT` that creates, and for the
+     * destination of a `COPY`.
+     */
+    public function testRaisesTheBindEventsWhereItCreatesACollection(): void
+    {
+        /** @var list<string> $seen */
+        $seen = [];
+        $events = new EventEmitter();
+
+        $events->on(BeforeBind::class, static function (BeforeBind $event) use (&$seen): void {
+            $seen[] = 'before ' . $event->path();
+        });
+        $events->on(AfterBind::class, static function (AfterBind $event) use (&$seen): void {
+            $seen[] = 'after ' . $event->path();
+        });
+
+        $this->mkCol($this->tree(), '/calendars', events: $events);
+
+        self::assertSame(['before calendars', 'after calendars'], $seen);
     }
 
     private function tree(): MemoryCollection

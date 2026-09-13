@@ -64,6 +64,9 @@ final class MemoryFile implements IFile, IMember, IProperties
     /** Set where being deleted is to be refused. */
     private ?IHttpFailure $deletionRefusal = null;
 
+    /** Set where being read is to be refused. */
+    private ?IHttpFailure $readingRefusal = null;
+
     private ?MemoryCollection $parent = null;
 
     public function __construct(
@@ -186,8 +189,22 @@ final class MemoryFile implements IFile, IMember, IProperties
         $this->parent?->remove($this->name);
     }
 
+    /**
+     * Will not be read, as a backend does whose storage has gone away under it.
+     */
+    public function refuseReading(?IHttpFailure $refusal = null): self
+    {
+        $this->readingRefusal = $refusal ?? new Forbidden(sprintf('"%s" is not to be read.', $this->name));
+
+        return $this;
+    }
+
     public function get(): string
     {
+        if ($this->readingRefusal !== null) {
+            throw $this->readingRefusal;
+        }
+
         return $this->content;
     }
 

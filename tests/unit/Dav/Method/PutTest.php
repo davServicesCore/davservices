@@ -13,8 +13,10 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Dav\Method;
 
+use DavServices\Dav\Event\AfterBind;
 use DavServices\Dav\Event\AfterCreateFile;
 use DavServices\Dav\Event\AfterWriteContent;
+use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Method\Put;
@@ -374,6 +376,51 @@ final class PutTest extends TestCase
         $this->expectException(Conflict::class);
 
         ($this->method($this->tree()))(new Request('PUT', '/nowhere/notes.txt', body: new Body('a note')));
+    }
+
+    /**
+     * R-ARC-04: `beforeBind` and `afterBind` fire wherever a member appears,
+     * whatever put it there. A plugin that guards what may exist where asks
+     * once instead of once per method.
+     */
+    public function testRaisesTheBindEventsWhereItCreatesAFile(): void
+    {
+        /** @var list<string> $seen */
+        $seen = [];
+        $events = new EventEmitter();
+
+        $events->on(BeforeBind::class, static function (BeforeBind $event) use (&$seen): void {
+            $seen[] = 'before ' . $event->path();
+        });
+        $events->on(AfterBind::class, static function (AfterBind $event) use (&$seen): void {
+            $seen[] = 'after ' . $event->path();
+        });
+
+        $this->put($this->tree(), '/notes.txt', 'a new note', events: $events);
+
+        self::assertSame(['before notes.txt', 'after notes.txt'], $seen);
+    }
+
+    /**
+     * Replacing the content of a file binds nothing: the member was there
+     * before and is there after.
+     */
+    public function testRaisesNoBindWhereItOnlyReplacesTheContent(): void
+    {
+        $root = $this->tree();
+        $root->add(new MemoryFile('notes.txt', 'the old note'));
+
+        /** @var list<string> $seen */
+        $seen = [];
+        $events = new EventEmitter();
+
+        $events->on(BeforeBind::class, static function (BeforeBind $event) use (&$seen): void {
+            $seen[] = $event->path();
+        });
+
+        $this->put($root, '/notes.txt', 'the new note', events: $events);
+
+        self::assertSame([], $seen);
     }
 
     private function tree(): MemoryCollection

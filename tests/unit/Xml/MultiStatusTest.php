@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Xml;
 
+use DavServices\Exception\Forbidden;
+use DavServices\Exception\Locked;
 use DavServices\Xml\Element;
 use DavServices\Xml\MultiStatus;
 use DavServices\Xml\Reader;
@@ -250,6 +252,35 @@ final class MultiStatusTest extends TestCase
         self::assertSame('{DAV:}prop', $prop->name());
 
         return self::childAt($prop, $index);
+    }
+
+    /**
+     * Every method that reports a failure per path does it the same way, so
+     * the way is here: the status, the precondition where the refusal names
+     * one, and the message where there is one to read.
+     */
+    public function testWritesARefusalAsTheRefusalDescribesItself(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addFailure('/calendars/work.ics', new Locked('It is locked.', '{DAV:}lock-token-submitted'));
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+
+        self::assertSame('HTTP/1.1 423 Locked', self::childAt($response, 1)->text());
+        self::assertSame('{DAV:}lock-token-submitted', self::childAt(self::childAt($response, 2), 0)->name());
+        self::assertSame('It is locked.', self::childAt($response, 3)->text());
+    }
+
+    /**
+     * A refusal that came without a message says nothing rather than saying
+     * nothing at length.
+     */
+    public function testLeavesOutAnEmptyReason(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addFailure('/calendars/work.ics', new Forbidden());
+
+        self::assertCount(2, self::childAt($multiStatus->toElement(), 0)->children());
     }
 
     private static function childAt(Element $element, int $index): Element
