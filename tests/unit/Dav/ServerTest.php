@@ -403,6 +403,25 @@ final class ServerTest extends TestCase
         self::assertSame(501, $other->handle(new Request('GET', '/x'))->status());
     }
 
+    /**
+     * What `OPTIONS` answers with. Keeping the list on the server rather than
+     * in the method is what stops the `Allow` header from becoming something
+     * somebody has to remember to update.
+     */
+    public function testNamesTheMethodsItHasHandlersFor(): void
+    {
+        $server = $this->server();
+        $server->onMethod('GET', static fn (): Response => new Response(200));
+        $server->onMethod('PROPFIND', static fn (): Response => new Response(207));
+
+        self::assertSame(['GET', 'PROPFIND'], $server->methods());
+    }
+
+    public function testAServerWithoutHandlersNamesNoMethod(): void
+    {
+        self::assertSame([], $this->server()->methods());
+    }
+
     public function testHandsOverTheTreeItServes(): void
     {
         $tree = new Tree(new MemoryCollection(''));
