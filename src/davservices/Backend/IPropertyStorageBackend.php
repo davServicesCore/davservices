@@ -79,6 +79,16 @@ interface IPropertyStorageBackend
     public function forget(string $path): void;
 
     /**
+     * Copies everything kept for a path, and for everything below it, to a
+     * second path, leaving the first as it is.
+     *
+     * RFC 4918 §9.8.2: a `COPY` duplicates the dead properties of the source.
+     * A copy that arrived without the colour and the name of what it was
+     * copied from is not a copy in any sense a client would recognise.
+     */
+    public function copyTo(string $from, string $to): void;
+
+    /**
      * Carries everything kept for a path, and for everything below it, to a
      * new path.
      *

@@ -39,6 +39,9 @@ class MemoryCollection implements ICollection, IMember
     /** Whether this collection can say what it just created is tagged as. */
     private bool $tellsItsEtag = false;
 
+    /** Whether it answers a request for a collection with something else. */
+    private bool $makesSomethingElse = false;
+
     /** Set where listing the members is to be refused. */
     private ?IHttpFailure $listingRefusal = null;
 
@@ -166,12 +169,23 @@ class MemoryCollection implements ICollection, IMember
         return $this;
     }
 
+    /**
+     * Answers `createCollection()` with something that is no collection, as a
+     * backend does that has misunderstood its own contract.
+     */
+    public function makeSomethingElse(): self
+    {
+        $this->makesSomethingElse = true;
+
+        return $this;
+    }
+
     public function createCollection(string $name): void
     {
         if (isset($this->members[$name])) {
             throw new Conflict(sprintf('"%s" is already there.', $name));
         }
 
-        $this->add(new self($name));
+        $this->add($this->makesSomethingElse ? new MemoryFile($name) : new self($name));
     }
 }

@@ -193,29 +193,11 @@ final class Delete
         $report = new MultiStatus();
 
         foreach ($failures as $failed => $refusal) {
-            $report->addStatus(
-                $this->server->href($failed),
-                $refusal->status(),
-                $refusal->errorElement(),
-                self::reason($refusal),
-            );
+            $report->addFailure($this->server->href($failed), $refusal);
         }
 
         return (new Response(207, body: $this->server->writer()->write($report->toElement())))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');
     }
 
-    /**
-     * What a person reads where the status alone does not explain itself.
-     *
-     * A refusal that came without a message says nothing rather than saying
-     * nothing at length: an empty `DAV:responsedescription` is noise in an
-     * answer a client is meant to act on.
-     */
-    private static function reason(IHttpFailure $refusal): ?string
-    {
-        $message = $refusal->getMessage();
-
-        return $message === '' ? null : $message;
-    }
 }

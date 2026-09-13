@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Xml;
 
+use DavServices\Exception\IHttpFailure;
 use DavServices\Http\Response;
 
 /**
@@ -75,6 +76,21 @@ final class MultiStatus
         self::describe($response, $description);
 
         $this->responses[] = $response;
+    }
+
+    /**
+     * Adds a resource that was refused, as the refusal itself describes it.
+     *
+     * Every method that reports a failure per path does it the same way: the
+     * status, the precondition where the refusal names one, and the message
+     * where there is one to read. A refusal that came without a message says
+     * nothing rather than saying nothing at length.
+     */
+    public function addFailure(string $href, IHttpFailure $failure): void
+    {
+        $message = $failure->getMessage();
+
+        $this->addStatus($href, $failure->status(), $failure->errorElement(), $message === '' ? null : $message);
     }
 
     /**

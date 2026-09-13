@@ -213,6 +213,42 @@ abstract class PropertyStorageContract extends TestCase
     }
 
     /**
+     * RFC 4918 §9.8.2: a `COPY` duplicates them, and the original keeps its
+     * own. A copy that arrived without the colour and the name of what it was
+     * copied from is not a copy in any sense a client would recognise.
+     */
+    public function testCopyingLeavesThePropertiesAtBothPaths(): void
+    {
+        $storage = $this->storage();
+
+        $storage->patchProperties('calendars/work.ics', ['{DAV:}displayname' => 'Work']);
+        $storage->copyTo('calendars/work.ics', 'archive/work.ics');
+
+        self::assertSame(['{DAV:}displayname' => 'Work'], $storage->properties('archive/work.ics', ['{DAV:}displayname']));
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('calendars/work.ics'));
+    }
+
+    public function testCopyingACollectionCarriesWhatLiesBelowIt(): void
+    {
+        $storage = $this->storage();
+
+        $storage->patchProperties('calendars/alice/work.ics', ['{DAV:}displayname' => 'Work']);
+        $storage->copyTo('calendars/alice', 'archive/alice');
+
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('archive/alice/work.ics'));
+    }
+
+    public function testCopyingDoesNotReachAPathThatMerelyBeginsTheSameWay(): void
+    {
+        $storage = $this->storage();
+
+        $storage->patchProperties('calendars/alice2/work.ics', ['{DAV:}displayname' => 'Work']);
+        $storage->copyTo('calendars/alice', 'archive/alice');
+
+        self::assertSame([], $storage->propertyNames('archive/alice2/work.ics'));
+    }
+
+    /**
      * R-PROP-04: a `MOVE` carries the properties along. A calendar that
      * arrived at its new address without its colour and its name would look to
      * the client like a different calendar.

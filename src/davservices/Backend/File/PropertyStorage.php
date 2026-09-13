@@ -137,6 +137,19 @@ final class PropertyStorage implements IPropertyStorageBackend
     }
 
     /**
+     * Writes each file again under the name of the path the copy is at, and
+     * leaves the original where it is.
+     */
+    public function copyTo(string $from, string $to): void
+    {
+        foreach ($this->files() as $file => $kept) {
+            if (self::isBelow($kept, $from)) {
+                $this->keep($to . substr($kept, strlen($from)), $this->read($file));
+            }
+        }
+    }
+
+    /**
      * Writes each file again under the name of its new path, and removes the
      * old one. A rename would do where the name said something about the path;
      * a hash does not.

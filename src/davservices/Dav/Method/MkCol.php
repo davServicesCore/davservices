@@ -13,7 +13,9 @@ declare(strict_types=1);
 
 namespace DavServices\Dav\Method;
 
+use DavServices\Dav\Event\AfterBind;
 use DavServices\Dav\Event\AfterCreateCollection;
+use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeCreateCollection;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\IExtendedCollection;
@@ -21,7 +23,6 @@ use DavServices\Dav\Server;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Conflict;
 use DavServices\Exception\MethodNotAllowed;
-use DavServices\Exception\NotFound;
 use DavServices\Exception\UnsupportedMediaType;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
@@ -84,10 +85,11 @@ final class MkCol
         }
 
         [$parentPath, $name] = Path::split($path);
-        $parent = $this->collectionAt($parentPath);
+        $parent = $this->server->tree()->collectionAt($parentPath);
 
         [$resourceTypes, $properties] = $this->whatWasAskedFor($request);
 
+        $this->server->events()->emit(new BeforeBind($path));
         $this->server->events()->emit(new BeforeCreateCollection($path, $resourceTypes));
 
         $refusal = $this->create($parent, $name, $resourceTypes, $properties);
@@ -98,28 +100,9 @@ final class MkCol
 
         $this->server->tree()->forget($parentPath);
         $this->server->events()->emit(new AfterCreateCollection($path));
+        $this->server->events()->emit(new AfterBind($path));
 
         return new Response(201);
-    }
-
-    /**
-     * The collection the new one would go into.
-     *
-     * @throws Conflict If it is not there, or is no collection
-     */
-    private function collectionAt(string $path): ICollection
-    {
-        try {
-            $parent = $this->server->tree()->node($path);
-        } catch (NotFound $missing) {
-            throw new Conflict('The collection this would go in does not exist.', null, $missing);
-        }
-
-        if (!$parent instanceof ICollection) {
-            throw new Conflict('A file cannot hold a collection.');
-        }
-
-        return $parent;
     }
 
     /**

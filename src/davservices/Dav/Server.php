@@ -100,8 +100,34 @@ final class Server
      */
     public function path(Request $request): string
     {
-        $path = $request->path();
+        return $this->inside($request->path());
+    }
 
+    /**
+     * The same, for a target that has not been through a request.
+     *
+     * The `Destination` of a `COPY` or a `MOVE` is a URL in a header rather
+     * than the target of the request, and it arrives percent-encoded. It is
+     * decoded here — **once**, which is the whole of what keeps a `%2F` from
+     * becoming a separator.
+     *
+     * @param string $target A path as it arrived, still encoded
+     *
+     * @throws NotFound If the target lies outside what this server serves
+     * @throws MalformedPath If it cannot be resolved safely
+     */
+    public function pathOf(string $target): string
+    {
+        return $this->inside(Path::normalise($target));
+    }
+
+    /**
+     * Strips what the server is mounted at.
+     *
+     * @throws NotFound If the path lies outside it
+     */
+    private function inside(string $path): string
+    {
         if ($this->base === '') {
             return $path;
         }

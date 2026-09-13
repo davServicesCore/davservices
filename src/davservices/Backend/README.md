@@ -13,7 +13,7 @@ plugin is using it.
 
 | Class | Purpose |
 |---|---|
-| `IPropertyStorageBackend` | Where the dead properties of RFC 4918 §3 are kept, by path |
+| `IPropertyStorageBackend` | Where the dead properties of RFC 4918 §3 are kept, by path; carried along by a `MOVE`, duplicated by a `COPY` |
 | `File\PropertyStorage` | Those properties in a directory, one file per path, as XML a person can read |
 
 ## Using it

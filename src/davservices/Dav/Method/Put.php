@@ -13,17 +13,17 @@ declare(strict_types=1);
 
 namespace DavServices\Dav\Method;
 
+use DavServices\Dav\Event\AfterBind;
 use DavServices\Dav\Event\AfterCreateFile;
 use DavServices\Dav\Event\AfterWriteContent;
+use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeWriteContent;
-use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
 use DavServices\Dav\Server;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Conflict;
 use DavServices\Exception\MethodNotAllowed;
-use DavServices\Exception\NotFound;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Uri\Path;
@@ -112,13 +112,16 @@ final class Put
     private function create(string $path, Request $request): Response
     {
         [$parentPath, $name] = Path::split($path);
-        $parent = $this->collectionAt($parentPath);
+        $parent = $this->server->tree()->collectionAt($parentPath);
+
+        $this->server->events()->emit(new BeforeBind($path));
 
         $event = $this->server->events()->emit(new BeforeCreateFile($path, $request->body()->stream()));
         $etag = $parent->createFile($name, $event->content());
 
         $this->server->tree()->forget($parentPath);
         $this->server->events()->emit(new AfterCreateFile($path));
+        $this->server->events()->emit(new AfterBind($path));
 
         return $this->answer(201, $etag);
     }
@@ -132,26 +135,6 @@ final class Put
         $this->server->events()->emit(new AfterWriteContent($path));
 
         return $this->answer(204, $etag);
-    }
-
-    /**
-     * The collection a new file would go into.
-     *
-     * @throws Conflict If it is not there, or is no collection
-     */
-    private function collectionAt(string $path): ICollection
-    {
-        try {
-            $parent = $this->server->tree()->node($path);
-        } catch (NotFound $missing) {
-            throw new Conflict('The collection this would go in does not exist.', null, $missing);
-        }
-
-        if (!$parent instanceof ICollection) {
-            throw new Conflict('A file cannot hold another file.');
-        }
-
-        return $parent;
     }
 
     /**
