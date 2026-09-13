@@ -15,15 +15,32 @@ plugin is using it.
 |---|---|
 | `IPropertyStorageBackend` | Where the dead properties of RFC 4918 §3 are kept, by path; carried along by a `MOVE`, duplicated by a `COPY` |
 | `File\PropertyStorage` | Those properties in a directory, one file per path, as XML a person can read |
+| `File\Directory` | A directory on a disc, served as a collection |
+| `File\File` | One file on a disc: handed over as a stream, written as one |
 
 ## Using it
 
+The shortest way to a working server:
+
 ```php
-$storage = new PropertyStorage('/var/lib/davservices/properties');
+$server = new Server(new Tree(new Directory('/var/lib/davservices/files')));
 ```
 
-The directory has to exist. Creating one on a guess is how a typo ends up with
-a properties store in a web root.
+and, beside it, somewhere to keep the properties a filesystem has nowhere to
+put:
+
+```php
+$properties = new DeadProperties(new PropertyStorage('/var/lib/davservices/properties'));
+$properties->registerOn($server->events());
+```
+
+Both directories have to exist. Creating one on a guess is how a typo ends up
+with a store in a web root.
+
+**These are reference backends (R-BE-05) and are not to be run in production.**
+They know nothing of two requests writing to one path at the same moment, of
+quotas, or of what a filesystem does when it runs out of inodes. They are here
+to be read, to be copied from, and to make the examples real.
 
 ## Writing another
 
