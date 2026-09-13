@@ -9,6 +9,10 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 
 | Class | Purpose |
 |---|---|
+| `Server` | Takes a request and answers it: the chain, the method, and what a failure becomes |
+| `Event\BeforeMethod` | Raised before the method; a listener that answers takes it over |
+| `Event\AfterMethod` | Raised with the answer; a listener may hand back another |
+| `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |
 | `IFile` | A node that holds content — as a stream wherever the backend can manage one |
@@ -21,6 +25,38 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `IFilter` / `IQueryFilter` | A collection that can do a report's filtering itself |
 
 ## Entry point
+
+```php
+$server = new Server(new Tree($root));
+
+$server->onMethod('GET', $get);        // every method of WebDAV is a handler
+$response = $server->handle($request); // nothing thrown reaches the caller
+```
+
+A server with nothing registered is still a working server: it answers `501`
+to everything, which is the truth about one that has been given no methods
+(R-ARC-02). Methods arrive as handlers, protocol extensions as listeners.
+
+## What a failure becomes
+
+| Thrown | Answered with |
+|---|---|
+| Anything carrying `IHttpFailure` | Its own status, and a `DAV:error` body naming its precondition where it has one |
+| `MalformedPath`, `MalformedHeader`, `MalformedRequest` | `400` — the client sent something that cannot be made sense of |
+| Anything else | `500` **with nothing in it** |
+
+The last row is the one that matters. The message of an unexpected failure
+names paths, queries and versions; a client that received it would learn about
+the inside of a server it has no business knowing. It goes to the listeners
+instead, which is where an application logs it — the library itself holds no
+opinion about logging.
+
+A listener on `ExceptionRaised` may answer instead, which is how a plugin turns
+its own backend's failures into the `502` or `507` they really are. One that
+fails while answering is ignored: the client is still owed an answer to the
+failure that came first.
+
+## The tree
 
 ```php
 $tree = new Tree($root);
