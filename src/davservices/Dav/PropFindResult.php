@@ -122,7 +122,13 @@ final class PropFindResult
     }
 
     /**
-     * Answers one property, unless somebody was there first.
+     * Answers one property.
+     *
+     * What is taken is what is wanted, which settles two things at once: a
+     * property somebody was there first with keeps its first answer, and one
+     * that nobody asked for never reaches the client. Under `DAV:prop` a
+     * client is owed the properties it named and no others, and a contributor
+     * that offers more should not be able to make this server break that.
      *
      * @param Element|string|null $value The value; an element where the
      *                                   property holds XML, which R-PROP-03
@@ -132,7 +138,7 @@ final class PropFindResult
      */
     public function set(string $name, Element|string|null $value, int $status = 200): void
     {
-        if (isset($this->answers[$name])) {
+        if (!$this->wants($name)) {
             return;
         }
 

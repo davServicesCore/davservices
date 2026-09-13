@@ -36,6 +36,12 @@ final class MemoryFile implements IFile, IMember, IProperties
     /** Whether the last write arrived as a stream, which R-TREE-03 asks for. */
     public bool $wasWrittenFromAStream = false;
 
+    /**
+     * How often the entity tag has been worked out, so that a test can show
+     * nothing was computed for a property nobody asked for.
+     */
+    public int $entityTagsGiven = 0;
+
     /** @var array<string, Element|string|null> */
     private array $properties = [];
 
@@ -156,6 +162,8 @@ final class MemoryFile implements IFile, IMember, IProperties
 
     public function etag(): string
     {
+        $this->entityTagsGiven++;
+
         return '"' . md5($this->content) . '"';
     }
 }
