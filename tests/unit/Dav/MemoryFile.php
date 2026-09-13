@@ -21,6 +21,9 @@ use DavServices\Dav\IFile;
  */
 final class MemoryFile implements IFile
 {
+    /** Whether the last write arrived as a stream, which R-TREE-03 asks for. */
+    public bool $wasWrittenFromAStream = false;
+
     public function __construct(
         private readonly string $name,
         private string $content = '',
@@ -49,6 +52,7 @@ final class MemoryFile implements IFile
 
     public function put(mixed $content): string
     {
+        $this->wasWrittenFromAStream = !is_string($content);
         $this->content = is_string($content) ? $content : (string) stream_get_contents($content);
 
         return $this->etag();

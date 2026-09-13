@@ -30,6 +30,9 @@ final class MemoryCollection implements ICollection
     /** How often `child()` has gone looking, cache or no cache. */
     public int $lookups = 0;
 
+    /** Whether this collection can say what it just created is tagged as. */
+    private bool $tellsItsEtag = false;
+
     /** @var array<string, INode> */
     private array $members = [];
 
@@ -82,9 +85,28 @@ final class MemoryCollection implements ICollection
             throw new Conflict(sprintf('"%s" is already there.', $name));
         }
 
-        $this->members[$name] = new MemoryFile($name, is_string($content) ? $content : '');
+        $file = new MemoryFile($name);
 
-        return null;
+        if ($content !== null) {
+            $file->put($content);
+        }
+
+        $this->members[$name] = $file;
+
+        return $this->tellsItsEtag ? $file->etag() : null;
+    }
+
+    /**
+     * Whether this collection reports the entity tag of what it created.
+     *
+     * A backend that can say saves the server a second question; one that
+     * cannot is the ordinary case too, and both have to be answered.
+     */
+    public function tellsItsEtag(bool $tells = true): self
+    {
+        $this->tellsItsEtag = $tells;
+
+        return $this;
     }
 
     public function createCollection(string $name): void
