@@ -42,8 +42,24 @@ final class MemoryFile implements IFile, IMember, IProperties
      */
     public int $entityTagsGiven = 0;
 
+    /**
+     * How often the node was asked to change properties, so that a test can
+     * show it was never asked after a refusal.
+     */
+    public int $patchesAsked = 0;
+
     /** @var array<string, Element|string|null> */
     private array $properties = [];
+
+    /**
+     * The properties this file will not have changed, by name.
+     *
+     * @var array<string, int>
+     */
+    private array $propertyRefusals = [];
+
+    /** Whether a change is reported at all, as a careless backend might not. */
+    private bool $reportsWhatItChanged = true;
 
     /** Set where being deleted is to be refused. */
     private ?IHttpFailure $deletionRefusal = null;
@@ -100,9 +116,44 @@ final class MemoryFile implements IFile, IMember, IProperties
         return $found;
     }
 
+    /**
+     * Will not have that property changed, as a backend does that keeps a
+     * property of its own or holds one read-only.
+     */
+    public function refuseProperty(string $name, int $status = 403): self
+    {
+        $this->propertyRefusals[$name] = $status;
+
+        return $this;
+    }
+
+    /**
+     * Says nothing about what it changed, as a careless backend might not.
+     */
+    public function saysNothingAboutChanges(): self
+    {
+        $this->reportsWhatItChanged = false;
+
+        return $this;
+    }
+
     public function patchProperties(array $mutations): array
     {
+        $this->patchesAsked++;
+
         $statuses = [];
+        $refused = false;
+
+        foreach (array_keys($mutations) as $name) {
+            $status = $this->propertyRefusals[$name] ?? 200;
+            $refused = $refused || $status !== 200;
+            $statuses[$name] = $status;
+        }
+
+        if ($refused) {
+            // All of them or none (RFC 4918 §9.2).
+            return $statuses;
+        }
 
         foreach ($mutations as $name => $value) {
             if ($value === null) {
@@ -110,11 +161,9 @@ final class MemoryFile implements IFile, IMember, IProperties
             } else {
                 $this->properties[$name] = $value;
             }
-
-            $statuses[$name] = 200;
         }
 
-        return $statuses;
+        return $this->reportsWhatItChanged ? $statuses : [];
     }
 
     public function name(): string
