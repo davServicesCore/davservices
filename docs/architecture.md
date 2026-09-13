@@ -44,7 +44,9 @@ they do not. Lowest first:
 | `Http` | Request, response, headers, body, ranges, conditions, the WebDAV `If` header | `Uri` |
 | `Xml` | Reading and writing the documents a request is made of | `Http` |
 | `Dav` | The node interfaces and the tree | may use any of the above |
-| `Acl`, `CalDav`, `CardDav`, `Plugin`, `Backend` | *planned* | may use any of the above |
+| `Backend` | Where a server's own data is kept, and the interfaces an application swaps out | may use any of the above |
+| `Acl`, `CalDav`, `CardDav` | *planned* | may use any of the above |
+| `Plugin` | What the server can do beyond plain WebDAV: listeners, nothing a method has to know about | may use any of the above |
 
 `Exception` sits outside the order on purpose: a failure belongs to no layer,
 and every layer raises one.
@@ -176,7 +178,7 @@ Four places are meant to be taken over from outside:
 
 | Seam | What you provide |
 |---|---|
-| **Backends** | The nodes themselves: `INode`, `IFile`, `ICollection`, and the optional interfaces your storage can answer better than the server can |
+| **Backends** | The nodes themselves: `INode`, `IFile`, `ICollection`, and the optional interfaces your storage can answer better than the server can; and, under `Backend`, the stores a plugin writes through |
 | **Plugins** | Listeners on the emitter; a plugin that answers a request stops the event, and the server's own handling does not run |
 | **The element registry** | What an element of your namespace means, in both directions |
 | **The SAPI** | Where a request comes from and where a response goes, if not `$_SERVER` and `php://output` |

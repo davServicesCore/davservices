@@ -12,8 +12,13 @@
 /**
  * Fails on a dependency that points from a lower layer to a higher one.
  *
- * Layer order (lowest first): Event, Uri, Http, Xml, Dav, Plugin, Backend.
+ * Layer order (lowest first): Event, Uri, Http, Xml, Dav, Backend, Plugin.
  * Http may not know about Dav; Dav may not know about Plugin; and so on.
+ *
+ * Backend lies below Plugin because that is the direction the dependency runs
+ * in: a plugin is written against a backend's interface — the lock plugin
+ * against a lock backend, the dead properties against a property storage —
+ * and no backend has any business knowing which plugin is using it.
  *
  * @license Apache-2.0
  */
@@ -23,7 +28,7 @@ declare(strict_types=1);
 require __DIR__ . '/lib/Scanner.php';
 
 /** Lower index means lower layer. */
-const LAYERS = ['Event', 'Uri', 'Http', 'Xml', 'Dav', 'Acl', 'CalDav', 'CardDav', 'Plugin', 'Backend'];
+const LAYERS = ['Event', 'Uri', 'Http', 'Xml', 'Dav', 'Backend', 'Acl', 'CalDav', 'CardDav', 'Plugin'];
 
 $rank = array_flip(LAYERS);
 $violations = [];
