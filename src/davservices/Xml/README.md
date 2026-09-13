@@ -11,6 +11,7 @@ The XML a DAV request is made of, read and written. Requests are read with
 | `Element` | One element: its name, its attributes, its children, its text |
 | `Writer` | Writes an element tree out, escaped, with every namespace declared at the root |
 | `MultiStatus` | Builds the `207` of RFC 4918 §13, whose shape everybody gets wrong |
+| `ElementRegistry` | What each element means, by name — the seam plugins extend |
 
 ## Entry point
 
@@ -22,6 +23,26 @@ $element->children();      // the elements inside it, in order
 $element->text();          // the text inside it, as it stands
 $element->attribute('name');
 ```
+
+## What an element means
+
+```php
+$registry->readWith('{DAV:}href', static fn (Element $element): string => trim($element->text()));
+
+$registry->read($element);            // the value, or the element where nobody said
+$registry->write('{DAV:}href', $href); // the element, or a refusal where nobody said
+```
+
+The two directions are deliberately not symmetric. **Reading tolerates the
+unknown**: an element nobody registered a reader for comes back as it stands,
+because a client asking for a property this server never heard of is an
+ordinary Tuesday, and a dead property is by definition an element nobody knows
+anything about. **Writing does not**: a value nobody registered a writer for is
+refused, since something invented in its place would go out on the wire as
+though it had been meant.
+
+A later registration takes over from an earlier one — that is what makes the
+registry an extension point rather than a table.
 
 ## Names carry their namespace
 
