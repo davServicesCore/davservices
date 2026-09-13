@@ -14,6 +14,9 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Event\AfterMethod` | Raised with the answer; a listener may hand back another |
 | `Method\Options` | Answers `OPTIONS`: what the server is, and what it will do |
 | `Method\Get` | Answers `GET` and `HEAD`: a file, or part of one |
+| `Method\Put` | Answers `PUT`: the body becomes the content of a file |
+| `Event\BeforeCreateFile`, `BeforeWriteContent` | Where a plugin checks or changes what is about to be written |
+| `Event\AfterCreateFile`, `AfterWriteContent` | Where a plugin does its own bookkeeping afterwards |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |
