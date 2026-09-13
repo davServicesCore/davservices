@@ -27,6 +27,9 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `PropFindResult`, `PropFindForm` | What has been answered for one resource, and how it was asked for |
 | `Event\PropertiesRequested` | Where live properties come from; raised before the node is asked |
 | `Property\LiveProperties` | The properties the server works out for itself; a listener on that event |
+| `Method\PropPatch` | Answers `PROPPATCH`: the properties of one resource, all of them or none |
+| `PropPatchResult` | The changes of one request, and the rule that one failure fails them all |
+| `Event\PropertiesChanging` | Raised before anything is written; a listener refuses or takes one on |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |
