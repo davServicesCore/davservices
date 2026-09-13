@@ -23,6 +23,9 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Method\MkCol` | Answers `MKCOL`: a collection, plain or of the kind RFC 5689 asks for |
 | `Event\BeforeCreateCollection` | Raised before one is made, carrying the kind; a listener refuses by throwing |
 | `Event\AfterCreateCollection` | Raised once one has been made |
+| `Method\PropFind` | Answers `PROPFIND`: what a client is told about the resources under a path |
+| `PropFindResult`, `PropFindForm` | What has been answered for one resource, and how it was asked for |
+| `Event\PropertiesRequested` | Where live properties come from; raised before the node is asked |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |

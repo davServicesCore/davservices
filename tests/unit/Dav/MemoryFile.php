@@ -15,16 +15,29 @@ namespace DavServices\Tests\Unit\Dav;
 
 use DateTimeImmutable;
 use DavServices\Dav\IFile;
+use DavServices\Dav\IProperties;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\IHttpFailure;
+use DavServices\Xml\Element;
 
 /**
  * A file that lives in a string, for the tests of this layer.
  */
-final class MemoryFile implements IFile, IMember
+final class MemoryFile implements IFile, IMember, IProperties
 {
+    /**
+     * The names of the last `properties()` call, so that a test can show the
+     * node was not asked for what somebody had answered already.
+     *
+     * @var list<string>
+     */
+    public array $askedFor = [];
+
     /** Whether the last write arrived as a stream, which R-TREE-03 asks for. */
     public bool $wasWrittenFromAStream = false;
+
+    /** @var array<string, Element|string|null> */
+    private array $properties = [];
 
     /** Set where being deleted is to be refused. */
     private ?IHttpFailure $deletionRefusal = null;
@@ -50,6 +63,52 @@ final class MemoryFile implements IFile, IMember
         $this->deletionRefusal = $refusal ?? new Forbidden(sprintf('"%s" is not to be deleted.', $this->name));
 
         return $this;
+    }
+
+    /**
+     * Gives the file a property of its own, as a backend keeps a dead one.
+     */
+    public function withProperty(string $name, Element|string|null $value): self
+    {
+        $this->properties[$name] = $value;
+
+        return $this;
+    }
+
+    public function propertyNames(): array
+    {
+        return array_keys($this->properties);
+    }
+
+    public function properties(array $names): array
+    {
+        $this->askedFor = $names;
+        $found = [];
+
+        foreach ($names as $name) {
+            if (array_key_exists($name, $this->properties)) {
+                $found[$name] = $this->properties[$name];
+            }
+        }
+
+        return $found;
+    }
+
+    public function patchProperties(array $mutations): array
+    {
+        $statuses = [];
+
+        foreach ($mutations as $name => $value) {
+            if ($value === null) {
+                unset($this->properties[$name]);
+            } else {
+                $this->properties[$name] = $value;
+            }
+
+            $statuses[$name] = 200;
+        }
+
+        return $statuses;
     }
 
     public function name(): string
