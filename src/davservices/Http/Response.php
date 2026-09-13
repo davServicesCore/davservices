@@ -87,6 +87,9 @@ final class Response
      * @param string|null $reason Null for the phrase that belongs to
      *                            the status, which is what a server
      *                            wants in all but the odd case
+     * @param int|null $bodyLength How much of the body belongs to this
+     *                             answer, where it is only part of a
+     *                             stream; null sends all of it
      *
      * @throws MalformedResponse If the status is not a three-digit one
      */
@@ -96,6 +99,7 @@ final class Response
         private readonly mixed $body = null,
         ?string $reason = null,
         private readonly string $protocolVersion = '1.1',
+        private readonly ?int $bodyLength = null,
     ) {
         self::checkedStatus($status);
 
@@ -138,6 +142,18 @@ final class Response
     }
 
     /**
+     * How many bytes of the body belong to this answer, or null for all of it.
+     *
+     * A `206` serves part of a file from the file's own stream rather than
+     * from a copy of the part that was asked for, and this is how the SAPI
+     * knows where that part ends (R-HTTP-05, R-TREE-02).
+     */
+    public function bodyLength(): ?int
+    {
+        return $this->bodyLength;
+    }
+
+    /**
      * The HTTP version the answer is to be written with.
      */
     public function protocolVersion(): string
@@ -156,7 +172,7 @@ final class Response
      */
     public function withStatus(int $status, ?string $reason = null): self
     {
-        return new self($status, $this->headers, $this->body, $reason, $this->protocolVersion);
+        return new self($status, $this->headers, $this->body, $reason, $this->protocolVersion, $this->bodyLength);
     }
 
     /**
@@ -164,9 +180,9 @@ final class Response
      *
      * @param resource|string|null $body
      */
-    public function withBody(mixed $body): self
+    public function withBody(mixed $body, ?int $bodyLength = null): self
     {
-        return new self($this->status, $this->headers, $body, $this->reason, $this->protocolVersion);
+        return new self($this->status, $this->headers, $body, $this->reason, $this->protocolVersion, $bodyLength);
     }
 
     /**
@@ -214,6 +230,6 @@ final class Response
      */
     private function withHeaders(Headers $headers): self
     {
-        return new self($this->status, $headers, $this->body, $this->reason, $this->protocolVersion);
+        return new self($this->status, $headers, $this->body, $this->reason, $this->protocolVersion, $this->bodyLength);
     }
 }

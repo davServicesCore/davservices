@@ -19,12 +19,14 @@ use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\ExceptionRaised;
 use DavServices\Event\EventEmitter;
 use DavServices\Exception\IHttpFailure;
+use DavServices\Exception\NotFound;
 use DavServices\Exception\NotImplemented;
 use DavServices\Http\MalformedHeader;
 use DavServices\Http\MalformedRequest;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
+use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 use DavServices\Xml\Writer;
 use Throwable;
@@ -60,19 +62,58 @@ final class Server
 
     private readonly Writer $writer;
 
+    /** Where this server is mounted, in the form the tree uses. */
+    private readonly string $base;
+
     /**
      * @param Tree $tree What this server serves
      * @param EventEmitter|null $events Null builds one of its own, which is
      *                                  all a server without plugins needs
      * @param Writer|null $writer Null builds one with the usual prefixes
      */
+    /**
+     * @param string $baseUri Where the application mounted this server, such
+     *                        as `/dav/`. The tree knows nothing of it: a
+     *                        node's path is its path inside the tree, wherever
+     *                        the tree hangs.
+     */
     public function __construct(
         private readonly Tree $tree,
         ?EventEmitter $events = null,
         ?Writer $writer = null,
+        string $baseUri = '/',
     ) {
         $this->events = $events ?? new EventEmitter();
         $this->writer = $writer ?? new Writer();
+        $this->base = Path::normalise($baseUri);
+    }
+
+    /**
+     * The path inside the tree that a request names.
+     *
+     * @throws NotFound If the target lies outside what this server serves
+     * @throws MalformedPath If the target cannot be resolved safely
+     */
+    public function path(Request $request): string
+    {
+        $path = $request->path();
+
+        if ($this->base === '') {
+            return $path;
+        }
+
+        if ($path === $this->base) {
+            return '';
+        }
+
+        // The slash matters: a server mounted at /dav does not serve /davos,
+        // and a prefix comparison without it would hand out somebody else's
+        // tree.
+        if (!str_starts_with($path, $this->base . '/')) {
+            throw new NotFound(sprintf('"%s" is not served here.', $path));
+        }
+
+        return substr($path, strlen($this->base) + 1);
     }
 
     /**
