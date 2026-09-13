@@ -16,6 +16,9 @@ carries on its way out, with no knowledge of WebDAV above it.
 | `ConditionalRequest` | What `If-Match`, `If-None-Match` and the two date fields come to |
 | `Precondition` | The three outcomes of that: `Met`, `NotModified`, `Failed` |
 | `ETag` | One entity tag, and the two ways HTTP compares them |
+| `IfHeader` | The WebDAV `If` header of RFC 4918 §10.4, taken apart |
+| `IfList` | One parenthesised list out of it: an *and* of conditions |
+| `IfCondition` | A state token or an entity tag, optionally negated |
 | `MalformedRequest` | Refusal of a request line that cannot be made sense of |
 | `MalformedHeader` | Refusal of a field that may not go into a message |
 | `MalformedResponse` | Refusal of a status that is not three digits — never the client's doing |
