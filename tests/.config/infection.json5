@@ -32,7 +32,13 @@
         // tests — it only hides the next real gap behind a number that is
         // already below 100.
         "UnwrapArrayValues": {
-            "ignore": ["DavServices\\Http\\Headers::with"]
+            "ignore": [
+                "DavServices\\Http\\Headers::with",
+                // Same reason: the call is what makes the return the list its
+                // type says it is, and dropping it changes nothing a test
+                // could see.
+                "DavServices\\Xml\\Writer::namespacesOf",
+            ]
         }
     }
 }
