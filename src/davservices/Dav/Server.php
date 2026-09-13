@@ -109,6 +109,20 @@ final class Server
     }
 
     /**
+     * The methods this server has handlers for, in the order they were
+     * registered.
+     *
+     * What `OPTIONS` answers with, and the one thing that keeps the `Allow`
+     * header from becoming a list somebody has to remember to update.
+     *
+     * @return list<string>
+     */
+    public function methods(): array
+    {
+        return array_keys($this->handlers);
+    }
+
+    /**
      * Answers one request.
      *
      * Nothing thrown below this line reaches the caller: whatever happens, a
