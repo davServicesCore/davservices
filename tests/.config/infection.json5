@@ -25,6 +25,16 @@
         "ArrayItemRemoval": {
             "ignoreSourceCodeByRegex": ["\\$supportedReports\\s*=.*"]
         },
+        // The file is written beside its place and moved in, so that a write
+        // cut in half leaves the properties as they were rather than half of
+        // them. Both mutants of that name end with the same file on disc: one
+        // writes straight to it, the other writes to a relative name and moves
+        // it in all the same. Nothing a test can observe tells them apart, and
+        // dropping a durability measure to make a number go up would be
+        // trading the data for the number.
+        "ConcatOperandRemoval": {
+            "ignore": ["DavServices\\Backend\\File\\PropertyStorage::write"]
+        },
         // A variadic parameter is a list already, so dropping array_values()
         // there changes nothing a test could observe. The call is what lets
         // the static analyser see the list the constructor asks for. An
