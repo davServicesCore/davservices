@@ -117,6 +117,21 @@ final class Server
     }
 
     /**
+     * The URL a path inside the tree is asked for by — the inverse of
+     * `path()`.
+     *
+     * Every `DAV:href` this library sends is made here. A node knows only its
+     * path inside the tree, and a method that guessed at the base would send
+     * clients to a place that does not answer.
+     *
+     * @throws MalformedPath If the path holds a name that may not be addressed
+     */
+    public function href(string $path): string
+    {
+        return '/' . Path::encode(Path::join($this->base, $path));
+    }
+
+    /**
      * The tree this server serves.
      */
     public function tree(): Tree
@@ -130,6 +145,18 @@ final class Server
     public function events(): EventEmitter
     {
         return $this->events;
+    }
+
+    /**
+     * The writer this server puts XML out with.
+     *
+     * A method that builds a multi-status writes it with this one, so that a
+     * server told to use other prefixes uses them in every answer rather than
+     * in some of them.
+     */
+    public function writer(): Writer
+    {
+        return $this->writer;
     }
 
     /**

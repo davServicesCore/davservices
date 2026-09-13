@@ -494,6 +494,40 @@ final class ServerTest extends TestCase
         self::assertSame($events, $this->server($events)->events());
     }
 
+    public function testHandsOverTheWriterItAnswersWith(): void
+    {
+        $writer = new Writer(['DAV:' => 'dav']);
+
+        self::assertSame($writer, (new Server(new Tree(new MemoryCollection('')), null, $writer))->writer());
+    }
+
+    /**
+     * The way back from a path inside the tree to the URL a client asks for,
+     * and the inverse of `path()`. Every `DAV:href` this library sends is made
+     * here, because the tree knows nothing of where the server is mounted and
+     * a method that guessed would send clients to the wrong place.
+     */
+    #[DataProvider('hrefs')]
+    public function testTurnsAPathIntoTheUrlItIsAskedForBy(string $baseUri, string $path, string $href): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), null, null, $baseUri);
+
+        self::assertSame($href, $server->href($path));
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function hrefs(): iterable
+    {
+        yield 'the root of a server at the root' => ['/', '', '/'];
+        yield 'a file on a server at the root' => ['/', 'calendars/work.ics', '/calendars/work.ics'];
+        yield 'the root of a mounted server' => ['/dav/', '', '/dav'];
+        yield 'a file on a mounted server' => ['/dav/', 'calendars/work.ics', '/dav/calendars/work.ics'];
+        yield 'a name with a space in it' => ['/', 'work week.ics', '/work%20week.ics'];
+        yield 'a name that would otherwise start a query' => ['/', 'a?b.ics', '/a%3Fb.ics'];
+    }
+
     private function server(?EventEmitter $events = null): Server
     {
         return new Server(new Tree(new MemoryCollection('')), $events);

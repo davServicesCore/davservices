@@ -25,8 +25,10 @@ use RuntimeException;
  * how long a file is, or when it changed, is the ordinary case rather than the
  * odd one — and the server has to answer either way.
  */
-final class StreamFile implements IFile
+final class StreamFile implements IFile, IMember
 {
+    private ?MemoryCollection $parent = null;
+
     public function __construct(
         private readonly string $name,
         private readonly string $content = '',
@@ -47,8 +49,14 @@ final class StreamFile implements IFile
         return $this->lastModified;
     }
 
+    public function attachTo(MemoryCollection $parent): void
+    {
+        $this->parent = $parent;
+    }
+
     public function delete(): void
     {
+        $this->parent?->remove($this->name);
     }
 
     /**
