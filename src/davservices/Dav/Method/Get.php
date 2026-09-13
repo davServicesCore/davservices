@@ -19,6 +19,7 @@ use DavServices\Dav\Server;
 use DavServices\Exception\MethodNotAllowed;
 use DavServices\Exception\RangeNotSatisfiable;
 use DavServices\Http\ByteRange;
+use DavServices\Http\HttpDate;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 
@@ -182,16 +183,11 @@ final class Get
     }
 
     /**
-     * A date in the one format of RFC 9110 §5.6.7, in GMT whatever the
-     * server's own time zone is: a client compares it byte for byte with what
-     * it stored.
+     * The date of RFC 9110 §5.6.7, or nothing where the backend cannot say
+     * when the file last changed.
      */
     private static function httpDate(?DateTimeInterface $moment): ?string
     {
-        if ($moment === null) {
-            return null;
-        }
-
-        return gmdate('D, d M Y H:i:s \G\M\T', $moment->getTimestamp());
+        return $moment === null ? null : HttpDate::format($moment);
     }
 }

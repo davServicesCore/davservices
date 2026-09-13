@@ -87,6 +87,20 @@ final class PropFindResultTest extends TestCase
     }
 
     /**
+     * Under `DAV:prop` a client is owed what it named and nothing else. A
+     * contributor that offers more is not able to make this server break that:
+     * what is taken is what was wanted.
+     */
+    public function testWhatNobodyAskedForIsNotCollected(): void
+    {
+        $result = new PropFindResult('x', PropFindForm::Named, ['{DAV:}displayname']);
+
+        $result->set('{DAV:}getetag', '"abc"');
+
+        self::assertArrayNotHasKey('{DAV:}getetag', $result->byStatus()[200] ?? []);
+    }
+
+    /**
      * A property that was answered with a refusal is answered: nothing behind
      * it may quietly supply a value the client was not to see.
      */
