@@ -15,6 +15,7 @@ namespace DavServices\Dav;
 
 use DavServices\Exception\Conflict;
 use DavServices\Exception\Forbidden;
+use DavServices\Xml\Element;
 
 /**
  * A collection that can create members of a kind other than its own.
@@ -32,8 +33,12 @@ interface IExtendedCollection extends ICollection
      * @param list<string> $resourceTypes The `DAV:resourcetype` children
      *                                    as `{namespace}localname`, such
      *                                    as `{urn:ietf:params:xml:ns:caldav}calendar`
-     * @param array<string, mixed> $properties The properties of the request's
-     *                                         `DAV:set`, keyed the same way
+     * @param array<string, Element|string|null> $properties The properties of
+     *                                                       the request's
+     *                                                       `DAV:set`, keyed
+     *                                                       the same way and
+     *                                                       holding the XML
+     *                                                       they arrived as
      *
      * @throws Forbidden If the collection will not take one of that kind
      * @throws Conflict If a member of that name is already there
