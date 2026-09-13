@@ -107,7 +107,7 @@ final class Sapi
         }
 
         $this->emptyOutputBuffers();
-        $this->write($response->body());
+        $this->write($response->body(), $response->bodyLength());
     }
 
     /**
@@ -130,18 +130,31 @@ final class Sapi
 
     /**
      * @param resource|string|null $body
+     * @param int|null $length How much of a stream belongs to this answer;
+     *                         null sends all of it
      */
-    private function write(mixed $body): void
+    private function write(mixed $body, ?int $length): void
     {
         if (is_string($body)) {
-            fwrite($this->output, $body);
+            fwrite($this->output, $length === null ? $body : substr($body, 0, $length));
 
             return;
         }
 
-        if ($body !== null) {
-            stream_copy_to_stream($body, $this->output);
+        if ($body === null) {
+            return;
         }
+
+        // A 206 hands over the file's own stream and says where its part ends,
+        // so that serving a range of a recording costs no more than serving a
+        // range of a note.
+        if ($length === null) {
+            stream_copy_to_stream($body, $this->output);
+
+            return;
+        }
+
+        stream_copy_to_stream($body, $this->output, $length);
     }
 
     /**

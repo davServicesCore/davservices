@@ -342,6 +342,37 @@ final class SapiTest extends TestCase
         self::assertSame('BEGIN:VCALENDAR', $this->written());
     }
 
+    /**
+     * A `206` sends part of a file from the file's own stream. Copying the
+     * whole of it and cutting afterwards would spend the memory that streaming
+     * is there to save.
+     */
+    public function testSendsOnlyAsMuchOfAStreamAsTheAnswerClaims(): void
+    {
+        $file = fopen('php://memory', 'r+b');
+
+        self::assertIsResource($file);
+
+        fwrite($file, 'BEGIN:VCALENDAR and a great deal more');
+        fseek($file, 6);
+
+        $this->sapi()->send(new Response(206, body: $file, bodyLength: 9));
+
+        self::assertSame('VCALENDAR', $this->written());
+    }
+
+    /**
+     * How much of a body belongs to an answer means the same thing whether the
+     * body is a stream or a string. A body that said one thing and sent
+     * another would be a `Content-Length` nobody could trust.
+     */
+    public function testSendsOnlyAsMuchOfAStringAsTheAnswerClaims(): void
+    {
+        $this->sapi()->send(new Response(206, body: 'VCALENDAR and more', bodyLength: 9));
+
+        self::assertSame('VCALENDAR', $this->written());
+    }
+
     public function testWritesNothingWhereThereIsNoBody(): void
     {
         $this->sapi()->send(new Response(204));

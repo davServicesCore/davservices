@@ -12,6 +12,8 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Server` | Takes a request and answers it: the chain, the method, and what a failure becomes |
 | `Event\BeforeMethod` | Raised before the method; a listener that answers takes it over |
 | `Event\AfterMethod` | Raised with the answer; a listener may hand back another |
+| `Method\Options` | Answers `OPTIONS`: what the server is, and what it will do |
+| `Method\Get` | Answers `GET` and `HEAD`: a file, or part of one |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |
@@ -36,6 +38,21 @@ $response = $server->handle($request); // nothing thrown reaches the caller
 A server with nothing registered is still a working server: it answers `501`
 to everything, which is the truth about one that has been given no methods
 (R-ARC-02). Methods arrive as handlers, protocol extensions as listeners.
+
+## Where the server is mounted
+
+```php
+$server = new Server($tree, baseUri: '/dav/');
+
+$server->path($request);   // '/dav/calendars/alice' -> 'calendars/alice'
+```
+
+The tree knows nothing of the mount point: a node's path is its path inside the
+tree, wherever the tree hangs. A target outside the mount is a `404` rather than
+a `400` — the path is perfectly well formed, there is simply nothing of ours
+there, and `400` would tell a prober that the shape of the path was the problem.
+
+The slash matters: a server at `/dav` does not serve `/davos`.
 
 ## What a failure becomes
 

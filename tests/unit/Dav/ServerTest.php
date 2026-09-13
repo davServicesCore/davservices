@@ -422,6 +422,64 @@ final class ServerTest extends TestCase
         self::assertSame([], $this->server()->methods());
     }
 
+    /**
+     * A server mounted at the root serves the path as it arrived.
+     */
+    public function testTakesThePathAsItIsWhenItServesTheWholeSite(): void
+    {
+        self::assertSame('calendars/alice', $this->server()->path(new Request('GET', '/calendars/alice')));
+    }
+
+    /**
+     * And one mounted under a prefix serves what is below it. The prefix is
+     * where the application put the server, and the tree knows nothing of it:
+     * a node's path is its path inside the tree, wherever the tree hangs.
+     */
+    #[DataProvider('pathsUnderAPrefix')]
+    public function testTakesThePathBelowThePrefixItIsMountedAt(string $target, string $path): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), null, null, '/dav/');
+
+        self::assertSame($path, $server->path(new Request('GET', $target)));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function pathsUnderAPrefix(): iterable
+    {
+        yield 'a resource below it' => ['/dav/calendars/alice', 'calendars/alice'];
+        yield 'the mount point itself' => ['/dav', ''];
+        yield 'the mount point with its slash' => ['/dav/', ''];
+        yield 'an escape in the target' => ['/dav/work%20week.ics', 'work week.ics'];
+    }
+
+    /**
+     * A target outside the mount is not this server's to answer. It is a `404`
+     * rather than a `400`: the path is perfectly well formed, there is simply
+     * nothing of ours there — and saying `400` would tell a prober that the
+     * shape of the path was the problem.
+     */
+    #[DataProvider('pathsOutsideThePrefix')]
+    public function testATargetOutsideTheMountLeadsNowhere(string $target): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), null, null, '/dav/');
+
+        $this->expectException(NotFound::class);
+
+        $server->path(new Request('GET', $target));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function pathsOutsideThePrefix(): iterable
+    {
+        yield 'somewhere else entirely' => ['/other/thing'];
+        yield 'the root of the site' => ['/'];
+        yield 'a name that merely begins the same way' => ['/davos/thing'];
+    }
+
     public function testHandsOverTheTreeItServes(): void
     {
         $tree = new Tree(new MemoryCollection(''));

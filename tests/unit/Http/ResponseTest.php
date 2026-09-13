@@ -145,6 +145,34 @@ final class ResponseTest extends TestCase
         self::assertNull((new Response(body: 'first'))->withBody(null)->body());
     }
 
+    /**
+     * A range of a file is served from the file's own stream rather than from
+     * a copy of the part that was asked for, so the answer has to say how much
+     * of that stream belongs to it (R-HTTP-05, R-TREE-02).
+     */
+    public function testCarriesHowMuchOfItsBodyToSend(): void
+    {
+        $stream = fopen('php://memory', 'r+b');
+
+        self::assertIsResource($stream);
+
+        $response = new Response(206, body: $stream, bodyLength: 500);
+
+        self::assertSame(500, $response->bodyLength());
+    }
+
+    public function testSendsAllOfItsBodyUnlessToldOtherwise(): void
+    {
+        self::assertNull((new Response(200, body: 'everything'))->bodyLength());
+    }
+
+    public function testReplacingTheBodyReplacesHowMuchOfItToSend(): void
+    {
+        $response = (new Response(206, body: 'part', bodyLength: 2))->withBody('all of it');
+
+        self::assertNull($response->bodyLength());
+    }
+
     public function testSetsAHeader(): void
     {
         self::assertSame('"abc"', (new Response())->withHeader('ETag', '"abc"')->headers()->first('etag'));
