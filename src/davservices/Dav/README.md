@@ -34,6 +34,9 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Event\BeforeCopy`, `AfterCopy` | Raised around a copy, with both ends of it |
 | `Event\BeforeMove`, `AfterMove` | Raised around a move; a move is not a removal and a creation |
 | `Event\BeforeBind`, `AfterBind` | Raised wherever a member appears, whatever method put it there |
+| `Locks\LockInfo` | One write lock: what it reaches, and when it ends |
+| `Locks\LockScope` | Whether anybody else may hold one at the same time |
+| `Locks\LockToken` | The name a lock is held by, made of cryptographic random |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
 | `Tree` | Walks a path down to its node, and keeps what it found for the length of the request |
 | `INode` | Anything addressable by a path: a name, a modification time, and removal |

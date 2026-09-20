@@ -246,4 +246,33 @@ final class PathTest extends TestCase
     {
         self::assertInstanceOf(InvalidArgumentException::class, new MalformedPath('boom'));
     }
+    /**
+     * The slash is the whole of it. A prefix comparison without the separator
+     * between the two is the same mistake every time: a tree that forgets the
+     * wrong node, a store that deletes somebody else'''s properties, a lock
+     * that refuses writes to somebody else'''s account.
+     */
+    #[DataProvider('pathsAndPrefixes')]
+    public function testSaysWhetherAPathLiesAtOrBelowAnother(string $path, string $prefix, bool $below): void
+    {
+        self::assertSame($below, Path::isBelow($path, $prefix));
+    }
+
+    /**
+     * @return iterable<string, array{string, string, bool}>
+     */
+    public static function pathsAndPrefixes(): iterable
+    {
+        yield 'the same path' => ['calendars/alice', 'calendars/alice', true];
+        yield 'a member of it' => ['calendars/alice/work.ics', 'calendars/alice', true];
+        yield 'something deeper still' => ['calendars/alice/old/last.ics', 'calendars/alice', true];
+        yield 'a name that merely begins the same way' => ['calendars/alice2', 'calendars/alice', false];
+        yield 'a member of such a name' => ['calendars/alice2/work.ics', 'calendars/alice', false];
+        yield 'the collection above it' => ['calendars', 'calendars/alice', false];
+        yield 'somewhere else entirely' => ['addressbooks/friends.vcf', 'calendars/alice', false];
+        yield 'everything lies below the root' => ['calendars/alice', '', true];
+        yield 'the root lies below itself' => ['', '', true];
+        yield 'the root lies below nothing else' => ['', 'calendars', false];
+    }
+
 }

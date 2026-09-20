@@ -106,6 +106,25 @@ final class Path
     }
 
     /**
+     * Does a path lie at or below another one?
+     *
+     * **The slash is the whole of it.** `alice2` does not lie below `alice`,
+     * and a prefix comparison without the separator between them is the same
+     * mistake every time: a tree that forgets the wrong node, a store that
+     * deletes somebody else's properties, a lock that refuses writes to
+     * somebody else's account.
+     *
+     * The root is spelt as the empty string, and everything lies below it.
+     *
+     * @param string $path The path in question, already normalised
+     * @param string $prefix The one it may lie at or below
+     */
+    public static function isBelow(string $path, string $prefix): bool
+    {
+        return $prefix === '' || $path === $prefix || str_starts_with($path, $prefix . '/');
+    }
+
+    /**
      * Joins already decoded parts into an internal path.
      *
      * The parts are not decoded: they have been through normalise() before, and

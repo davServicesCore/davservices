@@ -17,6 +17,7 @@ plugin is using it.
 | `File\PropertyStorage` | Those properties in a directory, one file per path, as XML a person can read |
 | `File\Directory` | A directory on a disc, served as a collection |
 | `File\File` | One file on a disc: handed over as a stream, written as one |
+| `ILockBackend` | Where the write locks of RFC 4918 §6 are kept, by path |
 
 ## Using it
 
@@ -41,6 +42,14 @@ with a store in a web root.
 They know nothing of two requests writing to one path at the same moment, of
 quotas, or of what a filesystem does when it runs out of inodes. They are here
 to be read, to be copied from, and to make the examples real.
+
+## A lock storage has to outlive the process
+
+There is deliberately **no** in-memory lock backend in this library. Two
+requests to one server are two processes as often as not, and a lock only one
+of them can see is not a lock — it would look like it worked and would hold
+nothing. The file and database implementations are the real answer to
+R-LOCK-05.
 
 ## Writing another
 

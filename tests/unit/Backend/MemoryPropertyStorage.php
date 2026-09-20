@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\Backend;
 
 use DavServices\Backend\IPropertyStorageBackend;
+use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 
 /**
@@ -66,7 +67,7 @@ final class MemoryPropertyStorage implements IPropertyStorageBackend
     public function forget(string $path): void
     {
         foreach (array_keys($this->kept) as $kept) {
-            if (self::isBelow($kept, $path)) {
+            if (Path::isBelow($kept, $path)) {
                 unset($this->kept[$kept]);
             }
         }
@@ -75,7 +76,7 @@ final class MemoryPropertyStorage implements IPropertyStorageBackend
     public function copyTo(string $from, string $to): void
     {
         foreach ($this->kept as $kept => $properties) {
-            if (self::isBelow($kept, $from)) {
+            if (Path::isBelow($kept, $from)) {
                 $this->kept[$to . substr($kept, strlen($from))] = $properties;
             }
         }
@@ -84,7 +85,7 @@ final class MemoryPropertyStorage implements IPropertyStorageBackend
     public function moveTo(string $from, string $to): void
     {
         foreach ($this->kept as $kept => $properties) {
-            if (!self::isBelow($kept, $from)) {
+            if (!Path::isBelow($kept, $from)) {
                 continue;
             }
 
@@ -93,11 +94,4 @@ final class MemoryPropertyStorage implements IPropertyStorageBackend
         }
     }
 
-    /**
-     * The slash matters: `alice2` does not lie below `alice`.
-     */
-    private static function isBelow(string $path, string $prefix): bool
-    {
-        return $prefix === '' || $path === $prefix || str_starts_with($path, $prefix . '/');
-    }
 }
