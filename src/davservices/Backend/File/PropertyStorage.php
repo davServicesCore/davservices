@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Backend\File;
 
 use DavServices\Backend\IPropertyStorageBackend;
+use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 use DavServices\Xml\Reader;
 use DavServices\Xml\Writer;
@@ -130,7 +131,7 @@ final class PropertyStorage implements IPropertyStorageBackend
     public function forget(string $path): void
     {
         foreach ($this->files() as $file => $kept) {
-            if (self::isBelow($kept, $path)) {
+            if (Path::isBelow($kept, $path)) {
                 $this->remove($file);
             }
         }
@@ -143,7 +144,7 @@ final class PropertyStorage implements IPropertyStorageBackend
     public function copyTo(string $from, string $to): void
     {
         foreach ($this->files() as $file => $kept) {
-            if (self::isBelow($kept, $from)) {
+            if (Path::isBelow($kept, $from)) {
                 $this->keep($to . substr($kept, strlen($from)), $this->read($file));
             }
         }
@@ -157,7 +158,7 @@ final class PropertyStorage implements IPropertyStorageBackend
     public function moveTo(string $from, string $to): void
     {
         foreach ($this->files() as $file => $kept) {
-            if (self::isBelow($kept, $from)) {
+            if (Path::isBelow($kept, $from)) {
                 $this->keep($to . substr($kept, strlen($from)), $this->read($file));
                 $this->remove($file);
             }
@@ -289,15 +290,6 @@ final class PropertyStorage implements IPropertyStorageBackend
         // @codeCoverageIgnoreEnd
 
         return $document;
-    }
-
-    /**
-     * The slash matters: `alice2` does not lie below `alice`, and a comparison
-     * without it would delete somebody else's properties.
-     */
-    private static function isBelow(string $path, string $prefix): bool
-    {
-        return $prefix === '' || $path === $prefix || str_starts_with($path, $prefix . '/');
     }
 
     /**

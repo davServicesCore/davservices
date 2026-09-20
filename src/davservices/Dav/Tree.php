@@ -289,18 +289,8 @@ final class Tree
     {
         $path = Path::normalise($path);
 
-        if ($path === '') {
-            $this->found = [];
-
-            return;
-        }
-
-        unset($this->found[$path]);
-
         foreach (array_keys($this->found) as $cached) {
-            // The slash matters: `alice2` is not below `alice`, and a prefix
-            // comparison without it would forget the wrong node.
-            if (str_starts_with($cached, $path . '/')) {
+            if (Path::isBelow($cached, $path)) {
                 unset($this->found[$cached]);
             }
         }
