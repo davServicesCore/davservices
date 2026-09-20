@@ -409,11 +409,23 @@ final class MkColTest extends TestCase
         self::assertSame(400, $this->mkCol($root, '/calendars', $this->body('<D:mkcol xmlns:D="DAV:"/>'))->status());
     }
 
-    public function testRefusesABodyThatIsNotWellFormed(): void
+    /**
+     * RFC 4918 §9.3 again, and the one litmus asks about by name
+     * (`mkcol_with_body`): a body this server cannot read **at all** is an
+     * entity of a type it does not take. A `400` would say the request was
+     * malformed, which is true and not what the specification asks for here.
+     */
+    public function testRefusesABodyItCannotReadAtAll(): void
     {
         $root = $this->tree();
 
-        self::assertSame(400, $this->mkCol($root, '/calendars', $this->body('<D:mkcol'))->status());
+        self::assertSame(415, $this->mkCol($root, '/calendars', $this->body('<D:mkcol'))->status());
+        self::assertFalse($root->hasChild('calendars'));
+    }
+
+    public function testRefusesABodyThatIsNoXmlAtAll(): void
+    {
+        self::assertSame(415, $this->mkCol($this->tree(), '/calendars', $this->body('nothing like a document'))->status());
     }
 
     /**

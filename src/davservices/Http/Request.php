@@ -55,6 +55,15 @@ final class Request
             throw new MalformedRequest('A request must name a target.');
         }
 
+        // RFC 9112 §3.2: a request-target is an absolute path and a query, and
+        // never a fragment — a client keeps that to itself. One that arrives
+        // all the same is refused rather than cut short, because cutting it
+        // means acting on a resource the client did not name: a `DELETE` of
+        // `/calendars/#anything` would otherwise remove the collection.
+        if (str_contains($target, '#')) {
+            throw new MalformedRequest('A request target carries no fragment.');
+        }
+
         $this->headers = $headers ?? new Headers();
         $this->body = $body ?? new Body();
     }
@@ -140,9 +149,7 @@ final class Request
      */
     private function split(): array
     {
-        $fragment = strpos($this->target, '#');
-        $target = $fragment === false ? $this->target : substr($this->target, 0, $fragment);
-
+        $target = $this->target;
         $query = strpos($target, '?');
 
         if ($query === false) {

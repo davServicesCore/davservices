@@ -81,16 +81,29 @@ final class RequestTest extends TestCase
     }
 
     /**
-     * A fragment never reaches a server — RFC 9110 §7.1 keeps it on the
-     * client — but a request built by hand may carry one, and it must not
-     * become part of a resource name.
+     * RFC 9112 §3.2: a request-target is an absolute path and a query, and
+     * never a fragment — a client keeps that to itself.
+     *
+     * One that arrives all the same is refused rather than cut short. Cutting
+     * it would mean acting on a resource the client did not name, and the
+     * worst of those is a `DELETE`: `/calendars/#anything` would take the
+     * whole collection with it. Litmus calls that out by name, and it is
+     * right to.
      */
-    public function testDropsAFragment(): void
+    public function testRefusesATargetThatCarriesAFragment(): void
     {
-        $request = new Request('GET', '/file.txt?a=b#section');
+        $this->expectException(MalformedRequest::class);
 
-        self::assertSame('file.txt', $request->path());
-        self::assertSame('a=b', $request->query());
+        new Request('GET', '/file.txt?a=b#section');
+    }
+
+    /**
+     * A name may hold one all the same, where the client encoded it: `%23` is
+     * a character in a name and not the start of a fragment.
+     */
+    public function testTakesAnEncodedHashAsPartOfAName(): void
+    {
+        self::assertSame('a#b.ics', (new Request('GET', '/a%23b.ics'))->path());
     }
 
     /**
