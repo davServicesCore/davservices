@@ -1,46 +1,65 @@
-# Minimal DAV server
+# A minimal WebDAV server
 
-The smallest useful davServices setup: a filesystem-backed DAV server with
-WebDAV, CalDAV, and CardDAV endpoints and no access control.
+Everything an application has to do, in one file: say where the data goes,
+register the methods it means to answer, register the plugins it wants, and
+hand the request over. [`public/index.php`](public/index.php) is about sixty
+lines of that, and the rest of this page is about running it.
 
-The server exposes these ready-to-use scenarios:
+## Running it
 
-| Protocol | Collection | Typical client URL |
-|---|---|---|
-| WebDAV | Files and folders | `http://127.0.0.1:8080/files/` |
-| CalDAV | Calendars and iCalendar objects | `http://127.0.0.1:8080/calendars/` |
-| CardDAV | Address books and vCard objects | `http://127.0.0.1:8080/addressbooks/` |
-
-### CalDAV example
-
-Register the CalDAV plugin with a calendar-capable backend, then configure a
-calendar client to use the calendar collection URL:
-
-```text
-http://127.0.0.1:8080/calendars/
+```
+php -S 127.0.0.1:8000 examples/minimal-webdav/public/index.php
 ```
 
-The client uses `MKCALENDAR`, `PROPFIND`, `REPORT`, `PUT`, and `DELETE` to
-create calendars, discover their properties, query events, and synchronise
-iCalendar objects.
+The data goes under `examples/minimal-webdav/var/` — the files themselves in
+`var/files`, the properties a filesystem has nowhere to put in
+`var/properties`. Both are made on the first request and neither is in version
+control.
 
-### CardDAV example
+Then point something at `http://127.0.0.1:8000/`:
 
-Register the CardDAV plugin with an address-book-capable backend, then
-configure a contacts client to use the address-book collection URL:
-
-```text
-http://127.0.0.1:8080/addressbooks/
+```
+curl -X MKCOL   http://127.0.0.1:8000/calendars
+curl -T work.ics http://127.0.0.1:8000/calendars/work.ics
+curl -X PROPFIND -H 'Depth: 1' http://127.0.0.1:8000/calendars
 ```
 
-The client uses extended `MKCOL`, `PROPFIND`, `REPORT`, `PUT`, and `DELETE` to
-create address books, discover their properties, search contacts, and
-synchronise vCard objects.
+macOS mounts it with `Finder → Go → Connect to Server`, and Windows with
+`net use * http://127.0.0.1:8000/`.
 
-```bash
-php -S 127.0.0.1:8080 -t .
+## What it is not
+
+**It has no authentication and no access control.** Anyone who can reach the
+port can read and write everything, which is what keeps it short enough to read
+in one sitting — and what makes it a thing to run on your own machine rather
+than on a network.
+
+The directory browser is deliberately not registered. It is a development aid
+(R-DAV-10) that publishes the shape of everything behind it; where it is wanted
+while building something, two lines add it:
+
+```php
+$browser = Browser::forDevelopment($server);
+$server->events()->on(BeforeMethod::class, $browser(...));
 ```
 
-Then configure a WebDAV, CalDAV, or CardDAV client with the relevant endpoint
-from the table above.
+The filesystem backends are reference backends (R-BE-05) and are not built for
+production either: they know nothing of two requests writing to one path at the
+same moment, or of quotas.
 
+## Litmus
+
+[Litmus](https://github.com/tolsen/litmus) is the interoperability suite for
+WebDAV servers, and this example is what the project runs it against. The
+`basic`, `copymove` and `props` sets are run on every change in continuous
+integration, against this very file (R-QS-04):
+
+```
+TESTS="basic copymove props" litmus http://127.0.0.1:8000/
+```
+
+`props` covers what a server does with properties, `copymove` the two methods
+that are about two paths at once, and `basic` the rest of RFC 4918. The
+remaining sets belong to the parts of the protocol that are still being built:
+`locks` needs `LOCK` and `UNLOCK` (P3), and `http` covers conditional requests
+against a running server.

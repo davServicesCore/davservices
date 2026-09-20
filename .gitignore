@@ -30,5 +30,9 @@ composer.lock
 # The PDFs next to it are committed; the plain-text copies are not.
 /docs/referenzen/rfc/
 
+# The example server keeps what somebody stored in it while trying the
+# library out. None of it belongs to the project.
+/examples/minimal-webdav/var/
+
 # --- Local working notes ---------------------------------------------------
 /.TODO/
