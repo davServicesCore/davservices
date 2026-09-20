@@ -206,3 +206,59 @@ jobs:
 
       - name: Load every class through autoload.php only
         run: php tests/integration/standalone-autoloader.php
+
+  # ---------------------------------------------------------------------
+  # What another implementation's test suite makes of ours (R-QS-04).
+  #
+  # Litmus is the interoperability suite for WebDAV, written against the
+  # RFC rather than against this library, which is the whole point: our own
+  # tests can only find what we thought to ask about.
+  #
+  # It runs against examples/minimal-webdav, so the example is held to
+  # working as well. The server is started and stopped inside one step
+  # because a process backgrounded in another may not survive the step
+  # boundary.
+  # ---------------------------------------------------------------------
+  litmus:
+    name: Litmus
+    runs-on: ubuntu-latest
+    needs: gates
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - name: Install litmus
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes litmus
+
+      # `basic`, `copymove` and `props` are the sets for the part of the
+      # protocol that is built. `locks` needs LOCK and UNLOCK, which are P3.
+      - name: Run litmus against the example
+        env:
+          TESTS: basic copymove props
+        run: |
+          php -S 127.0.0.1:8000 examples/minimal-webdav/public/index.php > server.log 2>&1 &
+          server=$!
+
+          for _ in $(seq 1 40); do
+            curl --fail --silent --output /dev/null http://127.0.0.1:8000/ && break
+            sleep 0.25
+          done
+
+          set +e
+          litmus http://127.0.0.1:8000/
+          result=$?
+          set -e
+
+          kill "$server" 2>/dev/null || true
+
+          echo '--- what the server said ---'
+          cat server.log
+
+          exit $result

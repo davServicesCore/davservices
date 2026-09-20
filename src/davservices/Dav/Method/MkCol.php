@@ -121,9 +121,18 @@ final class MkCol
             return [self::PLAIN, []];
         }
 
-        $document = $this->server->reader()->parse($body->contents());
+        // RFC 4918 §9.3: **a body the server does not understand is a `415`**,
+        // and that covers one it cannot read at all. A document that is not
+        // well formed, or carries a document type declaration, is refused by
+        // the reader as a `400`; for this method it is an entity of a type
+        // this server does not take, which is what litmus's `mkcol_with_body`
+        // asks about.
+        try {
+            $document = $this->server->reader()->parse($body->contents());
+        } catch (BadRequest $unreadable) {
+            throw new UnsupportedMediaType('This body is not an extended MKCOL.', null, $unreadable);
+        }
 
-        // RFC 4918 §9.3: a body the server does not understand is a `415`, and
         // RFC 5689 §5.1 reserves every other root element for later use. A
         // server that went ahead and made a plain collection would be
         // answering a request it never read.
