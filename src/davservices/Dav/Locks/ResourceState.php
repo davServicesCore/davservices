@@ -23,10 +23,14 @@ use DavServices\Http\IfCondition;
  * and what its entity tag is. One condition is held against this, and the
  * answer is the whole of what the condition is worth.
  *
- * **A tag is compared strongly.** RFC 9110 §8.8.3.2 keeps weak comparison for
- * "you already have a good enough copy"; `If` guards a write, and a client
- * about to overwrite a resource has to hold the exact bytes it believes it
- * holds.
+ * **A tag is compared weakly, and that is not a shortcut.** RFC 9110 §8.8.3.3
+ * names a comparison for each HTTP header; WebDAV's `If` is in no such table,
+ * and the question it asks decides it. `If` asks "is this resource still in
+ * the state I saw", and a weak tag answers that question at exactly the
+ * granularity the server has. A byte range asks something a weak tag cannot
+ * answer — whether two responses may be spliced — which is why the file
+ * backend marks its own tags weak, and why comparing them strongly here would
+ * mean **no** conditional write could ever succeed against this server.
  *
  * **A resource with no entity tag satisfies no condition about one.** Not
  * every backend has a tag for every node, and a comparison against nothing is
@@ -66,6 +70,6 @@ final class ResourceState
 
     private function isTagged(ETag $etag): bool
     {
-        return $this->etag !== null && $this->etag->matchesStrongly($etag);
+        return $this->etag !== null && $this->etag->matchesWeakly($etag);
     }
 }

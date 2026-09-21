@@ -26,10 +26,14 @@ use PHPUnit\Framework\TestCase;
  * held on it, and what its entity tag is. Those are the two things an `If`
  * header asks about, and this is what one condition is held against.
  *
- * **A condition about a tag is compared strongly.** RFC 9110 §8.8.3.2 keeps
- * weak comparison for "you already have a good enough copy"; `If` guards a
- * write, and a client about to overwrite a resource has to hold the exact
- * bytes it believes it holds.
+ * **A condition about a tag is compared weakly.** RFC 9110 §8.8.3.3 names a
+ * comparison for each HTTP header, and WebDAV's `If` is in no such table — so
+ * the question it asks decides it. `If` asks "is this still the state I saw",
+ * which is what a weak tag answers at the granularity a server has; a byte
+ * range asks whether two responses may be spliced, which it cannot answer.
+ * That is why the file backend marks its own tags weak, and why comparing
+ * them strongly here would make every conditional write against such a server
+ * impossible.
  *
  * **A resource with no entity tag satisfies no condition about one.** Not
  * every backend has a tag for every node, and a comparison against nothing is
@@ -91,12 +95,33 @@ final class ResourceStateTest extends TestCase
     }
 
     /**
-     * RFC 9110 §8.8.3.2: `If` compares strongly, because it guards a write.
-     * A weak tag says "equivalent", and equivalent is not the same bytes.
+     * **A weak tag matches, and that is not a shortcut.** RFC 9110 §8.8.3.3
+     * names a comparison for each HTTP header; WebDAV's `If` is in no such
+     * table, and the question it asks decides it.
+     *
+     * `If` asks "is this resource still in the state I saw", which is exactly
+     * what a weak tag answers at the granularity the server has. A byte range
+     * asks something else — whether two responses may be spliced — and that
+     * is why the file backend marks its tags weak. Comparing them strongly
+     * here would mean **no conditional write could ever succeed** against a
+     * server whose tags are weak, which is every server backed by a
+     * filesystem.
      */
-    public function testAWeakTagIsNotAStrongMatch(): void
+    public function testAWeakTagMatchesTheTagItNames(): void
     {
-        self::assertFalse($this->state()->satisfies($this->onETag('W/"abc"')));
+        self::assertTrue($this->state()->satisfies($this->onETag('W/"abc"')));
+    }
+
+    /**
+     * And a server whose own tag is weak is answered by a client echoing it
+     * back, which is the whole of what `litmus cond_put` does.
+     */
+    public function testATagThisServerHandedOutWeakComesBackAndMatches(): void
+    {
+        $state = new ResourceState([], ETag::parse('W/"18f3c-2a"'));
+
+        self::assertTrue($state->satisfies($this->onETag('W/"18f3c-2a"')));
+        self::assertFalse($state->satisfies($this->onETag('W/"18f3c-2b"')));
     }
 
     /**
