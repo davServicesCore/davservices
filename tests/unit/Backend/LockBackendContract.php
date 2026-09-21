@@ -84,6 +84,67 @@ abstract class LockBackendContract extends TestCase
     }
 
     /**
+     * **Several levels up, not one.** A storage that walks the path upwards to
+     * find the deep locks above it has to build every step of that walk right,
+     * and a tree one level deep cannot tell a correct walk from a broken one.
+     */
+    public function testADeepLockSeveralLevelsUpStillHoldsAPath(): void
+    {
+        $backend = $this->backend();
+        $lock = $this->lock('calendars/alice/old', deep: true);
+
+        $backend->set($lock);
+
+        self::assertSame(
+            [$lock->token()],
+            $this->tokensOf($backend->locksOn('calendars/alice/old/last-year.ics', $this->now())),
+        );
+    }
+
+    /**
+     * The root of the tree is spelt as nothing at all, and a deep lock taken
+     * there reaches everything there is.
+     */
+    public function testADeepLockOnTheRootHoldsEveryPath(): void
+    {
+        $backend = $this->backend();
+        $lock = $this->lock('', deep: true);
+
+        $backend->set($lock);
+
+        self::assertSame([$lock->token()], $this->tokensOf($backend->locksOn('calendars/work.ics', $this->now())));
+    }
+
+    /**
+     * And the root can be asked about like any other path — a storage that
+     * treats it as a special case has to say what it finds there too.
+     */
+    public function testHandsBackALockTakenOnTheRootItself(): void
+    {
+        $backend = $this->backend();
+        $lock = $this->lock('');
+
+        $backend->set($lock);
+
+        self::assertSame([$lock->token()], $this->tokensOf($backend->locksOn('', $this->now())));
+    }
+
+    /**
+     * A deep lock holds its own root as well, and it is **one** lock there:
+     * a storage that asks two questions and adds the answers together would
+     * report it twice, and a client counting holders would be told wrongly.
+     */
+    public function testADeepLockOnAPathIsHandedBackOnceForThatPath(): void
+    {
+        $backend = $this->backend();
+        $lock = $this->lock('calendars', deep: true);
+
+        $backend->set($lock);
+
+        self::assertSame([$lock->token()], $this->tokensOf($backend->locksOn('calendars', $this->now())));
+    }
+
+    /**
      * The slash matters here as everywhere: a lock on `alice` does not hold
      * `alice2`, and a storage that thought so would refuse writes to somebody
      * else's account.
@@ -172,6 +233,19 @@ abstract class LockBackendContract extends TestCase
         $backend->set($this->lock('calendars/work.ics', until: '2026-09-20 11:00:00'));
 
         self::assertSame([], $backend->locksOn('calendars/work.ics', $this->now()));
+    }
+
+    /**
+     * The same of the other question, and in a test of its own: a storage that
+     * clears out what has run out does it while answering, so asking one way
+     * first would tidy up for the other and prove nothing about it.
+     */
+    public function testWhatLiesBelowHoldsNoLockThatHasRunOut(): void
+    {
+        $backend = $this->backend();
+
+        $backend->set($this->lock('calendars/work.ics', until: '2026-09-20 11:00:00'));
+
         self::assertSame([], $backend->locksBelow('calendars', $this->now()));
     }
 
@@ -256,6 +330,20 @@ abstract class LockBackendContract extends TestCase
             null,
             $until === null ? null : new DateTimeImmutable($until),
         );
+    }
+
+    /**
+     * The one lock that was expected, said out loud: a test that reached for
+     * `[0]` and found nothing would fail somewhere further down, on a line
+     * that has nothing to do with what went wrong.
+     *
+     * @param list<LockInfo> $locks
+     */
+    protected function theOne(array $locks): LockInfo
+    {
+        self::assertCount(1, $locks);
+
+        return $locks[0] ?? self::fail('There is no lock to look at.');
     }
 
     protected function now(): DateTimeImmutable

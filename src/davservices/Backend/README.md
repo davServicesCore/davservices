@@ -18,6 +18,8 @@ plugin is using it.
 | `File\Directory` | A directory on a disc, served as a collection |
 | `File\File` | One file on a disc: handed over as a stream, written as one |
 | `ILockBackend` | Where the write locks of RFC 4918 §6 are kept, by path |
+| `File\LockBackend` | Those locks in a directory, one file per lock |
+| `Pdo\LockBackend` | Those locks in a table, for a server that is more than one machine |
 
 ## Using it
 
@@ -35,8 +37,41 @@ $properties = new DeadProperties(new PropertyStorage('/var/lib/davservices/prope
 $properties->registerOn($server->events());
 ```
 
-Both directories have to exist. Creating one on a guess is how a typo ends up
-with a store in a web root.
+and somewhere for the write locks, which is a store of its own:
+
+```php
+use DavServices\Backend\File\LockBackend as FileLocks;
+use DavServices\Backend\Pdo\LockBackend as PdoLocks;
+
+$locks = new FileLocks('/var/lib/davservices/locks');
+```
+
+or, where more than one machine answers requests:
+
+```php
+$locks = new PdoLocks(new PDO('mysql:host=db;dbname=dav', $user, $password));
+```
+
+Both are called `LockBackend`, one per kind of storage, so an application that
+mentions both aliases them as above. Nothing in the library asks for `$locks`
+yet — `LOCK` and `UNLOCK` are the next piece of work, and a server built today
+still answers that it is not Class 2.
+
+Every directory named here has to exist. Creating one on a guess is how a typo
+ends up with a store in a web root.
+
+**The table is not made for you.** `Pdo/locks.sql` beside the class is the
+statement to run once. This library has no migration tool and no business
+deciding when your schema changes; the tests of that class run that same file,
+so it cannot quietly stop matching the queries. `ext-pdo` is a `suggest` rather
+than a `require`, because making everybody install an extension for a backend
+they may not use is not this library's decision to take.
+
+The connection has to report its errors as exceptions, and is **asked** for
+that rather than switched over: it belongs to the application, and every other
+query made on it would change with the setting. PHP 8 hands out connections in
+that mode already, so this is a wrong setting being named at construction
+rather than a step anybody has to take.
 
 **These are reference backends (R-BE-05) and are not to be run in production.**
 They know nothing of two requests writing to one path at the same moment, of
@@ -51,12 +86,28 @@ of them can see is not a lock — it would look like it worked and would hold
 nothing. The file and database implementations are the real answer to
 R-LOCK-05.
 
+## What neither backend promises
+
+Asking whether a path is free and then taking the lock are two steps, and
+neither implementation makes them one: two requests can both find a path free
+and both take an exclusive lock on it. This is a property of the interface, not
+an oversight of the implementations — see `ILockBackend`, which says what a
+deployment that cannot live with it has to do instead.
+
+## What a damaged store means
+
+The two kinds of storage answer that differently, and on purpose. The property
+storage skips a file it cannot read and carries on; the lock storage refuses
+the request. A property that goes missing is an inconvenience — a lock that
+goes missing lets a write through that somebody was told could not happen.
+
 ## Writing another
 
-Implement `IPropertyStorageBackend` and run the contract tests against it:
-`tests/unit/Backend/PropertyStorageContract.php` is written once and inherited
-by every implementation, because a backend that is exchangeable is only
-exchangeable if they all behave the same.
+Implement the interface and run the contract tests against it:
+`tests/unit/Backend/PropertyStorageContract.php` and
+`tests/unit/Backend/LockBackendContract.php` are each written once and
+inherited by every implementation, because a backend that is exchangeable is
+only exchangeable if they all behave the same.
 
 Two rules in that contract are easy to get wrong. A value comes back **exactly**
 as it went in, foreign namespaces and all — a storage that flattens XML to text
@@ -64,3 +115,8 @@ loses what it was trusted with, and the client is never told. And a path that
 merely begins the same way is a different path: `alice2` does not lie below
 `alice`, and a prefix comparison without the slash deletes somebody else's
 properties.
+
+The lock contract has a third: a lock that has run out is not a lock
+(R-LOCK-03), and it is not handed back whatever is still in the store. Where a
+backend can, it clears such a lock away while it is there anyway — nothing else
+in this library goes looking for them.
