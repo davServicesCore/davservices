@@ -17,6 +17,7 @@ use Closure;
 use DavServices\Dav\Event\AfterMethod;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\ExceptionRaised;
+use DavServices\Dav\Precondition\RequestConditions;
 use DavServices\Event\EventEmitter;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\IHttpFailure;
@@ -80,6 +81,14 @@ final class Server
      *                        node's path is its path inside the tree, wherever
      *                        the tree hangs.
      */
+    /**
+     * What holds a request to the conditions it set itself. Core WebDAV
+     * rather than a plugin: a method nobody registers is refused honestly
+     * with `501`, but a condition nobody evaluates is one this server would
+     * silently pretend to have honoured.
+     */
+    private readonly RequestConditions $conditions;
+
     public function __construct(
         private readonly Tree $tree,
         ?EventEmitter $events = null,
@@ -91,6 +100,7 @@ final class Server
         $this->writer = $writer ?? new Writer();
         $this->reader = $reader ?? new Reader();
         $this->base = Path::normalise($baseUri);
+        $this->conditions = new RequestConditions($this);
     }
 
     /**
@@ -300,6 +310,12 @@ final class Server
      */
     private function answer(Request $request): Response
     {
+        // Before anything acts on the request, because a condition the client
+        // put on it is about the request rather than about any one write
+        // inside it — and because this way the order does not depend on which
+        // plugins happen to be registered.
+        $this->conditions->refuseWhatDoesNotHold($request);
+
         $before = $this->events->emit(new BeforeMethod($request));
         $response = $before->response() ?? $this->invoke($request);
 

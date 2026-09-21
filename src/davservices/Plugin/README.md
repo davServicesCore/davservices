@@ -75,11 +75,17 @@ says `DAV: 1`, answers `501` to `LOCK` and `UNLOCK`, lets every write through,
 and answers `404` for the two lock properties rather than an empty element
 that would claim nobody holds the resource.
 
-One thing that plain server does **not** do is evaluate an `If` header of
-entity tags alone, because the evaluation was built here with the locking.
-RFC 4918 §10.4 is core WebDAV and needs no locking for that half, so this is
-a gap rather than a decision, and it is written down in that test and on the
-way to being moved into the core.
+**The `If` header is evaluated by the core, not by this plugin.** RFC 4918
+§10.4 is core WebDAV: a header of entity tags alone needs no lock storage to
+check, and a plain server that ignored one would drop a guard its client took
+pains to set. So the evaluation lives in `Dav\Precondition\RequestConditions`,
+and all this plugin contributes is the answer to one question —
+`Dav\Event\StateTokensRequested`: which tokens is this path in the state of?
+
+The difference from a method is what decides that. A method nobody registers
+is one the server refuses honestly with `501`. A condition nobody evaluates is
+one the server silently pretends to have honoured. The first may be a plugin;
+the second may not.
 
 ## The browser is not a web interface
 

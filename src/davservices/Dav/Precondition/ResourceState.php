@@ -11,7 +11,7 @@
 
 declare(strict_types=1);
 
-namespace DavServices\Dav\Locks;
+namespace DavServices\Dav\Precondition;
 
 use DavServices\Http\ETag;
 use DavServices\Http\IfCondition;

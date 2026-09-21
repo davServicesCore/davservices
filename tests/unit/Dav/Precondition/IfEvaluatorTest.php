@@ -11,10 +11,10 @@
 
 declare(strict_types=1);
 
-namespace DavServices\Tests\Unit\Dav\Locks;
+namespace DavServices\Tests\Unit\Dav\Precondition;
 
-use DavServices\Dav\Locks\IfEvaluator;
-use DavServices\Dav\Locks\ResourceState;
+use DavServices\Dav\Precondition\IfEvaluator;
+use DavServices\Dav\Precondition\ResourceState;
 use DavServices\Http\ETag;
 use DavServices\Http\IfHeader;
 use PHPUnit\Framework\Attributes\CoversClass;
