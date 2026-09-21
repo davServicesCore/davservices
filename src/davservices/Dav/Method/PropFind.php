@@ -149,42 +149,23 @@ final class PropFind
             throw new BadRequest('The body of a PROPFIND is a DAV:propfind.');
         }
 
-        $named = self::childNamed($document, '{DAV:}prop');
+        $named = $document->child('{DAV:}prop');
 
         if ($named !== null) {
-            return [PropFindForm::Named, self::namesOf($named)];
+            return [PropFindForm::Named, $named->childNames()];
         }
 
-        if (self::childNamed($document, '{DAV:}propname') !== null) {
+        if ($document->child('{DAV:}propname') !== null) {
             return [PropFindForm::NamesOnly, []];
         }
 
-        if (self::childNamed($document, '{DAV:}allprop') === null) {
+        if ($document->child('{DAV:}allprop') === null) {
             throw new BadRequest('This PROPFIND asks for nothing.');
         }
 
-        $include = self::childNamed($document, '{DAV:}include');
+        $include = $document->child('{DAV:}include');
 
-        return [PropFindForm::Everything, $include === null ? [] : self::namesOf($include)];
-    }
-
-    private static function childNamed(Element $element, string $name): ?Element
-    {
-        foreach ($element->children() as $child) {
-            if ($child->name() === $name) {
-                return $child;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function namesOf(Element $element): array
-    {
-        return array_map(static fn (Element $child): string => $child->name(), $element->children());
+        return [PropFindForm::Everything, $include === null ? [] : $include->childNames()];
     }
 
     /**
