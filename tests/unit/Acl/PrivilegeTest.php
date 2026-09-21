@@ -50,7 +50,80 @@ final class PrivilegeTest extends TestCase
 
     public function testIsKnownByItsName(): void
     {
-        self::assertSame('{DAV:}bind', (new Privilege('{DAV:}bind'))->name());
+        self::assertSame('{DAV:}bind', $this->leaf('{DAV:}bind')->name());
+    }
+
+    /**
+     * **RFC 3744 §5.3 requires a description, and requires it to say what
+     * language it is in.** `DAV:supported-privilege-set` is read by people —
+     * it is how an administrator finds out what this server can be asked to
+     * grant — so the text belongs to the privilege rather than to whoever
+     * happens to write the XML: an extension that brings a privilege brings
+     * the sentence that explains it, or it brings a hole in a required
+     * element.
+     */
+    public function testCarriesTheDescriptionAPersonReads(): void
+    {
+        $privilege = new Privilege('{DAV:}bind', 'create a member here');
+
+        self::assertSame('create a member here', $privilege->description());
+        self::assertSame('en', $privilege->language());
+    }
+
+    /**
+     * And where somebody describes it in another language, it says so. The
+     * attribute is required by the DTD, so a server that always wrote `en`
+     * would be labelling German text as English.
+     */
+    public function testSaysWhichLanguageTheDescriptionIsIn(): void
+    {
+        $privilege = new Privilege('{DAV:}bind', 'ein Mitglied hier anlegen', language: 'de');
+
+        self::assertSame('de', $privilege->language());
+    }
+
+    /**
+     * RFC 3744 §5.3: a privilege may be **abstract**, meaning it cannot be
+     * put in an access control entry — only the ones it aggregates can. That
+     * is a property of the privilege and not of any report about it.
+     */
+    public function testSaysWhetherItMayBePutInAnEntry(): void
+    {
+        self::assertFalse($this->leaf('{DAV:}bind')->isAbstract());
+        self::assertTrue((new Privilege('{DAV:}bind', 'anything', isAbstract: true))->isAbstract());
+    }
+
+    /**
+     * **Nothing in the standard tree is abstract, and that is a decision.**
+     * `DAV:write` is a privilege RFC 3744 §3.2 defines in its own right, and
+     * an administrator who wants to grant it should be able to write it down
+     * rather than list its four. The flag is there for a deployment or an
+     * extension that needs it.
+     */
+    public function testNoStandardPrivilegeIsAbstract(): void
+    {
+        foreach (Privilege::standard()->flattened() as $name) {
+            self::assertFalse(
+                Privilege::standard()->find($name)?->isAbstract() ?? true,
+                sprintf('%s may be granted directly', $name),
+            );
+        }
+    }
+
+    /**
+     * Every privilege of the standard tree says what it is for. A required
+     * element with nothing in it would be a document a strict client is
+     * right to refuse.
+     */
+    public function testEveryStandardPrivilegeSaysWhatItIsFor(): void
+    {
+        foreach (Privilege::standard()->flattened() as $name) {
+            self::assertNotSame(
+                '',
+                Privilege::standard()->find($name)?->description() ?? '',
+                sprintf('%s is described', $name),
+            );
+        }
     }
 
     /**
@@ -59,7 +132,7 @@ final class PrivilegeTest extends TestCase
      */
     public function testAPrivilegeOfItsOwnReachesOnlyItself(): void
     {
-        self::assertSame(['{DAV:}bind'], (new Privilege('{DAV:}bind'))->flattened());
+        self::assertSame(['{DAV:}bind'], $this->leaf('{DAV:}bind')->flattened());
     }
 
     public function testKnowsWhatItAggregatesDirectly(): void
@@ -161,7 +234,7 @@ final class PrivilegeTest extends TestCase
      */
     public function testTakesAPrivilegeAnExtensionBringsWithIt(): void
     {
-        $tree = Privilege::standard()->with('{DAV:}read', new Privilege(self::FREE_BUSY));
+        $tree = Privilege::standard()->with('{DAV:}read', $this->leaf(self::FREE_BUSY));
 
         self::assertTrue($tree->contains(self::FREE_BUSY));
         self::assertTrue($tree->find('{DAV:}read')?->contains(self::FREE_BUSY) ?? false);
@@ -175,7 +248,7 @@ final class PrivilegeTest extends TestCase
      */
     public function testKeepsWhatTheParentAlreadyAggregated(): void
     {
-        $tree = Privilege::standard()->with('{DAV:}write', new Privilege(self::FREE_BUSY));
+        $tree = Privilege::standard()->with('{DAV:}write', $this->leaf(self::FREE_BUSY));
         $write = $tree->find('{DAV:}write');
 
         self::assertNotNull($write);
@@ -192,8 +265,8 @@ final class PrivilegeTest extends TestCase
     public function testTakesOnePrivilegeAfterAnother(): void
     {
         $tree = Privilege::standard()
-            ->with('{DAV:}read', new Privilege(self::FREE_BUSY))
-            ->with('{DAV:}read', new Privilege('{https://dav.services/test}read-something'));
+            ->with('{DAV:}read', $this->leaf(self::FREE_BUSY))
+            ->with('{DAV:}read', $this->leaf('{https://dav.services/test}read-something'));
 
         self::assertTrue($tree->contains(self::FREE_BUSY));
         self::assertTrue($tree->contains('{https://dav.services/test}read-something'));
@@ -207,7 +280,7 @@ final class PrivilegeTest extends TestCase
     {
         $tree = Privilege::standard();
 
-        $tree->with('{DAV:}read', new Privilege(self::FREE_BUSY));
+        $tree->with('{DAV:}read', $this->leaf(self::FREE_BUSY));
 
         self::assertFalse($tree->contains(self::FREE_BUSY));
     }
@@ -222,7 +295,7 @@ final class PrivilegeTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
 
-        Privilege::standard()->with('{DAV:}write-everything', new Privilege(self::FREE_BUSY));
+        Privilege::standard()->with('{DAV:}write-everything', $this->leaf(self::FREE_BUSY));
     }
 
     /**
@@ -239,6 +312,15 @@ final class PrivilegeTest extends TestCase
             array_search('{DAV:}write-content', $flattened, true),
             array_search('{DAV:}write', $flattened, true),
         );
+    }
+
+    /**
+     * One privilege of its own, for the tests that care about the tree
+     * rather than about the words.
+     */
+    private function leaf(string $name): Privilege
+    {
+        return new Privilege($name, 'whatever this one allows');
     }
 
     /**

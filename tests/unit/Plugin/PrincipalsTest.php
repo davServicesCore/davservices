@@ -17,6 +17,7 @@ use DavServices\Acl\Principal;
 use DavServices\Acl\PrincipalCollection;
 use DavServices\Dav\Acl\PrincipalInfo;
 use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Method\Options;
@@ -284,9 +285,42 @@ final class PrincipalsTest extends TestCase
         self::assertSame('{DAV:}href', ($answer->children()[0] ?? null)?->name());
     }
 
+    /**
+     * The plugin on a server of its own, **registered** — because what it
+     * knows about who is signed in it now says on the one event everything
+     * asks, and a plugin that was never switched on has said nothing.
+     */
+    /**
+     * The one question about identity, asked of this plugin directly: what
+     * the application knows is what it answers, and where the application
+     * knows nothing it says nothing — which leaves the asker
+     * unauthenticated rather than somebody.
+     */
+    public function testNamesWhoIsThereWhenTheApplicationKnows(): void
+    {
+        $event = new CurrentPrincipalRequested(new Request('PROPFIND', '/calendars/work.ics'));
+
+        $this->plugin(static fn (): string => 'principals/alice')->nameWhoIsThere($event);
+
+        self::assertSame('principals/alice', $event->principal());
+    }
+
+    public function testNamesNobodyWhereTheApplicationKnowsNobody(): void
+    {
+        $event = new CurrentPrincipalRequested(new Request('PROPFIND', '/calendars/work.ics'));
+
+        $this->plugin()->nameWhoIsThere($event);
+
+        self::assertNull($event->principal());
+    }
+
     private function plugin(?callable $whoIsThere = null): Principals
     {
-        return new Principals(new Server(new Tree($this->tree())), 'principals', $whoIsThere);
+        $plugin = new Principals(new Server(new Tree($this->tree())), 'principals', $whoIsThere);
+
+        $plugin->register();
+
+        return $plugin;
     }
 
     private function tree(): MemoryCollection

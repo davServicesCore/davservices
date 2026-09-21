@@ -16,6 +16,7 @@ namespace DavServices\Plugin;
 use Closure;
 use DavServices\Acl\Principal;
 use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Server;
@@ -100,6 +101,28 @@ final class Principals
         $events->on(BeforeMethod::class, $this->rememberTheRequest(...));
         $events->on(OptionsRequested::class, $this->announce(...));
         $events->on(PropertiesRequested::class, $this->describe(...));
+
+        // What the application knows about who is signed in is answered on
+        // the one event everything asks, rather than kept here: more than one
+        // part of this library needs it, and two ideas of who somebody is
+        // would be two answers that can disagree.
+        $events->on(CurrentPrincipalRequested::class, $this->nameWhoIsThere(...));
+    }
+
+    /**
+     * Answers the one question about identity with whatever the application
+     * was given to answer it with.
+     *
+     * A plugin that authenticates answers the same event instead, and then
+     * this one has nothing to say (R-ARC-02).
+     */
+    public function nameWhoIsThere(CurrentPrincipalRequested $event): void
+    {
+        $path = ($this->whoIsThere)($event->request());
+
+        if ($path !== null) {
+            $event->answerWith($path);
+        }
     }
 
     /**
@@ -150,7 +173,9 @@ final class Principals
      */
     private function currentUser(): Element
     {
-        $path = $this->request === null ? null : ($this->whoIsThere)($this->request);
+        $path = $this->request === null
+            ? null
+            : $this->server->events()->emit(new CurrentPrincipalRequested($this->request))->principal();
 
         if ($path === null) {
             $answer = new Element(self::CURRENT_USER);

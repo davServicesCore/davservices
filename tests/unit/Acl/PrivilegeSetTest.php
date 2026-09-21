@@ -202,7 +202,10 @@ final class PrivilegeSetTest extends TestCase
      */
     public function testWorksWithAPrivilegeAnExtensionBrought(): void
     {
-        $tree = Privilege::standard()->with('{DAV:}read', new Privilege(self::FREE_BUSY));
+        $tree = Privilege::standard()->with(
+            '{DAV:}read',
+            new Privilege(self::FREE_BUSY, 'read when somebody is busy, without reading what they are doing'),
+        );
         $set = PrivilegeSet::of($tree, '{DAV:}read');
 
         self::assertTrue($set->has(self::FREE_BUSY));

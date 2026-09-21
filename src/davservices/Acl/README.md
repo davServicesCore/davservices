@@ -42,6 +42,15 @@ $tree = Privilege::standard();                                   // RFC 3744 §3
 $tree = $tree->with('{DAV:}read', new Privilege(FREE_BUSY));     // RFC 4791 §6.1.1
 ```
 
+Each privilege carries the sentence that explains it and the language that
+sentence is in, because RFC 3744 §5.3 requires both in
+`DAV:supported-privilege-set` — an extension that brings a privilege brings
+its description with it, or it brings a hole in a required element. It also
+says whether it may be put in an entry at all (`DAV:abstract`); nothing in the
+standard tree is abstract, because `DAV:write` is a privilege §3.2 defines in
+its own right and an administrator who means to grant it should be able to
+write it down.
+
 `DAV:write` is less a permission of its own than a name for four others, and
 a server granting it without granting `DAV:bind` would let a client change a
 file it may not create. Aggregation is what makes an access control list short

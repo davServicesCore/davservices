@@ -51,10 +51,29 @@ final class Privilege
 
     /**
      * @param string $name As `{namespace}localname`
+     * @param string $description What this privilege allows, for a person to
+     *                            read. RFC 3744 §5.3 requires it, and it
+     *                            belongs to the privilege rather than to
+     *                            whoever writes the report: an extension that
+     *                            brings a privilege brings the sentence that
+     *                            explains it, or it brings a hole in a
+     *                            required element
      * @param list<Privilege> $aggregates What holding this one also holds
+     * @param bool $isAbstract Whether it may **not** be put in an access
+     *                         control entry (§5.3), so that only the ones it
+     *                         aggregates can be granted
+     * @param string $language What language the description is in. The DTD
+     *                         requires the attribute, so a server that always
+     *                         wrote `en` would be labelling German text as
+     *                         English
      */
-    public function __construct(private readonly string $name, array $aggregates = [])
-    {
+    public function __construct(
+        private readonly string $name,
+        private readonly string $description,
+        array $aggregates = [],
+        private readonly bool $isAbstract = false,
+        private readonly string $language = 'en',
+    ) {
         $this->aggregates = $aggregates;
     }
 
@@ -70,19 +89,53 @@ final class Privilege
      */
     public static function standard(): self
     {
-        return new self('{DAV:}all', [
-            new self('{DAV:}read'),
-            new self('{DAV:}write', [
-                new self('{DAV:}write-content'),
-                new self('{DAV:}write-properties'),
-                new self('{DAV:}bind'),
-                new self('{DAV:}unbind'),
+        return new self('{DAV:}all', 'anything this server can be asked to do', [
+            new self('{DAV:}read', 'read the content and the properties of this resource'),
+            new self('{DAV:}write', 'change this resource, and what is in it if it is a collection', [
+                new self('{DAV:}write-content', 'change the content of this resource'),
+                new self('{DAV:}write-properties', 'change the properties of this resource'),
+                new self('{DAV:}bind', 'create a member in this collection'),
+                new self('{DAV:}unbind', 'remove a member from this collection'),
             ]),
-            new self('{DAV:}unlock'),
-            new self('{DAV:}read-acl'),
-            new self('{DAV:}read-current-user-privilege-set'),
-            new self('{DAV:}write-acl'),
+            new self('{DAV:}unlock', 'release a write lock somebody else took'),
+            new self('{DAV:}read-acl', 'read the access control list of this resource'),
+            new self(
+                '{DAV:}read-current-user-privilege-set',
+                'read which privileges the person asking holds here',
+            ),
+            new self('{DAV:}write-acl', 'change the access control list of this resource'),
         ]);
+    }
+
+    /**
+     * What this privilege allows, for a person to read (RFC 3744 §5.3).
+     */
+    public function description(): string
+    {
+        return $this->description;
+    }
+
+    /**
+     * What language that description is in, which the DTD requires to be
+     * said.
+     */
+    public function language(): string
+    {
+        return $this->language;
+    }
+
+    /**
+     * May this privilege **not** be put in an access control entry?
+     *
+     * **Nothing in the standard tree is abstract, and that is a decision.**
+     * `DAV:write` is a privilege RFC 3744 §3.2 defines in its own right, and
+     * an administrator who means to grant it should be able to write it down
+     * rather than list its four. The flag is here for a deployment or an
+     * extension that needs one.
+     */
+    public function isAbstract(): bool
+    {
+        return $this->isAbstract;
     }
 
     /**
@@ -174,13 +227,24 @@ final class Privilege
         return $this->hanging($parent, $privilege);
     }
 
+    /**
+     * The same privilege, aggregating something else — everything about it
+     * but its children kept, because only the children are being changed.
+     *
+     * @param list<Privilege> $aggregates
+     */
+    private function holding(array $aggregates): self
+    {
+        return new self($this->name, $this->description, $aggregates, $this->isAbstract, $this->language);
+    }
+
     private function hanging(string $parent, self $privilege): self
     {
         if ($this->name === $parent) {
-            return new self($this->name, [...$this->aggregates, $privilege]);
+            return $this->holding([...$this->aggregates, $privilege]);
         }
 
-        return new self($this->name, array_map(
+        return $this->holding(array_map(
             static fn (self $child): self => $child->hanging($parent, $privilege),
             $this->aggregates,
         ));
