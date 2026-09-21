@@ -104,10 +104,13 @@ foreach ($methods as $name => $method) {
 }
 
 /*
- * `REPORT` answers whatever its body asks for, by name — and nothing yet asks
- * for anything, which is why no report is registered here. The method is
- * switched on all the same, so that `DAV:supported-report-set` is answered by
- * the thing that knows the reports rather than by the one that knows none.
+ * `REPORT` answers whatever its body asks for, by name. The reports this
+ * library brings are about principals, and this server has none — so it
+ * registers no report, and that is the honest answer rather than a gap.
+ *
+ * The method is switched on all the same, so that `DAV:supported-report-set`
+ * is answered by the thing that knows the reports rather than by the one
+ * that knows none: a client is told there are none, which is true.
  */
 (new Report($server))->register();
 
