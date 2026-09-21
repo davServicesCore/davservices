@@ -79,6 +79,20 @@ abstract class PrincipalBackendContract extends TestCase
         self::assertSame([], $this->backend()->principal('plain')?->alternateUris());
     }
 
+    /**
+     * **Several addresses, in the order they were written.** A person may be
+     * reached at more than one, and a backend that handed over the first
+     * would quietly lose the rest — a client looking somebody up by their
+     * second address would not find them.
+     */
+    public function testKeepsEveryOneOfTheirAddresses(): void
+    {
+        self::assertSame(
+            ['mailto:carol@example.test', 'mailto:c.carter@example.test'],
+            $this->backend()->principal('carol')?->alternateUris(),
+        );
+    }
+
     public function testHandsBackEveryPrincipalItHas(): void
     {
         $names = array_map(
@@ -88,12 +102,29 @@ abstract class PrincipalBackendContract extends TestCase
 
         sort($names);
 
-        self::assertSame(['alice', 'plain'], $names);
+        self::assertSame(['alice', 'carol', 'plain'], $names);
+    }
+
+    /**
+     * **A listing is a list, not a map.** The interface says so, and a caller
+     * that reached for the first of them would find nothing where a backend
+     * handed over an array keyed by name — which is exactly the shape a
+     * storage keeps its people in internally.
+     *
+     * The keys are asked about rather than `array_is_list()`, because the
+     * static analyser believes the annotation and folds that question away.
+     * A backend written elsewhere is not analysed by it, and this contract is
+     * for those.
+     */
+    public function testTheListingIsAList(): void
+    {
+        self::assertSame([0, 1, 2], array_keys($this->backend()->principals()));
     }
 
     /**
      * The storage under test, holding Alice — who is called something and has
-     * an address — and one plain principal that is nothing but a name.
+     * an address — Carol, who has two addresses, and one plain principal that
+     * is nothing but a name.
      */
     abstract protected function backend(): IPrincipalBackend;
 }

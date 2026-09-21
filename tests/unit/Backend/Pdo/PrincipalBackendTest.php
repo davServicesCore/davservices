@@ -55,6 +55,8 @@ final class PrincipalBackendTest extends PrincipalBackendContract
         $this->connection = $connection;
 
         $this->add('alice', 'Alice Ashton', 'mailto:alice@example.test');
+        $this->add('carol', 'Carol Carter', "mailto:carol@example.test
+mailto:c.carter@example.test");
         $this->add('plain', null, null);
     }
 
@@ -113,21 +115,6 @@ final class PrincipalBackendTest extends PrincipalBackendContract
     }
 
     /**
-     * RFC 3744 §4.1: several addresses, and they come back in the order they
-     * were written — a client that shows them is showing somebody's business
-     * card.
-     */
-    public function testKeepsSeveralAddressesInOrder(): void
-    {
-        $this->add('carol', 'Carol Carter', "mailto:carol@example.test\nmailto:c.carter@example.test");
-
-        self::assertSame(
-            ['mailto:carol@example.test', 'mailto:c.carter@example.test'],
-            $this->backend()->principal('carol')?->alternateUris(),
-        );
-    }
-
-    /**
      * **A column somebody edited by hand ends with a newline more often than
      * not**, and an empty `DAV:href` in a principal's answer is a URI a
      * client would try.
@@ -137,6 +124,21 @@ final class PrincipalBackendTest extends PrincipalBackendContract
         $this->add('dave', null, "\nmailto:dave@example.test\n\n");
 
         self::assertSame(['mailto:dave@example.test'], $this->backend()->principal('dave')?->alternateUris());
+    }
+
+    /**
+     * **A column edited on Windows has `\r\n`**, and a URI that carried the
+     * carriage return with it would be a `mailto:` no client can use — the
+     * address would end in an invisible character.
+     */
+    public function testTakesTheLineEndingsOfWhoeverEditedTheColumn(): void
+    {
+        $this->add('erin', null, "mailto:erin@example.test\r\nmailto:e.evans@example.test\r\n");
+
+        self::assertSame(
+            ['mailto:erin@example.test', 'mailto:e.evans@example.test'],
+            $this->backend()->principal('erin')?->alternateUris(),
+        );
     }
 
     /**
@@ -153,7 +155,7 @@ final class PrincipalBackendTest extends PrincipalBackendContract
             $this->backend()->principals(),
         );
 
-        self::assertSame(['alice', 'bob', 'plain'], $names);
+        self::assertSame(['alice', 'bob', 'carol', 'plain'], $names);
     }
 
     /**

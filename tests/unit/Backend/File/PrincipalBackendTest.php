@@ -57,6 +57,14 @@ final class PrincipalBackendTest extends PrincipalBackendContract
             </principal>
         ');
 
+        $this->write('carol.xml', '
+            <principal xmlns="https://dav.services/principals" name="carol">
+                <display-name>Carol Carter</display-name>
+                <alternate-uri>mailto:carol@example.test</alternate-uri>
+                <alternate-uri>mailto:c.carter@example.test</alternate-uri>
+            </principal>
+        ');
+
         $this->write('plain.xml', '<principal xmlns="https://dav.services/principals" name="plain"/>');
     }
 
@@ -139,7 +147,7 @@ final class PrincipalBackendTest extends PrincipalBackendContract
 
         file_put_contents($stranger, 'Nothing to do with principals.');
 
-        self::assertCount(2, $this->backend()->principals());
+        self::assertCount(3, $this->backend()->principals());
         self::assertFileExists($stranger);
     }
 
@@ -167,6 +175,21 @@ final class PrincipalBackendTest extends PrincipalBackendContract
     public function testRefusesAFileThatIsNoPrincipalOfThisServer(): void
     {
         $this->write('stranger.xml', '<greeting xmlns="urn:example">Hello</greeting>');
+
+        $this->expectException(RuntimeException::class);
+
+        $this->backend()->principals();
+    }
+
+    /**
+     * **And one that carries a name under the wrong element name.** A file
+     * this server cannot name is a file it has not understood, whatever else
+     * is in it — reading the attribute anyway would make a person out of a
+     * document that meant something else.
+     */
+    public function testRefusesAFileThatIsNoPrincipalEvenWhereItCarriesAName(): void
+    {
+        $this->write('stranger-with-a-name.xml', '<greeting xmlns="urn:example" name="bob">Hello</greeting>');
 
         $this->expectException(RuntimeException::class);
 
