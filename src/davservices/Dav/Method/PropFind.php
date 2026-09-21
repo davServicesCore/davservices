@@ -14,12 +14,10 @@ declare(strict_types=1);
 namespace DavServices\Dav\Method;
 
 use DavServices\Dav\Event\ListingMembers;
-use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
-use DavServices\Dav\IProperties;
+use DavServices\Dav\Property\Answers;
 use DavServices\Dav\PropFindForm;
-use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
@@ -52,9 +50,8 @@ use DavServices\Xml\MultiStatus;
  * and they go in blocks of their own: a client handed three answers to five
  * questions has nothing to tell it which two went missing.
  *
- * Where the answers come from is {@see PropertiesRequested} — the listeners
- * first, the node after them, and the first answer for a property stands
- * (R-PROP-05).
+ * Where the answers come from is {@see Answers} — the listeners first, the
+ * node after them, and the first answer for a property stands (R-PROP-05).
  *
  * Registered like any other method:
  *
@@ -270,63 +267,6 @@ final class PropFind
      */
     private function answersFor(string $path, INode $node, PropFindForm $form, array $names): array
     {
-        $result = new PropFindResult($path, $form, $names);
-
-        // The listeners first: a plugin that must refuse a property the node
-        // would hand over can only do it by answering before the node does.
-        $this->server->events()->emit(new PropertiesRequested($result, $node));
-
-        if ($node instanceof IProperties) {
-            $this->askTheNode($result, $node);
-        }
-
-        return $result->byStatus();
-    }
-
-    /**
-     * What the node itself keeps, and only what is still open: a backend that
-     * is asked for what somebody has answered already runs a query for
-     * nothing, and on a listing of two hundred members that is two hundred of
-     * them.
-     */
-    private function askTheNode(PropFindResult $result, IProperties $node): void
-    {
-        if ($result->form() === PropFindForm::NamesOnly) {
-            // The values are dropped from the answer, so fetching them would
-            // turn the cheap question into the expensive one.
-            foreach ($node->propertyNames() as $name) {
-                $result->set($name, null);
-            }
-
-            return;
-        }
-
-        foreach ($node->properties(self::namesToAskFor($result, $node)) as $name => $value) {
-            $result->set($name, $value);
-        }
-    }
-
-    /**
-     * Under `allprop` the node's own names are the question: a property nobody
-     * has named can be learnt of in no other way, and every dead property is
-     * one of those.
-     *
-     * @return list<string>
-     */
-    private static function namesToAskFor(PropFindResult $result, IProperties $node): array
-    {
-        $candidates = $result->form() === PropFindForm::Everything
-            ? $node->propertyNames()
-            : $result->stillWanted();
-
-        $names = [];
-
-        foreach ($candidates as $name) {
-            if ($result->wants($name)) {
-                $names[] = $name;
-            }
-        }
-
-        return $names;
+        return Answers::about($this->server->events(), $path, $node, $form, $names)->byStatus();
     }
 }
