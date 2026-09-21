@@ -19,9 +19,11 @@ use DavServices\Dav\Event\ExceptionRaised;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Event\EventEmitter;
+use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\Locked;
 use DavServices\Exception\NotFound;
+use DavServices\Http\Headers;
 use DavServices\Http\MalformedHeader;
 use DavServices\Http\MalformedRequest;
 use DavServices\Http\Request;
@@ -512,6 +514,85 @@ final class ServerTest extends TestCase
         $this->expectException(NotFound::class);
 
         $server->pathOf('/elsewhere/work.ics');
+    }
+
+    /**
+     * **A URL in a header is not a path**, and two headers carry one: the
+     * `Destination` of a `COPY` or `MOVE`, and the resource tag of an `If`.
+     * Both have to become a path in this tree by the same rule, or one of
+     * them will be more trusting than the other.
+     */
+    #[DataProvider('urlsInHeaders')]
+    public function testTurnsAUrlInAHeaderIntoAPath(string $url, ?string $host, string $path): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')));
+        $request = new Request('COPY', '/work.ics', new Headers($host === null ? [] : ['Host' => $host]));
+
+        self::assertSame($path, $server->pathOfUrl($url, $request));
+    }
+
+    /**
+     * @return iterable<string, array{string, ?string, string}>
+     */
+    public static function urlsInHeaders(): iterable
+    {
+        yield 'a plain path' => ['/calendars/work.ics', null, 'calendars/work.ics'];
+        yield 'a full URL on this host' => ['http://dav.example/calendars/work.ics', 'dav.example', 'calendars/work.ics'];
+        yield 'the same host on another port' => ['http://dav.example:8080/work.ics', 'dav.example:443', 'work.ics'];
+        yield 'a host spelt in capitals' => ['http://DAV.example/work.ics', 'dav.example', 'work.ics'];
+        yield 'a Host header spelt in capitals' => ['http://dav.example/work.ics', 'DAV.example', 'work.ics'];
+        yield 'a URL with nothing after the host' => ['http://dav.example', 'dav.example', ''];
+    }
+
+    /**
+     * **Ports are not compared.** A server behind a proxy is told one thing in
+     * `Host` and another in the URL the client built, and refusing that would
+     * break every deployment that terminates TLS somewhere else.
+     *
+     * The host itself is compared, and a URL naming another one is refused —
+     * as is one naming any host at all where the request named none, because
+     * then there is nothing left to check it against.
+     */
+    #[DataProvider('urlsThatAreNotOurs')]
+    public function testRefusesAUrlThatNamesAnotherServer(string $url, ?string $host): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')));
+        $request = new Request('COPY', '/work.ics', new Headers($host === null ? [] : ['Host' => $host]));
+
+        $this->expectException(NotFound::class);
+
+        $server->pathOfUrl($url, $request);
+    }
+
+    /**
+     * @return iterable<string, array{string, ?string}>
+     */
+    public static function urlsThatAreNotOurs(): iterable
+    {
+        yield 'another host' => ['http://elsewhere.example/work.ics', 'dav.example'];
+        yield 'a host where the request named none' => ['http://dav.example/work.ics', null];
+    }
+
+    /**
+     * And a URL on this very host still has to name a path this server
+     * serves: the same rule `pathOf()` keeps, reached through the same door.
+     */
+    public function testRefusesAUrlOutsideWhatThisServerIsMountedAt(): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: '/dav/');
+
+        $this->expectException(NotFound::class);
+
+        $server->pathOfUrl('/elsewhere/work.ics', new Request('COPY', '/dav/work.ics'));
+    }
+
+    public function testRefusesAUrlNobodyCanRead(): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')));
+
+        $this->expectException(BadRequest::class);
+
+        $server->pathOfUrl('http://:80', new Request('COPY', '/work.ics'));
     }
 
     public function testHandsOverTheTreeItServes(): void
