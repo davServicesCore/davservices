@@ -23,6 +23,7 @@ use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\Method\Put;
 use DavServices\Dav\Property\LiveProperties;
 use DavServices\Dav\Server;
@@ -101,6 +102,14 @@ $methods = [
 foreach ($methods as $name => $method) {
     $server->onMethod($name, $method(...));
 }
+
+/*
+ * `REPORT` answers whatever its body asks for, by name — and nothing yet asks
+ * for anything, which is why no report is registered here. The method is
+ * switched on all the same, so that `DAV:supported-report-set` is answered by
+ * the thing that knows the reports rather than by the one that knows none.
+ */
+(new Report($server))->register();
 
 /*
  * Locking is a plugin, and a server built without these two lines is a plain
