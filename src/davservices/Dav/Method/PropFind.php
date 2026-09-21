@@ -200,7 +200,7 @@ final class PropFind
         array $names,
         int $depth,
     ): void {
-        $report->addProperties(self::href($this->server->href($path), $node), $this->answersFor($path, $node, $form, $names));
+        $report->addProperties($this->server->hrefOf($path, $node), $this->answersFor($path, $node, $form, $names));
 
         if ($depth === 0 || !$node instanceof ICollection) {
             return;
@@ -209,20 +209,6 @@ final class PropFind
         foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
             $this->report($report, $member, $child, $form, $names, $depth - 1);
         }
-    }
-
-    /**
-     * RFC 4918 §8.3: a collection is named with a trailing slash. Clients
-     * build the addresses of its members by appending to it, and one handed
-     * `/calendars` would go looking for `/calendarswork.ics`.
-     */
-    private static function href(string $href, INode $node): string
-    {
-        if (!$node instanceof ICollection || str_ends_with($href, '/')) {
-            return $href;
-        }
-
-        return $href . '/';
     }
 
     /**

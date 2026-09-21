@@ -220,6 +220,31 @@ final class Server
     }
 
     /**
+     * The same, named the way the resource at that path is addressed.
+     *
+     * **RFC 4918 §8.3: a collection is named with a trailing slash.** Clients
+     * build the addresses of its members by appending to it, and one handed
+     * `/calendars` would go looking for `/calendarswork.ics`.
+     *
+     * The rule lives here rather than in whichever method happens to be
+     * writing hrefs, because `PROPFIND` is no longer the only one that lists
+     * resources — and two copies of it would be two chances to name a
+     * collection wrongly.
+     *
+     * @throws MalformedPath If the path holds a name that may not be addressed
+     */
+    public function hrefOf(string $path, INode $node): string
+    {
+        $href = $this->href($path);
+
+        if (!$node instanceof ICollection || str_ends_with($href, '/')) {
+            return $href;
+        }
+
+        return $href . '/';
+    }
+
+    /**
      * The tree this server serves.
      */
     public function tree(): Tree
