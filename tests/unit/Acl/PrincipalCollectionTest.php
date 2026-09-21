@@ -70,12 +70,21 @@ final class PrincipalCollectionTest extends TestCase
         self::assertFalse($this->collection()->hasChild('nobody'));
     }
 
-    public function testListsEveryPrincipalItHas(): void
+    /**
+     * **Every member is a node, not the record it was made from.** A
+     * collection hands the tree things the tree can walk; a listing of plain
+     * records would look right until a `PROPFIND` asked one of them anything.
+     */
+    public function testListsEveryPrincipalItHasAsANode(): void
     {
-        $names = array_map(
-            static fn (object $member): string => $member->name(),
-            $this->collection()->children(),
-        );
+        $members = $this->collection()->children();
+        $names = [];
+
+        foreach ($members as $member) {
+            self::assertInstanceOf(Principal::class, $member);
+
+            $names[] = $member->name();
+        }
 
         sort($names);
 

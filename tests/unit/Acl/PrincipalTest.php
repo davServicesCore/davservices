@@ -125,6 +125,22 @@ final class PrincipalTest extends TestCase
         self::assertSame([], $this->principal()->properties(['{DAV:}principal-URL']));
     }
 
+    /**
+     * **Asked for several at once, it answers all of them.** That is how a
+     * `PROPFIND` asks — one `DAV:prop` with a list in it — and a node that
+     * answered only the first would leave a client with a `404` for
+     * properties it plainly has.
+     */
+    public function testAnswersEveryPropertyThatWasAskedAbout(): void
+    {
+        $answers = $this->principal()->properties(['{DAV:}displayname', '{DAV:}alternate-URI-set']);
+
+        self::assertSame(
+            ['{DAV:}displayname', '{DAV:}alternate-URI-set'],
+            array_keys($answers),
+        );
+    }
+
     public function testSaysWhichPropertiesItHas(): void
     {
         self::assertSame(
