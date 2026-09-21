@@ -185,6 +185,28 @@ final class LockEnforcementTest extends TestCase
     }
 
     /**
+     * **Overwriting a collection destroys what is inside it**, so a lock
+     * anywhere below the destination stands in the way (RFC 4918 §9.8.4 and
+     * §9.9.3: `Overwrite: T` deletes what is there first). A guard that only
+     * looked at the destination itself would let a `COPY` wipe out a
+     * resource somebody was told was held.
+     */
+    #[DataProvider('transfersOntoACollection')]
+    public function testRefusesToOverwriteACollectionThatHoldsALockedMember(Request $request): void
+    {
+        self::assertSame(423, $this->handle($request, $this->holding($this->held()))->status());
+    }
+
+    /**
+     * @return iterable<string, array{Request}>
+     */
+    public static function transfersOntoACollection(): iterable
+    {
+        yield 'COPY onto it' => [self::withDestination('COPY', '/spare', '/calendars')];
+        yield 'MOVE onto it' => [self::withDestination('MOVE', '/spare', '/calendars')];
+    }
+
+    /**
      * A `COPY` reads the source and writes the destination, so a lock on the
      * source is no reason to refuse it: nothing about the source changes.
      */
@@ -556,6 +578,11 @@ final class LockEnforcementTest extends TestCase
         $calendars->add(new MemoryFile('work.ics', 'BEGIN:VCALENDAR'));
         $calendars->add(new MemoryFile('other.ics', 'BEGIN:VCALENDAR'));
         $root->add($calendars);
+
+        $spare = new MemoryCollection('spare');
+
+        $spare->add(new MemoryFile('note.txt', 'nothing in particular'));
+        $root->add($spare);
 
         return $root;
     }

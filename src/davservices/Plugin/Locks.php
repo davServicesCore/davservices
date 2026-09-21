@@ -292,15 +292,15 @@ final class Locks
     }
 
     /**
-     * A `MOVE` changes both ends, and the source **and everything inside it**:
-     * a collection cannot be moved out from under a lock on one of its
-     * members, because the lock names a path that would stop existing.
+     * A `MOVE` changes both ends, so both are asked about. The source goes
+     * away and the destination is replaced, and each takes what is inside it
+     * along — which is why neither question stops at the path itself.
      *
      * @throws Locked If either end is held by a lock this request did not name
      */
     public function refuseAMoveThatIsHeld(BeforeMove $event): void
     {
-        $this->refuseUnlessFree($event->from(), alsoBelow: true);
+        $this->refuseUnlessFree($event->from());
         $this->refuseUnlessFree($event->to());
     }
 
@@ -328,15 +328,18 @@ final class Locks
      *
      * @throws Locked If something holds it that this request did not name
      */
-    private function refuseUnlessFree(string $path, bool $alsoBelow = false): void
+    private function refuseUnlessFree(string $path): void
     {
         $now = ($this->now)();
-        $held = $this->locks->locksOn($path, $now);
 
-        if ($alsoBelow) {
-            $held = [...$held, ...$this->locks->locksBelow($path, $now)];
-        }
-
+        // **Both questions, every time.** What holds the path itself, and
+        // what is held inside it — because a write at a path takes what is
+        // below it with it: a `MOVE` carries a whole collection away, and an
+        // overwrite deletes what was there first (RFC 4918 §9.8.4). Asking
+        // only about the path would let a `COPY` wipe out a resource somebody
+        // was told was held. For a file the second question costs a query and
+        // finds nothing, which is a cheaper price than the rule it keeps.
+        $held = [...$this->locks->locksOn($path, $now), ...$this->locks->locksBelow($path, $now)];
         $submitted = self::tokensIn($this->request?->headers()->first('If'));
 
         foreach ($held as $lock) {
