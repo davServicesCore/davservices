@@ -118,10 +118,12 @@ final class Report
      */
     public function __invoke(Request $request): Response
     {
-        if ($request->body()->isEmpty()) {
-            throw new BadRequest('A REPORT says in its body which report it wants.');
-        }
-
+        // **There is no default report**, unlike a `PROPFIND` with no body,
+        // which asks for everything. Choosing one would be answering a
+        // question nobody asked — so a body that names nothing is refused,
+        // and the reader is what refuses it: it says the body is empty, with
+        // the same `400`, and a second guard for the same thing would be a
+        // second place to keep right.
         $asked = $this->server->reader()->parse($request->body()->contents());
         $report = $this->reports[$asked->name()] ?? null;
 
