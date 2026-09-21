@@ -19,6 +19,8 @@ those URLs. Everything else in this layer is built on that.
 | `PrivilegeSet` | What somebody holds on one resource, with the tree already walked |
 | `IPrivilegeResolver` | The one seam through which an application's own rules reach the protocol |
 | `MemoizingPrivilegeResolver` | The same, asked once per principal and path for the length of a request |
+| `SearchableProperty` | One property principals may be searched by, with the sentence that explains it |
+| `Report\PrincipalSearchPropertySet` | The report that says which of those there are (RFC 3744 §9.5) |
 
 The model they are made from is `Dav\Acl\PrincipalInfo`, one layer down,
 because a backend interface may not reach up into the layer that uses it —
@@ -34,6 +36,30 @@ The path is the application's choice. Nothing here assumes one:
 `DAV:principal-collection-set` is what tells a client where to look, and
 `Plugin\Principals` answers it with whatever path the collection was mounted
 at.
+
+## What a client may search by
+
+```php
+$report->on(
+    '{DAV:}principal-search-property-set',
+    new Report\PrincipalSearchPropertySet($server, SearchableProperty::standard())(...),
+);
+```
+
+**A client cannot guess what a server will search.** RFC 3744 §9.4 leaves the
+search method — exact, prefix, substring, cased or not — to the server, and a
+search over a property this server does not search does not fail: it matches
+nobody. So §9.5 has a report to be asked first, and this is it.
+
+Like a privilege, each searchable property carries the sentence that explains
+it and the language that sentence is in, because the DTD of §9.5 requires
+both. The list is a **list**: §9.5 asks that the most frequently searched come
+first, so that a client with little room on screen shows the ones people use.
+
+The standard list is what this library can actually answer for a principal —
+`DAV:displayname` and `DAV:alternate-URI-set`. An application that answers
+more adds to it rather than replacing it, the same way the privilege tree
+grows.
 
 ## Privileges are a tree, and the tree can grow
 
