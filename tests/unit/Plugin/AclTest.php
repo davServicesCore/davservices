@@ -18,6 +18,7 @@ use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
@@ -136,7 +137,22 @@ final class AclTest extends TestCase
 
         $body = $this->propFind('/calendars/work', 'supported-privilege-set', privileges: $tree);
 
-        self::assertStringContainsString('<d:abstract/>', $body);
+        // The flag follows **that** privilege, not some other one: the
+        // prefix the writer picks for a foreign namespace is its own
+        // business, but where the element sits is not.
+        self::assertStringContainsString('abstract-one/></d:privilege><d:abstract/>', $body);
+    }
+
+    /**
+     * **And one that may be granted does not say it.** A server that marked
+     * every privilege abstract would tell a client it can grant none of
+     * them, while looking as though it had answered the question.
+     */
+    public function testSaysNothingOfTheSortAboutAPrivilegeThatMayBeGranted(): void
+    {
+        $body = $this->propFind('/calendars/work', 'supported-privilege-set');
+
+        self::assertStringNotContainsString('<d:abstract/>', $body);
     }
 
     /**
@@ -294,6 +310,25 @@ final class AclTest extends TestCase
         $this->plugin()->announce($event);
 
         self::assertSame(['3', 'access-control'], $event->compliance());
+    }
+
+    /**
+     * And through a registered server, because a plugin that announces only
+     * when asked directly announces nothing at all. `Plugin\Principals` says
+     * the same class, so this is asked of a server that has **only** this
+     * one.
+     */
+    public function testAServerWithThisPluginSaysItIsOfClassThree(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+
+        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects()))->register();
+
+        $options = new Options($server);
+
+        $server->onMethod('OPTIONS', $options(...));
+
+        self::assertSame('1, 3, access-control', $server->handle(new Request('OPTIONS', '/'))->headers()->first('DAV'));
     }
 
     /**
