@@ -137,6 +137,22 @@ granted is refused, because a server that let a request through for want of a
 rule would be a server whose rules are a suggestion. Nothing reaches into a
 method class — every check hangs on a seam that was already there.
 
+**A `LOCK` is guarded although it writes nothing.** Without that, a client
+that may not change a file could still take a lock on it and stop everybody
+who may — a denial of service in three lines of curl. What it needs depends
+on what is there: `DAV:write-content` for a resource that exists,
+`DAV:bind` for one it would create (RFC 4918 §9.10.4), which the bind seam
+asks for anyway. **`UNLOCK` needs nothing:** RFC 3744 §3.5 gives
+`DAV:unlock` for breaking somebody else's lock, and this server has no way
+to break one — it only ever removes a lock whose token was submitted, so the
+token is the proof.
+
+**A `MOVE` needs `DAV:unbind` where it came from**, and it needs a rule of
+its own to get it: a move is deliberately neither a removal nor a creation
+here, so nothing raises the unbind seam for the source. Without it a client
+with `DAV:bind` on the destination could empty a collection it has no rights
+in — the file would simply be somewhere else.
+
 Two things are worth knowing before switching it on. **`DAV:bind` and
 `DAV:unbind` belong to the collection**, not to the member (§3.9, §3.10):
 creating a file is a change to the collection it appears in. And **hiding is

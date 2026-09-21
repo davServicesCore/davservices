@@ -18,6 +18,7 @@ use DavServices\Acl\Privilege;
 use DavServices\Acl\PrivilegeSet;
 use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\BeforeMove;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
@@ -110,7 +111,20 @@ final class Acl
         'HEAD' => '{DAV:}read',
         'PROPFIND' => '{DAV:}read',
         'REPORT' => '{DAV:}read',
+        // A `COPY` reads its source — that is what its request target is —
+        // and writes somewhere else; the writing half is asked for at the
+        // bind seam (RFC 3744 §7.2). A `MOVE` is **not** here: it carries the
+        // data without showing it to anybody, and what it needs is `unbind`
+        // where it came from.
+        'COPY' => '{DAV:}read',
     ];
+
+    /**
+     * And `LOCK`, which is neither: it writes nothing, so no write seam sees
+     * it, and it still has to be guarded — see {@see self::guardTakingALock()}
+     * for what it needs and why `UNLOCK` needs nothing.
+     */
+    private const TAKING_A_LOCK = 'LOCK';
 
     private readonly Privilege $privileges;
 
@@ -155,6 +169,7 @@ final class Acl
         $events->on(BeforeWriteContent::class, $this->guardWritingContent(...));
         $events->on(BeforeBind::class, $this->guardBinding(...));
         $events->on(BeforeUnbind::class, $this->guardUnbinding(...));
+        $events->on(BeforeMove::class, $this->guardMoving(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
         $events->on(ListingMembers::class, $this->concealWhatMayNotBeRead(...));
     }
@@ -175,16 +190,49 @@ final class Acl
     {
         $this->request = $event->request();
 
-        $needed = self::READING[$event->request()->method()] ?? null;
+        $method = $event->request()->method();
+        $needed = self::READING[$method] ?? null;
 
-        if ($needed === null) {
+        if ($needed !== null) {
+            $path = $this->server->path($event->request());
+
+            if (!$this->resolver->forPath($this->whoIsAsking(), $path)->has($needed)) {
+                throw $this->refusalToRead($path);
+            }
+
             return;
         }
 
-        $path = $this->server->path($event->request());
+        if ($method === self::TAKING_A_LOCK) {
+            $this->guardTakingALock($this->server->path($event->request()));
+        }
+    }
 
-        if (!$this->resolver->forPath($this->whoIsAsking(), $path)->has($needed)) {
-            throw $this->refusalToRead($path);
+    /**
+     * **A `LOCK` writes nothing, and that is exactly why it needs guarding.**
+     * Without this, a client that may not change a file could still take a
+     * lock on it and stop everybody who may from doing so — a denial of
+     * service in three lines of curl.
+     *
+     * What it needs depends on what is there. A lock on an existing resource
+     * is a claim on the right to change it, so it is `DAV:write-content`
+     * (RFC 3744 §3.4). A lock on a path that holds nothing **creates** an
+     * empty resource (RFC 4918 §9.10.4), and creating a member is
+     * `DAV:bind` — which {@see self::guardBinding()} already asks for, and
+     * asks before anything is created, so a refusal leaves nothing behind.
+     *
+     * `UNLOCK` is deliberately not guarded. RFC 3744 §3.5 gives
+     * `DAV:unlock` for breaking a lock **somebody else** holds, and this
+     * server has no way to break one: it only ever removes a lock whose token
+     * was submitted, so the token is the proof and the privilege has nothing
+     * left to guard.
+     *
+     * @throws Forbidden If the asker may not write what they would lock
+     */
+    private function guardTakingALock(string $path): void
+    {
+        if ($this->server->tree()->exists($path)) {
+            $this->refuseUnlessAllowed($path, '{DAV:}write-content');
         }
     }
 
@@ -221,6 +269,26 @@ final class Acl
     public function guardUnbinding(BeforeUnbind $event): void
     {
         $this->refuseUnlessAllowed(self::collectionOf($event->path()), '{DAV:}unbind');
+    }
+
+    /**
+     * **A `MOVE` takes a member away from its collection**, and that is
+     * `DAV:unbind` on the collection it came from (RFC 3744 §3.10).
+     *
+     * It needs a seam of its own because a move is deliberately neither a
+     * removal nor a creation in this library: nothing raises `BeforeUnbind`
+     * for the source, so without this a client with `DAV:bind` on the
+     * destination could empty a collection it has no rights in — the file
+     * would simply be somewhere else.
+     *
+     * The other end is already asked for: a move binds at its destination
+     * like anything else.
+     *
+     * @throws Forbidden If the asker may not take it away from where it is
+     */
+    public function guardMoving(BeforeMove $event): void
+    {
+        $this->refuseUnlessAllowed(self::collectionOf($event->from()), '{DAV:}unbind');
     }
 
     /**
