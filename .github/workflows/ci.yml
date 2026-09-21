@@ -66,10 +66,11 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          # The base list mirrors "require" in composer.json. intl is added on
-          # top: PHPStan can only type-check the optional i;unicode-casemap
-          # code path when the extension it calls into is actually loaded.
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, intl
+          # The base list mirrors "require" in composer.json. intl and pdo are
+          # added on top: PHPStan can only type-check the optional
+          # i;unicode-casemap code path, and the PDO lock backend, when the
+          # extensions they call into are actually loaded.
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, intl, pdo_sqlite
           coverage: none
 
       - uses: ramsey/composer-install@v4
@@ -120,7 +121,11 @@ jobs:
           # than the measuring device. Bump this together with the copies in
           # nightly.yml and release.yml once 3.6 is stable.
           coverage: ${{ matrix.coverage && 'xdebug' || 'none' }}
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash${{ matrix.coverage && ', xdebug-3.5.3' || '' }}
+          # pdo_sqlite is listed although it is only a `suggest`: the tests of
+          # the PDO lock backend skip themselves without it, and skipped tests
+          # would take that class out of the coverage report rather than fail
+          # the run. A floor that a missing extension can lower is no floor.
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite${{ matrix.coverage && ', xdebug-3.5.3' || '' }}
 
       - uses: ramsey/composer-install@v4
 

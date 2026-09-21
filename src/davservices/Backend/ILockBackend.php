@@ -37,6 +37,14 @@ use DavServices\Dav\Locks\LockInfo;
  *
  * A lock that has run out is not a lock (R-LOCK-03). Neither question hands
  * one back, and an implementation is free to drop it while it is there.
+ *
+ * **Asking and then keeping is two steps, and nothing here makes them one.**
+ * Two requests can both find a path free and both take an exclusive lock on
+ * it. Neither bundled implementation prevents that, and this is said here
+ * rather than left to be discovered: a deployment that cannot live with it
+ * needs a store that can refuse the second write — a constraint, a row lock,
+ * or `LOCK_EX` around the pair — and that belongs in the implementation, not
+ * in the method that calls these four.
  */
 interface ILockBackend
 {
