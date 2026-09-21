@@ -13,12 +13,12 @@ declare(strict_types=1);
 
 namespace DavServices\Dav\Method;
 
-use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\Server;
+use DavServices\Dav\VisibleMembers;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\NotFound;
@@ -206,42 +206,9 @@ final class PropFind
             return;
         }
 
-        foreach ($this->whatMayBeSeenIn($path, $node) as $member => $child) {
+        foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
             $this->report($report, $member, $child, $form, $names, $depth - 1);
         }
-    }
-
-    /**
-     * The members that are to appear, which is all of them until somebody
-     * says otherwise.
-     *
-     * **Refusing to read a resource is only half of hiding it** (R-ACL-06):
-     * a listing that still named it would have told the client the thing
-     * exists. So the listing is offered first — **all of it at once**,
-     * because deciding this is a question to whatever knows the rules, and a
-     * collection of two hundred members would otherwise be two hundred
-     * questions (R-PRIV-01).
-     *
-     * @return array<string, INode> Keyed by path
-     */
-    private function whatMayBeSeenIn(string $path, ICollection $node): array
-    {
-        $found = [];
-
-        foreach ($node->children() as $child) {
-            $found[Path::join($path, $child->name())] = $child;
-        }
-
-        $listing = $this->server->events()->emit(new ListingMembers($path, array_keys($found)));
-        $visible = [];
-
-        foreach ($listing->visible() as $member) {
-            // What comes back was in what went out: a listener conceals
-            // members, it does not invent them.
-            $visible[$member] = $found[$member] ?? $node;
-        }
-
-        return $visible;
     }
 
     /**
