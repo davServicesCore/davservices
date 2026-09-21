@@ -15,14 +15,17 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\BeforeMove;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\PropertiesChanging;
+use DavServices\Dav\Method\Copy;
 use DavServices\Dav\Method\Delete;
 use DavServices\Dav\Method\Get;
 use DavServices\Dav\Method\MkCol;
+use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
 use DavServices\Dav\Method\Put;
@@ -212,6 +215,49 @@ final class AclEnforcementTest extends TestCase
     }
 
     /**
+     * **`COPY` and `MOVE` are covered by the seams already, and this says
+     * so.** Both bind at the destination, and a move unbinds at the source —
+     * so neither needs a rule of its own, and a test is what keeps that from
+     * being an assumption.
+     */
+    public function testCopyingNeedsBindOnTheDestinationCollection(): void
+    {
+        $refused = $this->handle(self::transfer('COPY', '/calendars/work.ics', '/archive/work.ics'), [
+            'calendars/work.ics' => ['{DAV:}read'],
+        ]);
+
+        self::assertSame(403, $refused->status());
+
+        $granted = $this->handle(self::transfer('COPY', '/calendars/work.ics', '/archive/work.ics'), [
+            'calendars/work.ics' => ['{DAV:}read'],
+            'archive' => ['{DAV:}bind'],
+        ]);
+
+        self::assertSame(201, $granted->status());
+    }
+
+    /**
+     * And a `MOVE` needs both ends: bind where it lands, unbind where it
+     * came from. Granting only the first is not enough, which is what makes
+     * this two privileges rather than one.
+     */
+    public function testMovingNeedsBothEnds(): void
+    {
+        $refused = $this->handle(self::transfer('MOVE', '/calendars/work.ics', '/archive/work.ics'), [
+            'archive' => ['{DAV:}bind'],
+        ]);
+
+        self::assertSame(403, $refused->status());
+
+        $granted = $this->handle(self::transfer('MOVE', '/calendars/work.ics', '/archive/work.ics'), [
+            'archive' => ['{DAV:}bind'],
+            'calendars' => ['{DAV:}unbind'],
+        ]);
+
+        self::assertSame(201, $granted->status());
+    }
+
+    /**
      * **R-ACL-06, the other half of hiding.** A member nobody may read is not
      * in the listing of its parent — a `404` on the member alone would still
      * have told the client it exists.
@@ -313,6 +359,7 @@ final class AclEnforcementTest extends TestCase
             static fn (Acl $acl) => $acl->guardWritingContent(new BeforeWriteContent('calendars/work.ics', 'x')),
             static fn (Acl $acl) => $acl->guardBinding(new BeforeBind('calendars/new.ics')),
             static fn (Acl $acl) => $acl->guardUnbinding(new BeforeUnbind('calendars/work.ics')),
+            static fn (Acl $acl) => $acl->guardMoving(new BeforeMove('calendars/work.ics', 'archive/work.ics')),
             static fn (Acl $acl) => $acl->guardChangingProperties(new PropertiesChanging(
                 new PropPatchResult('calendars/work.ics', ['{DAV:}displayname' => 'x']),
                 new MemoryFile('work.ics', ''),
@@ -325,7 +372,7 @@ final class AclEnforcementTest extends TestCase
             }
         }
 
-        self::assertSame(4, $refusals, 'Every seam a write passes through refuses what was not granted.');
+        self::assertSame(5, $refusals, 'Every seam a write passes through refuses what was not granted.');
     }
 
     /**
@@ -342,6 +389,7 @@ final class AclEnforcementTest extends TestCase
         $acl->guardWritingContent(new BeforeWriteContent('calendars/work.ics', 'x'));
         $acl->guardBinding(new BeforeBind('calendars/new.ics'));
         $acl->guardUnbinding(new BeforeUnbind('calendars/work.ics'));
+        $acl->guardMoving(new BeforeMove('calendars/work.ics', 'archive/work.ics'));
         $acl->guardChangingProperties(new PropertiesChanging(
             new PropPatchResult('calendars/work.ics', ['{DAV:}displayname' => 'x']),
             new MemoryFile('work.ics', ''),
@@ -381,6 +429,39 @@ final class AclEnforcementTest extends TestCase
         $this->expectException(Forbidden::class);
 
         $this->plugin([])->guardTheRequest(new BeforeMethod(new Request('GET', '/calendars/work.ics')));
+    }
+
+    /**
+     * Taking a lock, asked directly. **A `LOCK` writes nothing**, so no write
+     * seam sees it — the check sits with the reading ones and is the only
+     * rule there that depends on what is at the path.
+     */
+    public function testTakingALockOnSomethingThatExistsNeedsWriteContent(): void
+    {
+        $this->expectException(Forbidden::class);
+
+        $this->plugin(['calendars/work.ics' => ['{DAV:}read']])
+            ->guardTheRequest(new BeforeMethod(new Request('LOCK', '/calendars/work.ics')));
+    }
+
+    public function testTakingALockIsAllowedForWhoeverMayWrite(): void
+    {
+        $this->plugin(['calendars/work.ics' => ['{DAV:}write-content']])
+            ->guardTheRequest(new BeforeMethod(new Request('LOCK', '/calendars/work.ics')));
+
+        self::expectNotToPerformAssertions();
+    }
+
+    /**
+     * And a lock on a path that holds nothing asks for nothing here: it
+     * creates a resource, and creating one is `DAV:bind` at the seam that
+     * already guards it (RFC 4918 §9.10.4).
+     */
+    public function testTakingALockOnNothingAsksForNothingHere(): void
+    {
+        $this->plugin([])->guardTheRequest(new BeforeMethod(new Request('LOCK', '/calendars/new.ics')));
+
+        self::expectNotToPerformAssertions();
     }
 
     /**
@@ -431,6 +512,11 @@ final class AclEnforcementTest extends TestCase
         return $acl;
     }
 
+    private static function transfer(string $method, string $target, string $destination): Request
+    {
+        return new Request($method, $target, headers: new Headers(['Destination' => $destination]));
+    }
+
     private static function propFindRequest(string $target, string $depth = '0'): Request
     {
         return new Request(
@@ -449,6 +535,7 @@ final class AclEnforcementTest extends TestCase
         $calendars->add(new MemoryFile('work.ics', 'BEGIN:VCALENDAR'));
         $calendars->add(new MemoryFile('secret.ics', 'BEGIN:VCALENDAR'));
         $root->add($calendars);
+        $root->add(new MemoryCollection('archive'));
 
         return $root;
     }
@@ -461,6 +548,8 @@ final class AclEnforcementTest extends TestCase
         $server->onMethod('GET', $get(...));
 
         foreach ([
+            'COPY' => new Copy($server),
+            'MOVE' => new Move($server),
             'PUT' => new Put($server),
             'DELETE' => new Delete($server),
             'MKCOL' => new MkCol($server),
