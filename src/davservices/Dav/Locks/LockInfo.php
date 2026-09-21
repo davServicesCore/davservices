@@ -109,6 +109,19 @@ final class LockInfo
     }
 
     /**
+     * The same lock, held until later (RFC 4918 §9.10.2).
+     *
+     * What a refresh is: the same token, the same reach, the same owner. A
+     * server that handed out a **new** lock would leave the old one standing,
+     * held by nobody, and the client would find its own resource locked
+     * against it until that one ran out.
+     */
+    public function until(?DateTimeImmutable $expiresAt): self
+    {
+        return new self($this->root, $this->token, $this->scope, $this->deep, $this->owner, $expiresAt);
+    }
+
+    /**
      * Does this lock hold that path?
      *
      * The slash is the whole of it: `alice2` does not lie below `alice`, and a

@@ -148,6 +148,41 @@ final class LockInfoTest extends TestCase
         self::assertFalse($this->lock()->hasExpired(new DateTimeImmutable('2099-01-01 00:00:00')));
     }
 
+    /**
+     * RFC 4918 §9.10.2: a refresh is **the same lock held until later** — the
+     * same token, the same reach, the same owner. A server that handed out a
+     * new lock instead would leave the old one standing, held by nobody, and
+     * the client would find its own resource locked against it.
+     */
+    public function testIsRefreshedByBeingHeldUntilLater(): void
+    {
+        $owner = new Element('{DAV:}owner');
+        $lock = new LockInfo('calendars', 'opaquelocktoken:abc', LockScope::Shared, true, $owner, null);
+        $later = new DateTimeImmutable('2026-09-20 13:00:00');
+
+        $refreshed = $lock->until($later);
+
+        self::assertSame($later, $refreshed->expiresAt());
+        self::assertSame('calendars', $refreshed->root());
+        self::assertSame('opaquelocktoken:abc', $refreshed->token());
+        self::assertSame(LockScope::Shared, $refreshed->scope());
+        self::assertTrue($refreshed->isDeep());
+        self::assertSame($owner, $refreshed->owner());
+    }
+
+    /**
+     * And the lock it was made from is unchanged, because nothing in this
+     * library hands out an object that changes under whoever is holding it.
+     */
+    public function testLeavesTheLockItWasMadeFromAlone(): void
+    {
+        $lock = $this->lock();
+
+        $lock->until(new DateTimeImmutable('2099-01-01 00:00:00'));
+
+        self::assertNull($lock->expiresAt());
+    }
+
     private function lock(): LockInfo
     {
         return new LockInfo('x', 'opaquelocktoken:abc', LockScope::Exclusive, false, null, null);
