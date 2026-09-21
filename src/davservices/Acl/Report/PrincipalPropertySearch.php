@@ -301,7 +301,11 @@ final class PrincipalPropertySearch
     private static function found(string $text, Element|string|null $value): bool
     {
         foreach (self::textsOf($value) as $piece) {
-            if (mb_stripos($piece, $text) !== false) {
+            // The encoding is said rather than left to `mb_internal_encoding()`:
+            // both sides came out of the same XML document, and an application
+            // that had set that global to something else would change what
+            // this server finds without touching it.
+            if (mb_stripos($piece, $text, 0, 'UTF-8') !== false) {
                 return true;
             }
         }

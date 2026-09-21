@@ -84,6 +84,8 @@ final class PrincipalPropertySearchTest extends TestCase
 {
     private const COLOUR = '{https://dav.services/test}colour';
 
+    private const NESTED = '{https://dav.services/test}nested';
+
     private const BY_NAME = <<<'XML'
         <D:principal-property-search xmlns:D="DAV:">
           <D:property-search>
@@ -150,8 +152,8 @@ final class PrincipalPropertySearchTest extends TestCase
 
     /**
      * **Several searches are AND** (§9.4), so adding one narrows the result.
-     * Here the name must hold "smith" and the address must hold "example.com"
-     * — which only one of them does.
+     * The first here matches three people; the second is what leaves one —
+     * which is the only way to show the second search was read at all.
      */
     public function testSeveralSearchesAreAnd(): void
     {
@@ -159,17 +161,18 @@ final class PrincipalPropertySearchTest extends TestCase
             <D:principal-property-search xmlns:D="DAV:">
               <D:property-search>
                 <D:prop><D:displayname/></D:prop>
-                <D:match>smith</D:match>
+                <D:match>doe</D:match>
               </D:property-search>
               <D:property-search>
                 <D:prop><D:alternate-URI-set/></D:prop>
-                <D:match>example.com</D:match>
+                <D:match>zsmith</D:match>
               </D:property-search>
             </D:principal-property-search>
             XML)->body();
 
         self::assertStringContainsString('<d:href>/principals/zsmith</d:href>', $body);
-        self::assertStringNotContainsString('/principals/jdoe', $body);
+        self::assertStringNotContainsString('/principals/jdoe', $body, 'whom the first search alone would have found');
+        self::assertStringNotContainsString('/principals/groups/admins', $body);
     }
 
     /**
@@ -516,11 +519,99 @@ final class PrincipalPropertySearchTest extends TestCase
      */
     public function testAValueOfSeveralPiecesIsMatchedPieceByPiece(): void
     {
-        $inside = (string) $this->search($this->byAddress('john@example.org'))->body();
+        $first = (string) $this->search($this->byAddress('jdoe@example.com'))->body();
+        $second = (string) $this->search($this->byAddress('john@example.org'))->body();
         $across = (string) $this->search($this->byAddress('example.commailto'))->body();
 
-        self::assertStringContainsString('<d:href>/principals/jdoe</d:href>', $inside);
-        self::assertStringNotContainsString('<d:response>', $across);
+        self::assertStringContainsString('<d:href>/principals/jdoe</d:href>', $first, 'the first address');
+        self::assertStringContainsString('<d:href>/principals/jdoe</d:href>', $second, 'and the second');
+        self::assertStringNotContainsString('<d:response>', $across, 'but not a string spanning both');
+    }
+
+    /**
+     * **And a value nested deeper is still matched piece by piece** — §9.4.1
+     * is written about exactly this: a property with mixed content is
+     * compared against each contiguous run of character data, however far
+     * down it sits.
+     *
+     * One honest difference from the example there: this library's XML model
+     * joins the character data directly inside one element, so the `{cdata 0}`
+     * and `{cdata 3}` of §9.4.1 arrive as one piece rather than two. The
+     * matching is the server's to define (§9.4), and joining two runs of the
+     * same element's own text can only ever find more, never something in the
+     * wrong element.
+     */
+    public function testAValueNestedDeeperIsMatchedPieceByPieceToo(): void
+    {
+        $server = $this->server();
+
+        $found = (string) $this->searchFor($this->byNestedProperty('alpha'), $server)->body();
+        $deeper = (string) $this->searchFor($this->byNestedProperty('beta'), $server)->body();
+
+        self::assertStringContainsString('<d:href>/principals/jdoe</d:href>', $found);
+        self::assertStringContainsString('<d:href>/principals/jdoe</d:href>', $deeper);
+    }
+
+    /**
+     * **Caseless means caseless, not caseless in ASCII.** §9.4's
+     * implementation note sends implementors to the Unicode standard for
+     * exactly this: a German name searched for in lower case is the ordinary
+     * case, and a byte-wise comparison would quietly fail to find anybody
+     * whose name is not spelt in English letters.
+     */
+    public function testTheCaselessMatchReachesBeyondAscii(): void
+    {
+        // The search is in capitals, which is how people type when they are
+        // in a hurry — and `Ü` against `ü` is the whole point: a byte-wise
+        // comparison folds `M` to `m` quite happily and then stops, because
+        // neither of those two bytes is a letter it knows.
+        $body = (string) $this->search($this->byName('MÜLLER'))->body();
+
+        self::assertStringContainsString('<d:href>/principals/mueller</d:href>', $body);
+    }
+
+    /**
+     * **Exactly the limit is still answered.** "At most" means the last one
+     * allowed is allowed; a server that refused at the limit would report one
+     * fewer than it promised, and nobody would know which.
+     */
+    public function testExactlyTheLimitIsStillReported(): void
+    {
+        $response = $this->search(self::BY_NAME, null, '0', 3);
+
+        self::assertSame(207, $response->status(), 'three matched, three are reported');
+    }
+
+    /**
+     * **Every collection in the set is searched, not just one.** §9.4 says
+     * "each collection identified by the DAV:principal-collection-set
+     * property" — a deployment that keeps its people in two places would
+     * otherwise have half of them unfindable, and nothing would say so.
+     */
+    public function testEveryPrincipalCollectionInTheSetIsSearched(): void
+    {
+        $server = $this->serverWithTwoCollections();
+
+        $server->events()->on(
+            PropertiesRequested::class,
+            static function (PropertiesRequested $event): void {
+                $set = new Element('{DAV:}principal-collection-set');
+
+                foreach (['/principals', '/others'] as $where) {
+                    $href = new Element('{DAV:}href');
+
+                    $href->appendText($where);
+                    $set->append($href);
+                }
+
+                $event->result()->set('{DAV:}principal-collection-set', $set);
+            },
+        );
+
+        $body = (string) $this->search($this->applyingToTheCollectionSet(), $server, '0', 250, '/')->body();
+
+        self::assertStringContainsString('<d:href>/principals/jdoe</d:href>', $body);
+        self::assertStringContainsString('<d:href>/others/jsmith</d:href>', $body, 'the second collection too');
     }
 
     /**
@@ -535,6 +626,28 @@ final class PrincipalPropertySearchTest extends TestCase
 
         self::assertSame(207, $response->status());
         self::assertStringNotContainsString('<d:response>', (string) $response->body());
+    }
+
+    private function byNestedProperty(string $match): string
+    {
+        return sprintf(
+            '<D:principal-property-search xmlns:D="DAV:" xmlns:T="https://dav.services/test">'
+            . '<D:property-search><D:prop><T:nested/></D:prop><D:match>%s</D:match></D:property-search>'
+            . '</D:principal-property-search>',
+            $match,
+        );
+    }
+
+    private function searchFor(string $body, Server $server): Response
+    {
+        $report = new PrincipalPropertySearch($server, [
+            ...SearchableProperty::standard(),
+            new SearchableProperty(self::NESTED, 'something with pieces inside it'),
+        ], 250);
+
+        $request = new Request('REPORT', '/principals', headers: new Headers(['Depth' => '0']), body: new Body($body));
+
+        return $report($request, $server->reader()->parse($body));
     }
 
     private function applyingToTheCollectionSet(): string
@@ -590,14 +703,56 @@ final class PrincipalPropertySearchTest extends TestCase
         $principals = new MemoryCollection('principals');
         $groups = new MemoryCollection('groups');
 
-        $principals->add($this->person('jdoe', 'John Doe', 'mailto:jdoe@example.com', 'mailto:john@example.org'));
+        $principals->add(
+            $this->person('jdoe', 'John Doe', 'mailto:jdoe@example.com', 'mailto:john@example.org')
+                ->withProperty(self::NESTED, self::nested()),
+        );
         $principals->add($this->person('zsmith', 'Zygdoebert Smith', 'mailto:zsmith@example.com'));
         $principals->add($this->person('nobody'));
+        $principals->add($this->person('mueller', 'Jutta Müller'));
         $groups->add($this->person('admins', 'Doe Administrators'));
         $principals->add($groups);
         $root->add($principals);
 
         return new Server(new Tree($root));
+    }
+
+    /**
+     * A deployment that keeps its people in two places, which is what
+     * `DAV:principal-collection-set` exists to describe.
+     */
+    private function serverWithTwoCollections(): Server
+    {
+        $root = new MemoryCollection('');
+        $principals = new MemoryCollection('principals');
+        $others = new MemoryCollection('others');
+
+        $principals->add($this->person('jdoe', 'John Doe'));
+        $others->add($this->person('jsmith', 'Johnny Smith'));
+        $root->add($principals);
+        $root->add($others);
+
+        return new Server(new Tree($root));
+    }
+
+    /**
+     * The shape RFC 3744 §9.4.1 is written about: character data that sits
+     * further down than the property element itself.
+     */
+    private static function nested(): Element
+    {
+        $property = new Element(self::NESTED);
+        $group = new Element('{https://dav.services/test}group');
+        $first = new Element('{https://dav.services/test}a');
+        $second = new Element('{https://dav.services/test}b');
+
+        $first->appendText('alpha');
+        $second->appendText('beta');
+        $group->append($first);
+        $group->append($second);
+        $property->append($group);
+
+        return $property;
     }
 
     private function person(string $name, ?string $displayName = null, string ...$addresses): MemoryFile

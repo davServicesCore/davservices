@@ -104,6 +104,27 @@ final class AnswersTest extends TestCase
     }
 
     /**
+     * **Everything still open goes to the node in one question.** A node
+     * asked for its properties one at a time is a backend running one query
+     * per property, and the whole point of handing it a list is that it need
+     * not be.
+     */
+    public function testAsksTheNodeForEverythingStillOpenAtOnce(): void
+    {
+        $node = (new MemoryFile('work.ics', ''))
+            ->withProperty(self::COLOUR, 'blue')
+            ->withProperty(self::SHAPE, 'round');
+
+        $answers = $this->about($node, PropFindForm::Named, [self::COLOUR, self::SHAPE]);
+
+        self::assertSame([self::COLOUR, self::SHAPE], $node->askedFor, 'both names, in one question');
+        self::assertSame(
+            [self::COLOUR => 'blue', self::SHAPE => 'round'],
+            $answers->byStatus()[200] ?? [],
+        );
+    }
+
+    /**
      * RFC 4918 §9.1: `allprop` reports what the resource has, which is the
      * only way a client learns of a dead property — nobody can name what
      * nobody has told them about.
