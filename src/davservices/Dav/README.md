@@ -31,6 +31,7 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `PropPatchResult` | The changes of one request, and the rule that one failure fails them all |
 | `Event\PropertiesChanging` | Raised before anything is written; a listener refuses or takes one on |
 | `Method\Copy`, `Method\Move` | Answer `COPY` and `MOVE`; what they share is in `Method\Transfer` |
+| `Method\Report` | Answers `REPORT`: whatever the body asks for, by name — and says which names it knows |
 | `Event\BeforeCopy`, `AfterCopy` | Raised around a copy, with both ends of it |
 | `Event\BeforeMove`, `AfterMove` | Raised around a move; a move is not a removal and a creation |
 | `Event\BeforeBind`, `AfterBind` | Raised wherever a member appears, whatever method put it there |
