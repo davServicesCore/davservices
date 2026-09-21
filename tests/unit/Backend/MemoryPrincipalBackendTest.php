@@ -48,6 +48,10 @@ final class MemoryPrincipalBackendTest extends PrincipalBackendContract
     {
         return new MemoryPrincipalBackend(
             new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test']),
+            new PrincipalInfo('carol', 'Carol Carter', [
+                'mailto:carol@example.test',
+                'mailto:c.carter@example.test',
+            ]),
             new PrincipalInfo('plain'),
         );
     }
