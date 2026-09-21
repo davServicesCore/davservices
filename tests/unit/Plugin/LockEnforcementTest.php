@@ -20,6 +20,7 @@ use DavServices\Dav\Event\BeforeMove;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\PropertiesChanging;
+use DavServices\Dav\Event\StateTokensRequested;
 use DavServices\Dav\Locks\LockInfo;
 use DavServices\Dav\Locks\LockScope;
 use DavServices\Dav\Method\Copy;
@@ -33,7 +34,6 @@ use DavServices\Dav\PropPatchResult;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Exception\Locked;
-use DavServices\Exception\PreconditionFailed;
 use DavServices\Http\Body;
 use DavServices\Http\Headers;
 use DavServices\Http\Request;
@@ -182,6 +182,28 @@ final class LockEnforcementTest extends TestCase
         );
 
         self::assertSame(423, $response->status());
+    }
+
+    /**
+     * **Overwriting a collection destroys what is inside it**, so a lock
+     * anywhere below the destination stands in the way (RFC 4918 §9.8.4 and
+     * §9.9.3: `Overwrite: T` deletes what is there first). A guard that only
+     * looked at the destination itself would let a `COPY` wipe out a
+     * resource somebody was told was held.
+     */
+    #[DataProvider('transfersOntoACollection')]
+    public function testRefusesToOverwriteACollectionThatHoldsALockedMember(Request $request): void
+    {
+        self::assertSame(423, $this->handle($request, $this->holding($this->held()))->status());
+    }
+
+    /**
+     * @return iterable<string, array{Request}>
+     */
+    public static function transfersOntoACollection(): iterable
+    {
+        yield 'COPY onto it' => [self::withDestination('COPY', '/spare', '/calendars')];
+        yield 'MOVE onto it' => [self::withDestination('MOVE', '/spare', '/calendars')];
     }
 
     /**
@@ -474,97 +496,73 @@ final class LockEnforcementTest extends TestCase
     }
 
     /**
-     * A request that claims nothing is held to nothing, and the guard has
-     * nothing to read.
+     * **The whole of what locking contributes to a precondition**: which
+     * tokens a path is in the state of. The evaluation itself is core
+     * WebDAV — see {@see \DavServices\Dav\Precondition\RequestConditions} —
+     * and this is the one thing it cannot work out on its own.
      */
-    public function testARequestWithNoConditionIsHeldToNothing(): void
+    public function testNamesTheTokensOfTheLocksItHolds(): void
     {
-        $this->plugin(new MemoryLockBackend())->holdTheRequestToWhatItClaimed(
-            new BeforeMethod(new Request('PUT', '/calendars/work.ics')),
-        );
+        $event = new StateTokensRequested('calendars/work.ics');
 
-        self::expectNotToPerformAssertions();
+        $this->plugin($this->holding($this->held()))->nameTheTokensHeldOn($event);
+
+        self::assertSame([self::TOKEN], $event->tokens());
     }
 
     /**
-     * And a request whose condition does hold passes without a word, which is
-     * the case the refusals below are told apart from.
+     * A deep lock above the path holds it, and its token is what a client
+     * has to submit for a write inside that collection.
      */
-    public function testARequestWhoseConditionHoldsPassesTheGuard(): void
+    public function testNamesTheTokenOfADeepLockAboveThePath(): void
     {
-        $this->plugin($this->holding($this->held()))->holdTheRequestToWhatItClaimed(new BeforeMethod(new Request(
+        $event = new StateTokensRequested('calendars/work.ics');
+
+        $this->plugin($this->holding($this->held(root: 'calendars', deep: true)))->nameTheTokensHeldOn($event);
+
+        self::assertSame([self::TOKEN], $event->tokens());
+    }
+
+    public function testNamesNoTokenForAPathNobodyHolds(): void
+    {
+        $event = new StateTokensRequested('calendars/other.ics');
+
+        $this->plugin($this->holding($this->held()))->nameTheTokensHeldOn($event);
+
+        self::assertSame([], $event->tokens());
+    }
+
+    /**
+     * R-LOCK-03 once more: a lock that has run out names no token, or a
+     * client would have to submit one for a hold that is over.
+     */
+    public function testNamesNoTokenForALockThatHasRunOut(): void
+    {
+        $event = new StateTokensRequested('calendars/work.ics');
+
+        $this->plugin($this->holding($this->held(until: '2026-09-21 11:00:00')))->nameTheTokensHeldOn($event);
+
+        self::assertSame([], $event->tokens());
+    }
+
+    /**
+     * The guards hang on seams that carry a path rather than a request, so
+     * the request is kept from the one event that does carry it. Without it
+     * a guard still guards — it simply sees no submitted token.
+     */
+    public function testRemembersTheRequestSoThatAGuardCanReadWhatItSubmitted(): void
+    {
+        $locks = $this->plugin($this->holding($this->held()));
+
+        $locks->rememberTheRequest(new BeforeMethod(new Request(
             'PUT',
             '/calendars/work.ics',
             headers: $this->submitting(self::TOKEN),
         )));
 
+        $locks->refuseAWriteToAHeldPath(new BeforeWriteContent('calendars/work.ics', 'changed'));
+
         self::expectNotToPerformAssertions();
-    }
-
-    /**
-     * **A condition this server cannot check is not one it may call true.** A
-     * list tagged with another server names a resource this one knows nothing
-     * about; the safe reading is that it does not hold, and the client is told
-     * `412` rather than let through on a claim nobody verified.
-     */
-    public function testACondorationAboutAnotherServerHoldsNothing(): void
-    {
-        $this->expectException(PreconditionFailed::class);
-
-        $this->plugin($this->holding($this->held()))->holdTheRequestToWhatItClaimed(new BeforeMethod(new Request(
-            'PUT',
-            '/calendars/work.ics',
-            headers: new Headers([
-                'Host' => 'localhost',
-                'If' => sprintf('<http://elsewhere.example/calendars/work.ics> (<%s>)', self::TOKEN),
-            ]),
-        )));
-    }
-
-    /**
-     * A resource tag naming a path that cannot be resolved safely is in the
-     * same position: unreadable is not true.
-     */
-    public function testAConditionAboutAPathNobodyCanResolveHoldsNothing(): void
-    {
-        $this->expectException(PreconditionFailed::class);
-
-        $this->plugin($this->holding($this->held()))->holdTheRequestToWhatItClaimed(new BeforeMethod(new Request(
-            'PUT',
-            '/calendars/work.ics',
-            headers: new Headers(['If' => sprintf('</../outside> (<%s>)', self::TOKEN)]),
-        )));
-    }
-
-    /**
-     * And a condition about a path that holds nothing at all: a `PUT` that
-     * would create a file cannot name an entity tag the file does not have
-     * yet.
-     */
-    public function testAConditionAboutAPathThatHoldsNothingHoldsNothing(): void
-    {
-        $this->expectException(PreconditionFailed::class);
-
-        $this->plugin(new MemoryLockBackend())->holdTheRequestToWhatItClaimed(new BeforeMethod(new Request(
-            'PUT',
-            '/calendars/new.ics',
-            headers: new Headers(['If' => '(["whatever"])']),
-        )));
-    }
-
-    /**
-     * A collection has no entity tag of its own, so a condition naming one
-     * cannot hold of it.
-     */
-    public function testAConditionAboutTheEntityTagOfACollectionHoldsNothing(): void
-    {
-        $this->expectException(PreconditionFailed::class);
-
-        $this->plugin(new MemoryLockBackend())->holdTheRequestToWhatItClaimed(new BeforeMethod(new Request(
-            'DELETE',
-            '/calendars',
-            headers: new Headers(['If' => '(["whatever"])']),
-        )));
     }
 
     private function plugin(MemoryLockBackend $backend): Locks
@@ -580,6 +578,11 @@ final class LockEnforcementTest extends TestCase
         $calendars->add(new MemoryFile('work.ics', 'BEGIN:VCALENDAR'));
         $calendars->add(new MemoryFile('other.ics', 'BEGIN:VCALENDAR'));
         $root->add($calendars);
+
+        $spare = new MemoryCollection('spare');
+
+        $spare->add(new MemoryFile('note.txt', 'nothing in particular'));
+        $root->add($spare);
 
         return $root;
     }

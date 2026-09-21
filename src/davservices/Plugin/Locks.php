@@ -26,25 +26,20 @@ use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
-use DavServices\Dav\IFile;
-use DavServices\Dav\Locks\IfEvaluator;
+use DavServices\Dav\Event\StateTokensRequested;
 use DavServices\Dav\Locks\LockDiscovery;
 use DavServices\Dav\Locks\LockInfo;
 use DavServices\Dav\Locks\LockRequest;
 use DavServices\Dav\Locks\LockScope;
 use DavServices\Dav\Locks\LockToken;
-use DavServices\Dav\Locks\ResourceState;
 use DavServices\Dav\Server;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Conflict;
-use DavServices\Exception\DavException;
 use DavServices\Exception\Locked;
 use DavServices\Exception\PreconditionFailed;
-use DavServices\Http\ETag;
 use DavServices\Http\IfHeader;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
-use DavServices\Uri\MalformedPath;
 use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 use InvalidArgumentException;
@@ -146,7 +141,8 @@ final class Locks
         $events->on(OptionsRequested::class, $this->announce(...));
         $events->on(PropertiesRequested::class, $this->describe(...));
 
-        $events->on(BeforeMethod::class, $this->holdTheRequestToWhatItClaimed(...));
+        $events->on(BeforeMethod::class, $this->rememberTheRequest(...));
+        $events->on(StateTokensRequested::class, $this->nameTheTokensHeldOn(...));
 
         // A `COPY` needs no seam of its own: it reads its source and binds
         // its destination, and binding is one of these three. Nothing about
@@ -160,33 +156,31 @@ final class Locks
     }
 
     /**
-     * R-HTTP-07: a request that put a condition on itself is held to it.
+     * Which state tokens a path is in the state of (RFC 4918 §10.4).
      *
-     * Done once, before the method runs, because the `If` header is about the
-     * **request** and not about any one write inside it. **A condition that
-     * does not hold is `412` even where nothing is locked at all:**
-     * `If: (<opaquelocktoken:made-up>)` on a free resource is a claim that is
-     * simply false, and answering `204` would tell the client its claim was
-     * good.
-     *
-     * @throws PreconditionFailed If no list of the header holds
-     * @throws BadRequest If the header cannot be read
+     * **This is the whole of what locking contributes to a precondition.**
+     * The evaluation itself is core WebDAV and lives in the server, because
+     * an `If` header of entity tags alone needs no locking at all — see
+     * {@see \DavServices\Dav\Precondition\RequestConditions}.
      */
-    public function holdTheRequestToWhatItClaimed(BeforeMethod $event): void
+    public function nameTheTokensHeldOn(StateTokensRequested $event): void
+    {
+        foreach ($this->locks->locksOn($event->path(), ($this->now)()) as $lock) {
+            $event->add($lock->token());
+        }
+    }
+
+    /**
+     * Keeps the request being answered, so that the guards below can read the
+     * tokens it submitted.
+     *
+     * The seams they hang on carry paths rather than requests, because a
+     * write is a write whoever asked for it — but whether it may go through
+     * depends on what this particular client sent.
+     */
+    public function rememberTheRequest(BeforeMethod $event): void
     {
         $this->request = $event->request();
-
-        $header = $this->request->headers()->first('If');
-
-        if ($header === null) {
-            return;
-        }
-
-        $stateOf = fn (?string $resource): ResourceState => $this->stateOf($resource);
-
-        if (!IfEvaluator::holds(IfHeader::parse($header), $stateOf)) {
-            throw new PreconditionFailed('The If header of this request names a state this server is not in.');
-        }
     }
 
     /**
@@ -298,15 +292,15 @@ final class Locks
     }
 
     /**
-     * A `MOVE` changes both ends, and the source **and everything inside it**:
-     * a collection cannot be moved out from under a lock on one of its
-     * members, because the lock names a path that would stop existing.
+     * A `MOVE` changes both ends, so both are asked about. The source goes
+     * away and the destination is replaced, and each takes what is inside it
+     * along — which is why neither question stops at the path itself.
      *
      * @throws Locked If either end is held by a lock this request did not name
      */
     public function refuseAMoveThatIsHeld(BeforeMove $event): void
     {
-        $this->refuseUnlessFree($event->from(), alsoBelow: true);
+        $this->refuseUnlessFree($event->from());
         $this->refuseUnlessFree($event->to());
     }
 
@@ -334,15 +328,18 @@ final class Locks
      *
      * @throws Locked If something holds it that this request did not name
      */
-    private function refuseUnlessFree(string $path, bool $alsoBelow = false): void
+    private function refuseUnlessFree(string $path): void
     {
         $now = ($this->now)();
-        $held = $this->locks->locksOn($path, $now);
 
-        if ($alsoBelow) {
-            $held = [...$held, ...$this->locks->locksBelow($path, $now)];
-        }
-
+        // **Both questions, every time.** What holds the path itself, and
+        // what is held inside it — because a write at a path takes what is
+        // below it with it: a `MOVE` carries a whole collection away, and an
+        // overwrite deletes what was there first (RFC 4918 §9.8.4). Asking
+        // only about the path would let a `COPY` wipe out a resource somebody
+        // was told was held. For a file the second question costs a query and
+        // finds nothing, which is a cheaper price than the rule it keeps.
+        $held = [...$this->locks->locksOn($path, $now), ...$this->locks->locksBelow($path, $now)];
         $submitted = self::tokensIn($this->request?->headers()->first('If'));
 
         foreach ($held as $lock) {
@@ -353,66 +350,6 @@ final class Locks
                 );
             }
         }
-    }
-
-    /**
-     * What a client could have known about one resource: the tokens held on
-     * it, and its entity tag.
-     *
-     * A resource tag that names another server, or a path outside this tree,
-     * yields a state that satisfies nothing. **Fail closed:** a condition
-     * this server cannot check is not one it may call true, and a client that
-     * meant something by it is told `412` rather than let through.
-     */
-    private function stateOf(?string $resource): ResourceState
-    {
-        try {
-            $path = $resource === null
-                ? $this->server->path($this->requestMade())
-                : $this->server->pathOfUrl($resource, $this->requestMade());
-        } catch (DavException | MalformedPath $elsewhere) {
-            return new ResourceState([], null);
-        }
-
-        $tokens = [];
-
-        foreach ($this->locks->locksOn($path, ($this->now)()) as $lock) {
-            $tokens[] = $lock->token();
-        }
-
-        return new ResourceState($tokens, $this->etagOf($path));
-    }
-
-    /**
-     * The entity tag of what is at the path, where there is something there
-     * and it has one.
-     */
-    private function etagOf(string $path): ?ETag
-    {
-        try {
-            $node = $this->server->tree()->node($path);
-        } catch (DavException $nothingThere) {
-            // The path came through `pathOf()` already, so it cannot be a
-            // malformed one here: what is caught is "there is nothing there".
-            return null;
-        }
-
-        $etag = $node instanceof IFile ? $node->etag() : null;
-
-        return $etag === null ? null : ETag::parse($etag);
-    }
-
-    /**
-     * The request being answered.
-     *
-     * There is always one by the time a write happens: `BeforeMethod` is
-     * raised before any method runs. A plugin asked outside a request at all
-     * is answered with an empty one, so that a guard still guards rather than
-     * falling over.
-     */
-    private function requestMade(): Request
-    {
-        return $this->request ?? new Request('GET', '/');
     }
 
     /**

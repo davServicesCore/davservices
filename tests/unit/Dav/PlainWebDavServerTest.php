@@ -54,6 +54,11 @@ use PHPUnit\Framework\TestCase;
  * **The two lock properties are `404`.** A server that does not lock does not
  * know the question, and an empty answer would say "nobody holds this", which
  * it cannot know.
+ *
+ * **But it still holds a client to an `If` header.** RFC 4918 §10.4 is core
+ * WebDAV: an `If` of entity tags alone needs no locking, and a condition that
+ * was quietly dropped could let through exactly the write the client took
+ * pains to prevent.
  */
 #[CoversClass(Server::class)]
 final class PlainWebDavServerTest extends TestCase
@@ -144,22 +149,17 @@ final class PlainWebDavServerTest extends TestCase
     }
 
     /**
-     * **The open question of this chunk, written down rather than left to be
-     * discovered.** RFC 4918 §10.4 is core WebDAV, not a lock extension: an
-     * `If` header may name entity tags alone, and those need no locking to
-     * evaluate. Here nothing evaluates it, because the evaluation was built
-     * with the lock plugin in P3-04 — so a client that guarded its write with
-     * a stale tag is not refused.
+     * **RFC 4918 §10.4 is core WebDAV, not part of locking.** An `If` header
+     * of entity tags alone needs no lock storage to check, and a server that
+     * ignored it would be dropping a guard a client took pains to set — the
+     * same failure {@see \DavServices\Http\IfHeader} refuses when it answers
+     * `400` to a header it cannot read.
      *
-     * That is a guard quietly dropped, which this library refuses to do
-     * elsewhere: {@see \DavServices\Http\IfHeader} answers `400` to a header
-     * it cannot read for exactly this reason. **This test states the present
-     * behaviour so that changing it is a decision somebody makes rather than
-     * a surprise**, and the progress notes carry the recommendation: the
-     * evaluation belongs in the core with the lock plugin contributing its
-     * state tokens.
+     * So a plain server holds a client to its conditions too. This was P3-05's
+     * finding and P3-05b's work: the evaluation sits in the core, and the lock
+     * plugin contributes nothing but the state tokens it knows of.
      */
-    public function testDoesNotYetHoldARequestToAnIfHeaderOfEntityTagsAlone(): void
+    public function testHoldsARequestToAnIfHeaderOfEntityTagsAlone(): void
     {
         $response = $this->handle(new Request(
             'PUT',
@@ -168,7 +168,42 @@ final class PlainWebDavServerTest extends TestCase
             body: new Body('changed'),
         ));
 
-        self::assertSame(204, $response->status(), 'Without the lock plugin, nothing evaluates the If header.');
+        self::assertSame(412, $response->status());
+    }
+
+    /**
+     * And one that names the tag the resource does have goes through, which
+     * is what proves the refusal above is about the condition rather than
+     * about the header being there at all.
+     */
+    public function testLetsThroughAnIfHeaderThatHolds(): void
+    {
+        $response = $this->handle(new Request(
+            'PUT',
+            '/calendars/work.ics',
+            headers: new Headers(['If' => sprintf('(["%s"])', md5('BEGIN:VCALENDAR'))]),
+            body: new Body('changed'),
+        ));
+
+        self::assertSame(204, $response->status());
+    }
+
+    /**
+     * **A state token nobody can vouch for is a claim that is false.** With
+     * no lock plugin there is nothing to name a token, so a client that
+     * submitted one has said something untrue about the resource — and is
+     * told so rather than quietly obliged.
+     */
+    public function testRefusesARequestNamingAStateTokenNobodyHolds(): void
+    {
+        $response = $this->handle(new Request(
+            'PUT',
+            '/calendars/work.ics',
+            headers: new Headers(['If' => '(<opaquelocktoken:made-up>)']),
+            body: new Body('changed'),
+        ));
+
+        self::assertSame(412, $response->status());
     }
 
     private function handle(Request $request): Response

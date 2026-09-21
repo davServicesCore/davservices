@@ -34,6 +34,10 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Event\BeforeCopy`, `AfterCopy` | Raised around a copy, with both ends of it |
 | `Event\BeforeMove`, `AfterMove` | Raised around a move; a move is not a removal and a creation |
 | `Event\BeforeBind`, `AfterBind` | Raised wherever a member appears, whatever method put it there |
+| `Precondition\RequestConditions` | Holds a request to the `If` header it set itself — core WebDAV, not locking |
+| `Precondition\IfEvaluator` | The *and* inside the *or* of RFC 4918 §10.4, and nothing else |
+| `Precondition\ResourceState` | What a client could have known about one resource: its tokens and its tag |
+| `Event\StateTokensRequested` | Where a plugin says which tokens a resource is in the state of |
 | `Locks\LockInfo` | One write lock: what it reaches, and when it ends |
 | `Locks\LockScope` | Whether anybody else may hold one at the same time |
 | `Locks\LockToken` | The name a lock is held by, made of cryptographic random |
