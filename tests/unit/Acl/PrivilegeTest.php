@@ -168,6 +168,38 @@ final class PrivilegeTest extends TestCase
     }
 
     /**
+     * **And what the parent already aggregated stays.** Hanging something
+     * under `DAV:write` must not cost it its four — a tree that replaced
+     * them would quietly turn `DAV:write` into a name for one thing, and
+     * every client granted it would lose the right to create members.
+     */
+    public function testKeepsWhatTheParentAlreadyAggregated(): void
+    {
+        $tree = Privilege::standard()->with('{DAV:}write', new Privilege(self::FREE_BUSY));
+        $write = $tree->find('{DAV:}write');
+
+        self::assertNotNull($write);
+        self::assertSame(
+            ['{DAV:}write-content', '{DAV:}write-properties', '{DAV:}bind', '{DAV:}unbind', self::FREE_BUSY],
+            array_map(static fn (Privilege $child): string => $child->name(), $write->aggregates()),
+        );
+    }
+
+    /**
+     * Two extensions hang their own under the same parent, and the second
+     * does not cost the first its place.
+     */
+    public function testTakesOnePrivilegeAfterAnother(): void
+    {
+        $tree = Privilege::standard()
+            ->with('{DAV:}read', new Privilege(self::FREE_BUSY))
+            ->with('{DAV:}read', new Privilege('{https://dav.services/test}read-something'));
+
+        self::assertTrue($tree->contains(self::FREE_BUSY));
+        self::assertTrue($tree->contains('{https://dav.services/test}read-something'));
+    }
+
+    /**
      * And the tree it was made from is unchanged, because nothing in this
      * library hands out an object that changes under whoever is holding it.
      */
