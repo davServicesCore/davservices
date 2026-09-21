@@ -12,6 +12,7 @@
 declare(strict_types=1);
 
 use DavServices\Backend\File\Directory;
+use DavServices\Backend\File\LockBackend;
 use DavServices\Backend\File\PropertyStorage;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Method\Copy;
@@ -29,6 +30,7 @@ use DavServices\Dav\Tree;
 use DavServices\Event\EventEmitter;
 use DavServices\Http\Sapi;
 use DavServices\Plugin\DeadProperties;
+use DavServices\Plugin\Locks;
 
 /*
  * A WebDAV server in one file.
@@ -48,13 +50,14 @@ require dirname(__DIR__, 3) . '/autoload.php';
 $data = dirname(__DIR__) . '/var';
 $files = $data . '/files';
 $properties = $data . '/properties';
+$locks = $data . '/locks';
 
 /*
  * The backends want directories that are already there, on purpose: making one
  * up is how a typo ends with a store in a web root. An application knows where
  * its data belongs, so it is the application that makes them.
  */
-foreach ([$files, $properties] as $directory) {
+foreach ([$files, $properties, $locks] as $directory) {
     if (!is_dir($directory) && !mkdir($directory, 0o755, true)) {
         http_response_code(500);
 
@@ -98,6 +101,17 @@ $methods = [
 foreach ($methods as $name => $method) {
     $server->onMethod($name, $method(...));
 }
+
+/*
+ * Locking is a plugin, and a server built without these two lines is a plain
+ * WebDAV server rather than a broken one: it answers `DAV: 1` and `501` to a
+ * LOCK. With them it is of compliance class 2 and brings its own two methods.
+ *
+ * An hour is the longest a lock is handed out for here, whatever a client
+ * asks: a lock that outlives the client that took it is one somebody has to
+ * clear by hand.
+ */
+(new Locks($server, new LockBackend($locks), 3600))->register();
 
 /*
  * The seam to PHP itself: `$_SERVER` in, one answer out.
