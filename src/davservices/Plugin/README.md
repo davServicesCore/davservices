@@ -14,6 +14,7 @@ events, a backend — and nothing below may use a plugin.
 | `DeadProperties` | Keeps the properties the server does not understand, in a storage backend |
 | `Locks` | `LOCK` and `UNLOCK`, and what a client is told about a hold |
 | `Principals` | Where the people are, who you are, and what a principal's own URL is |
+| `Acl` | What a client is told about access control: the privilege tree, what the asker may do, and who holds what |
 | `Browser` | Shows what is in a collection, for development only — off unless it is switched on |
 
 ## Using it
@@ -114,6 +115,51 @@ With nobody signed in the answer is `DAV:unauthenticated`, which is what
 RFC 5397 gives for exactly that case. **Guessing at a principal would be worse
 than saying nothing** — a client that believed it was somebody would show that
 person's calendars.
+
+## What a client is told about access control
+
+```php
+(new Acl($server, new MemoizingPrivilegeResolver($yourResolver)))->register();
+```
+
+Five properties of RFC 3744 §5, and each is easy to get wrong in a way that
+looks right. `DAV:supported-privilege-set` is the tree **written as a tree**,
+with the description and the language the DTD requires — a flat list would
+tell a client that `DAV:write` and `DAV:bind` are unrelated.
+`DAV:current-user-privilege-set` is everything the asker may do, aggregates
+and all, because a client greys out its buttons from it. `DAV:acl` is the
+other direction and reports the entries **as somebody wrote them**.
+`DAV:inherited-acl-set` is empty rather than missing: nothing here inherits a
+list, and a `404` would say the server does not know the question.
+
+**This reports; it does not refuse.** Turning a refusal into a `403` belongs
+on the seams a write passes through, and is its own piece of work.
+
+`DAV:owner` and `DAV:group` are deliberately not answered here. Who owns a
+resource is the backend's to say through `IProperties`, the same way
+`DAV:displayname` is — a plugin that invented an owner would be inventing a
+fact about somebody else's data.
+
+## Who is asking is one question with one answer
+
+```php
+$server->events()->on(
+    CurrentPrincipalRequested::class,
+    static fn (CurrentPrincipalRequested $event) => $event->answerWith($yourSession->principalPath()),
+);
+```
+
+`current-user-principal` says who you are, `current-user-privilege-set` says
+what you may do, and the access checks decide whether you may. **Asking each
+of them to keep its own idea of who is signed in would be asking them to
+disagree**, and a server whose answers disagree about identity shows one
+person's calendar under another person's name.
+
+`Principals` answers the event from the callable it was given, so an
+application with only that plugin writes nothing extra. A plugin that
+authenticates answers the same event instead. Two listeners naming **different**
+principals is a mistake in the wiring and is said out loud rather than settled
+by whichever was registered first.
 
 ## The browser is not a web interface
 
