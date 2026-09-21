@@ -169,14 +169,23 @@ final class AclTest extends TestCase
     }
 
     /**
-     * R-PRIV-03: somebody who has not signed in may do nothing, and the
-     * property says so with an empty set rather than by going missing.
+     * **And nothing more than that.** Reporting what somebody may do is not
+     * an invitation to round it up: a client shows the buttons this property
+     * names, so a privilege reported in error is a button that fails.
+     *
+     * Worth noting what this test cannot be: an *empty* set is unobservable
+     * through the protocol once the checks of R-ACL-05 are on, because
+     * reading the property needs `DAV:read` and `DAV:read` is itself in the
+     * set. Somebody who holds nothing is refused the `PROPFIND`, and the
+     * empty answer is asked for directly instead — see
+     * {@see self::testNobodyMayDoAnythingWhereThereIsNoRequestAtAll()}.
      */
-    public function testTellsSomebodyWhoIsNotSignedInThatTheyMayDoNothing(): void
+    public function testTellsTheAskerOnlyWhatTheyMayDo(): void
     {
-        $body = $this->propFind('/calendars/work', 'current-user-privilege-set');
+        $body = $this->propFind('/calendars/work', 'current-user-privilege-set', who: 'principals/bob');
 
-        self::assertStringContainsString('<d:current-user-privilege-set/>', $body);
+        self::assertStringContainsString('<d:privilege><d:read/></d:privilege>', $body);
+        self::assertStringNotContainsString('<d:write/>', $body);
     }
 
     /**
@@ -211,9 +220,14 @@ final class AclTest extends TestCase
      */
     public function testAResourceNobodyHoldsHasAnEmptyList(): void
     {
-        $body = $this->propFind('/calendars/private', 'acl');
+        $result = new PropFindResult('calendars/private', PropFindForm::Named, ['{DAV:}acl']);
 
-        self::assertStringContainsString('<d:acl/>', $body);
+        $this->plugin()->describe(new PropertiesRequested($result, new MemoryFile('private', '')));
+
+        $list = $result->byStatus()[200]['{DAV:}acl'] ?? null;
+
+        self::assertInstanceOf(Element::class, $list);
+        self::assertSame([], $list->children());
     }
 
     /**
@@ -362,7 +376,7 @@ final class AclTest extends TestCase
             static fn (CurrentPrincipalRequested $event) => $event->answerWith(self::ALICE),
         );
 
-        $plugin->rememberTheRequest(new BeforeMethod(new Request('PROPFIND', '/calendars/work')));
+        $plugin->guardTheRequest(new BeforeMethod(new Request('PROPFIND', '/calendars/work')));
 
         $result = new PropFindResult('calendars/work', PropFindForm::Named, ['{DAV:}current-user-privilege-set']);
 
@@ -406,12 +420,13 @@ final class AclTest extends TestCase
 
         (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects(), $privileges))->register();
 
-        if ($who !== null) {
-            $server->events()->on(
-                CurrentPrincipalRequested::class,
-                static fn (CurrentPrincipalRequested $event) => $event->answerWith($who),
-            );
-        }
+        // Somebody has to be signed in for any of this to be answered at
+        // all: the plugin refuses a `PROPFIND` from whoever may not read
+        // (R-ACL-05), which is what `AclEnforcementTest` is about.
+        $server->events()->on(
+            CurrentPrincipalRequested::class,
+            static fn (CurrentPrincipalRequested $event) => $event->answerWith($who ?? self::ALICE),
+        );
 
         $propFind = new PropFind($server);
 

@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Dav\Method;
 
+use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\PropFindForm;
@@ -551,6 +552,47 @@ final class PropFindTest extends TestCase
             new Headers($depth === null ? [] : ['Depth' => $depth]),
             $body === null ? null : new Body(trim($body)),
         ));
+    }
+
+    /**
+     * **A member that is concealed never reaches the answer** (R-ACL-06).
+     * Refusing to read it is only half the work: a listing that still named
+     * it would have told the client the thing exists, which is what hiding
+     * it was meant to prevent.
+     */
+    public function testLeavesOutAMemberThatWasConcealed(): void
+    {
+        $events = new EventEmitter();
+
+        $events->on(
+            ListingMembers::class,
+            static fn (ListingMembers $event) => $event->conceal('calendars/work.ics'),
+        );
+
+        $body = (string) $this->propFind($this->treeWithACalendar(), '/calendars', '1', events: $events)->body();
+
+        self::assertStringNotContainsString('work.ics', $body);
+        self::assertStringContainsString('<d:href>/calendars/</d:href>', $body);
+    }
+
+    /**
+     * **Every member is offered at once**, because deciding it is a question
+     * to whatever knows the rules, and one question per member is the N+1
+     * that R-PRIV-01 exists to prevent.
+     */
+    public function testOffersEveryMemberOfACollectionInOneGo(): void
+    {
+        $offered = [];
+        $events = new EventEmitter();
+
+        $events->on(ListingMembers::class, static function (ListingMembers $event) use (&$offered): void {
+            $offered[] = $event->members();
+        });
+
+        $this->propFind($this->treeWithACalendar(), '/calendars', '1', events: $events);
+
+        self::assertCount(1, $offered, 'The members are offered in one event, not one each.');
+        self::assertSame(['calendars/work.ics', 'calendars/home.ics'], $offered[0] ?? []);
     }
 
     private function askFor(string $properties): string
