@@ -132,8 +132,27 @@ other direction and reports the entries **as somebody wrote them**.
 `DAV:inherited-acl-set` is empty rather than missing: nothing here inherits a
 list, and a `404` would say the server does not know the question.
 
-**This reports; it does not refuse.** Turning a refusal into a `403` belongs
-on the seams a write passes through, and is its own piece of work.
+**And it refuses what may not be done** (R-ACL-05). Fail closed: what was not
+granted is refused, because a server that let a request through for want of a
+rule would be a server whose rules are a suggestion. Nothing reaches into a
+method class — every check hangs on a seam that was already there.
+
+Two things are worth knowing before switching it on. **`DAV:bind` and
+`DAV:unbind` belong to the collection**, not to the member (§3.9, §3.10):
+creating a file is a change to the collection it appears in. And **hiding is
+two things** — refusing to read a resource is half of it, the other half is
+that the listing of its parent must not name it, or the client has been told
+it exists:
+
+```php
+(new Acl($server, $resolver, unreadableIsNotFound: true))->register();
+```
+
+`403` says "not for you", `404` says nothing at all. Which is right depends on
+whether the existence of the resource is itself a secret. **Only a refusal to
+read is ever hidden**: a write that was refused is a `403` whatever the
+setting, because the client plainly knows the resource is there — it is
+writing to it.
 
 `DAV:owner` and `DAV:group` are deliberately not answered here. Who owns a
 resource is the backend's to say through `IProperties`, the same way

@@ -16,12 +16,21 @@ namespace DavServices\Plugin;
 use DavServices\Acl\IPrivilegeResolver;
 use DavServices\Acl\Privilege;
 use DavServices\Acl\PrivilegeSet;
+use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\BeforeUnbind;
+use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
+use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\OptionsRequested;
+use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Server;
+use DavServices\Exception\DavException;
+use DavServices\Exception\Forbidden;
+use DavServices\Exception\NotFound;
 use DavServices\Http\Request;
+use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 
 /**
@@ -31,12 +40,28 @@ use DavServices\Xml\Element;
  *
  *     (new Acl($server, new MemoizingPrivilegeResolver($yourResolver)))->register();
  *
- * **This reports; it does not refuse.** Everything here answers questions a
- * client asked — who may do what, and what this server can be asked to grant.
- * Turning a refusal into a `403` is the next piece of work and belongs on the
- * seams a write passes through, not here.
+ * It does two things, and they are two halves of the same idea. It **reports**
+ * what a client may do, and it **refuses** what it may not (R-ACL-05).
  *
- * Four of the five are easy to get wrong in a way that looks right:
+ * **Fail closed:** what was not granted is refused. A server that let a
+ * request through because no rule mentioned it would be a server whose rules
+ * are a suggestion. Nothing here reaches into a method class — every check
+ * hangs on a seam that was already there, the same as the lock enforcement
+ * before it, because a write that could not be caught would mean a missing
+ * seam rather than a special case.
+ *
+ * **`DAV:bind` and `DAV:unbind` belong to the collection, not to the member**
+ * (§3.9, §3.10). Creating a file is a change to the collection it appears in,
+ * and a server that asked the member instead would be asking about something
+ * that does not exist yet.
+ *
+ * **Hiding is two things.** Refusing to read a resource is half of it; the
+ * other half is that the listing of its parent must not name it (R-ACL-06),
+ * or the client has been told the thing exists. Whether the refusal itself is
+ * `403` or `404` is the deployment's choice.
+ *
+ * Four of the five properties are easy to get wrong in a way that looks
+ * right:
  *
  * **`DAV:supported-privilege-set` is nested** (§5.3). It is the tree written
  * as a tree, with the description and the language the DTD requires. A flat
@@ -73,6 +98,20 @@ final class Acl
 
     private const INHERITED = '{DAV:}inherited-acl-set';
 
+    /**
+     * What each method has to be allowed before it runs at all.
+     *
+     * Only the reading ones are here: what a write needs depends on **which**
+     * path it touches, and the seams it passes through know that while a
+     * method name does not.
+     */
+    private const READING = [
+        'GET' => '{DAV:}read',
+        'HEAD' => '{DAV:}read',
+        'PROPFIND' => '{DAV:}read',
+        'REPORT' => '{DAV:}read',
+    ];
+
     private readonly Privilege $privileges;
 
     private ?Request $request = null;
@@ -81,11 +120,18 @@ final class Acl
      * @param Privilege|null $privileges What this server can be asked to
      *                                   grant; the tree of RFC 3744 §3
      *                                   unless an extension has added to it
+     * @param bool $unreadableIsNotFound R-ACL-06: whether a refusal to read
+     *                                   is answered `404` rather than `403`.
+     *                                   `403` says "not for you"; `404` says
+     *                                   nothing at all, which is what a
+     *                                   deployment wants where the existence
+     *                                   of a resource is itself a secret
      */
     public function __construct(
         private readonly Server $server,
         private readonly IPrivilegeResolver $resolver,
         ?Privilege $privileges = null,
+        private readonly bool $unreadableIsNotFound = false,
     ) {
         $this->privileges = $privileges ?? Privilege::standard();
     }
@@ -98,9 +144,113 @@ final class Acl
     {
         $events = $this->server->events();
 
-        $events->on(BeforeMethod::class, $this->rememberTheRequest(...));
+        $events->on(BeforeMethod::class, $this->guardTheRequest(...));
         $events->on(OptionsRequested::class, $this->announce(...));
         $events->on(PropertiesRequested::class, $this->describe(...));
+
+        // R-ACL-05: the checks hang on the seams that were already there.
+        // Nothing here reaches into a method class — the same as the lock
+        // enforcement of P3-04, and for the same reason: a write that could
+        // not be caught would mean a missing seam, not a special case.
+        $events->on(BeforeWriteContent::class, $this->guardWritingContent(...));
+        $events->on(BeforeBind::class, $this->guardBinding(...));
+        $events->on(BeforeUnbind::class, $this->guardUnbinding(...));
+        $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
+        $events->on(ListingMembers::class, $this->concealWhatMayNotBeRead(...));
+    }
+
+    /**
+     * Keeps the request, and refuses it outright where it only reads and the
+     * asker may not.
+     *
+     * R-ACL-05 wants the check in one place before the operation, and for a
+     * reading method there is only one thing to check: the target. What a
+     * write needs depends on which path it touches, and that is what the
+     * seams below are for.
+     *
+     * @throws Forbidden If the asker may not read the target
+     * @throws NotFound If they may not and the deployment hides that
+     */
+    public function guardTheRequest(BeforeMethod $event): void
+    {
+        $this->request = $event->request();
+
+        $needed = self::READING[$event->request()->method()] ?? null;
+
+        if ($needed === null) {
+            return;
+        }
+
+        $path = $this->server->path($event->request());
+
+        if (!$this->resolver->forPath($this->whoIsAsking(), $path)->has($needed)) {
+            throw $this->refusalToRead($path);
+        }
+    }
+
+    /**
+     * RFC 3744 §3.4: changing what a resource holds.
+     *
+     * @throws Forbidden If the asker may not
+     */
+    public function guardWritingContent(BeforeWriteContent $event): void
+    {
+        $this->refuseUnlessAllowed($event->path(), '{DAV:}write-content');
+    }
+
+    /**
+     * RFC 3744 §3.9: **`DAV:bind` belongs to the collection, not to the
+     * member.** Creating a file is a change to the collection it appears in,
+     * and a server that asked the member instead would be asking about
+     * something that does not exist yet — and granting on a rule nobody
+     * could have written.
+     *
+     * @throws Forbidden If the asker may not
+     */
+    public function guardBinding(BeforeBind $event): void
+    {
+        $this->refuseUnlessAllowed(self::collectionOf($event->path()), '{DAV:}bind');
+    }
+
+    /**
+     * RFC 3744 §3.10: and removing one is `DAV:unbind` on the collection,
+     * for the same reason.
+     *
+     * @throws Forbidden If the asker may not
+     */
+    public function guardUnbinding(BeforeUnbind $event): void
+    {
+        $this->refuseUnlessAllowed(self::collectionOf($event->path()), '{DAV:}unbind');
+    }
+
+    /**
+     * RFC 3744 §3.3: properties are their own privilege, so that a client
+     * which may change the content may not thereby rename the resource.
+     *
+     * @throws Forbidden If the asker may not
+     */
+    public function guardChangingProperties(PropertiesChanging $event): void
+    {
+        $this->refuseUnlessAllowed($event->result()->path(), '{DAV:}write-properties');
+    }
+
+    /**
+     * R-ACL-06: **a member nobody may read is not in the listing of its
+     * parent.** Refusing to read it is only half of hiding it — a listing
+     * that still named it would have told the client the thing exists.
+     *
+     * Asked in **one** question for the whole collection, which is what
+     * `forPaths()` is part of the contract for (R-PRIV-01).
+     */
+    public function concealWhatMayNotBeRead(ListingMembers $event): void
+    {
+        $who = $this->whoIsAsking();
+
+        foreach ($this->resolver->forPaths($who, $event->members()) as $path => $held) {
+            if (!$held->has('{DAV:}read')) {
+                $event->conceal($path);
+            }
+        }
     }
 
     /**
@@ -110,15 +260,6 @@ final class Acl
     public function announce(OptionsRequested $event): void
     {
         $event->addCompliance('3', 'access-control');
-    }
-
-    /**
-     * Keeps the request being answered, because who is asking is a property
-     * of the request rather than of the tree.
-     */
-    public function rememberTheRequest(BeforeMethod $event): void
-    {
-        $this->request = $event->request();
     }
 
     /**
@@ -153,6 +294,46 @@ final class Acl
             // that where a missing property would say we do not know.
             $result->set(self::INHERITED, new Element(self::INHERITED));
         }
+    }
+
+    /**
+     * **Fail closed** (R-ACL-05): what was not granted is refused.
+     *
+     * @throws Forbidden If the asker does not hold that privilege here
+     */
+    private function refuseUnlessAllowed(string $path, string $privilege): void
+    {
+        if (!$this->resolver->forPath($this->whoIsAsking(), $path)->has($privilege)) {
+            throw new Forbidden(sprintf('"%s" may not be changed that way by whoever is asking.', $path));
+        }
+    }
+
+    /**
+     * R-ACL-06: `403` says "not for you", `404` says nothing at all. Which is
+     * right depends on whether the existence of the resource is itself a
+     * secret, so the deployment chooses.
+     *
+     * **Only a refusal to read is ever hidden.** A write that was refused is
+     * a `403` whatever the setting: the client plainly knows the resource is
+     * there — it is writing to it — so a `404` would be a lie it could see
+     * through.
+     */
+    private function refusalToRead(string $path): DavException
+    {
+        return $this->unreadableIsNotFound
+            ? new NotFound(sprintf('There is nothing at "%s".', $path))
+            : new Forbidden(sprintf('"%s" may not be read by whoever is asking.', $path));
+    }
+
+    /**
+     * The collection a path is a member of, which is what `DAV:bind` and
+     * `DAV:unbind` are privileges of.
+     */
+    private static function collectionOf(string $path): string
+    {
+        [$collection] = Path::split($path);
+
+        return $collection;
     }
 
     /**

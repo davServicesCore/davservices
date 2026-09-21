@@ -39,6 +39,7 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Precondition\ResourceState` | What a client could have known about one resource: its tokens and its tag |
 | `Event\StateTokensRequested` | Where a plugin says which tokens a resource is in the state of |
 | `Event\CurrentPrincipalRequested` | The one question about who is asking, and the one place to answer it |
+| `Event\ListingMembers` | Raised with the members of a collection at once; a listener may conceal some |
 | `Locks\LockInfo` | One write lock: what it reaches, and when it ends |
 | `Locks\LockScope` | Whether anybody else may hold one at the same time |
 | `Locks\LockToken` | The name a lock is held by, made of cryptographic random |
