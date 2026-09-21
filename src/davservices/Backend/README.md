@@ -21,6 +21,8 @@ plugin is using it.
 | `File\LockBackend` | Those locks in a directory, one file per lock |
 | `Pdo\LockBackend` | Those locks in a table, for a server that is more than one machine |
 | `IPrincipalBackend` | Where the people of RFC 3744 come from — a directory, a database, whatever the application already has |
+| `File\PrincipalBackend` | Those people in a directory, one file per principal, written by a person |
+| `Pdo\PrincipalBackend` | Those people in a table, for a deployment that already keeps its users in one |
 
 ## Using it
 
@@ -86,6 +88,40 @@ requests to one server are two processes as often as not, and a lock only one
 of them can see is not a lock — it would look like it worked and would hold
 nothing. The file and database implementations are the real answer to
 R-LOCK-05.
+
+## The principal backends are read and never written
+
+```php
+$principals = new FilePrincipals('/var/lib/davservices/principals');
+$principals = new PdoPrincipals(new PDO('mysql:host=db;dbname=dav', $user, $password));
+```
+
+`IPrincipalBackend` has no write methods, and that turns the design of the
+file store around. The locks and the properties name their files after a hash
+because nothing but the library ever looks at them; **here a person writes the
+files**, so they keep whatever names they were given:
+
+```xml
+<principal xmlns="https://dav.services/principals" name="alice">
+    <display-name>Alice Ashton</display-name>
+    <alternate-uri>mailto:alice@example.test</alternate-uri>
+</principal>
+```
+
+**The name inside the file is the one that counts** and the filename is not
+read at all — which is also what keeps a principal from being called
+`../../etc` and reaching out of the directory: a name that arrives as content
+cannot be a path.
+
+`Pdo/principals.sql` is the table, run once by whoever fills it. Its
+`alternate_uris` column holds one URI per line rather than a table of its own,
+which is a reference backend being a reference backend: nothing is written
+through it, so a deployment that really keeps its people there can normalise
+the column away without this library noticing.
+
+**A store that cannot be read is not an empty store**, here as with the locks.
+A principal that went missing is somebody who cannot sign in — or worse, whose
+access control entries quietly stop matching anybody.
 
 ## What neither backend promises
 
