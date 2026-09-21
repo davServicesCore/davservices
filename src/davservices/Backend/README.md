@@ -20,6 +20,7 @@ plugin is using it.
 | `ILockBackend` | Where the write locks of RFC 4918 §6 are kept, by path |
 | `File\LockBackend` | Those locks in a directory, one file per lock |
 | `Pdo\LockBackend` | Those locks in a table, for a server that is more than one machine |
+| `IPrincipalBackend` | Where the people of RFC 3744 come from — a directory, a database, whatever the application already has |
 
 ## Using it
 

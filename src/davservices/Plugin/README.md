@@ -13,6 +13,7 @@ events, a backend — and nothing below may use a plugin.
 |---|---|
 | `DeadProperties` | Keeps the properties the server does not understand, in a storage backend |
 | `Locks` | `LOCK` and `UNLOCK`, and what a client is told about a hold |
+| `Principals` | Where the people are, who you are, and what a principal's own URL is |
 | `Browser` | Shows what is in a collection, for development only — off unless it is switched on |
 
 ## Using it
@@ -86,6 +87,33 @@ The difference from a method is what decides that. A method nobody registers
 is one the server refuses honestly with `501`. A condition nobody evaluates is
 one the server silently pretends to have honoured. The first may be a plugin;
 the second may not.
+
+## Three properties nothing else can answer
+
+```php
+$root->add(new PrincipalCollection('principals', $principals));
+
+(new Principals($server, 'principals'))->register();
+```
+
+`DAV:principal-URL`, `DAV:principal-collection-set` and
+`DAV:current-user-principal` are each about **where** something is rather than
+what it is, and a node knows its name and nothing about where it hangs. So a
+plugin answers them: the same principal mounted at `/dav/` has a different
+URL, and a node that guessed would send clients where nothing answers.
+
+Who is signed in comes from the application, because authentication is not
+this plugin's business:
+
+```php
+(new Principals($server, 'principals', static fn (Request $request): ?string
+    => $yourSession->principalPath()))->register();
+```
+
+With nobody signed in the answer is `DAV:unauthenticated`, which is what
+RFC 5397 gives for exactly that case. **Guessing at a principal would be worse
+than saying nothing** — a client that believed it was somebody would show that
+person's calendars.
 
 ## The browser is not a web interface
 

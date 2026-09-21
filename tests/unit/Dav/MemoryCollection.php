@@ -15,6 +15,7 @@ namespace DavServices\Tests\Unit\Dav;
 
 use DateTimeImmutable;
 use DavServices\Dav\ICollection;
+use DavServices\Dav\INode;
 use DavServices\Exception\Conflict;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\IHttpFailure;
@@ -50,16 +51,25 @@ class MemoryCollection implements ICollection, IMember
 
     private ?MemoryCollection $parent = null;
 
-    /** @var array<string, IMember> */
+    /** @var array<string, INode> */
     private array $members = [];
 
     public function __construct(private readonly string $name)
     {
     }
 
-    public function add(IMember $node): self
+    /**
+     * Takes any node, not only one of this test's own: a real collection out
+     * of the library — a principal collection, later a calendar home — has to
+     * be mountable in a tree a test put together, or nothing above it could
+     * be tried at all. Only a member that wants to know its parent is told.
+     */
+    public function add(INode $node): self
     {
-        $node->attachTo($this);
+        if ($node instanceof IMember) {
+            $node->attachTo($this);
+        }
+
         $this->members[$node->name()] = $node;
 
         return $this;
@@ -127,7 +137,7 @@ class MemoryCollection implements ICollection, IMember
         return array_values($this->members);
     }
 
-    public function child(string $name): IMember
+    public function child(string $name): INode
     {
         $this->lookups++;
 
