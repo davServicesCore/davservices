@@ -246,20 +246,12 @@ jobs:
       # after the first set that fails, so a failure in `basic` means the
       # later ones did not run at all rather than that they passed.
       #
-      # `locks` is deliberately not among them yet, and this is measured
-      # rather than assumed: run against P3-03 it is 32 of 41, and every one
-      # of the nine failures is the same missing piece. Five are
-      # `notowner_modify` ("DELETE of locked resource should fail") and four
-      # are conditional PUTs with a bogus lock token that this server still
-      # answers `204`. That is lock **enforcement** and the `If` header
-      # evaluated against what is held — R-LOCK-04, the next chunk. Everything
-      # P3-03 is answerable for passes: lock_excl, discover, refresh,
-      # indirect_refresh, notowner_lock, lock_shared, double_sharedlock,
-      # lock_collection, unmapped_lock, unlock. Add `locks` here with that
-      # work, not before: a gate that is expected to fail is not a gate.
+      # `locks` joined them with P3-04. It was measured before it was added:
+      # against P3-03 it stood at 32 of 41, and every one of the nine failures
+      # was lock enforcement — the piece that chunk deliberately left out.
       - name: Run litmus against the example
         env:
-          TESTS: basic copymove props
+          TESTS: basic copymove props locks
         run: |
           php -S 127.0.0.1:8000 examples/minimal-webdav/public/index.php > server.log 2>&1 &
           server=$!
