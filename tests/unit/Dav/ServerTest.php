@@ -540,6 +540,7 @@ final class ServerTest extends TestCase
         yield 'a full URL on this host' => ['http://dav.example/calendars/work.ics', 'dav.example', 'calendars/work.ics'];
         yield 'the same host on another port' => ['http://dav.example:8080/work.ics', 'dav.example:443', 'work.ics'];
         yield 'a host spelt in capitals' => ['http://DAV.example/work.ics', 'dav.example', 'work.ics'];
+        yield 'a Host header spelt in capitals' => ['http://dav.example/work.ics', 'DAV.example', 'work.ics'];
         yield 'a URL with nothing after the host' => ['http://dav.example', 'dav.example', ''];
     }
 

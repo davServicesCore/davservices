@@ -15,7 +15,6 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DateTimeImmutable;
 use DavServices\Dav\Event\BeforeBind;
-use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\BeforeMove;
 use DavServices\Dav\Event\BeforeUnbind;
@@ -418,9 +417,18 @@ final class LockEnforcementTest extends TestCase
         $root = $this->tree();
         $response = $this->handle(new Request('DELETE', '/calendars'), $this->holding($this->held()), $root);
 
+        $body = (string) $response->body();
+
         self::assertSame(207, $response->status());
-        self::assertStringContainsString('423 Locked', (string) $response->body());
+        self::assertStringContainsString('423 Locked', $body);
         self::assertTrue($root->hasChild('calendars'));
+
+        // **The report names the member, not the collection.** The collection
+        // is not locked; it merely cannot go while something inside it is
+        // held, and a client told it was locked would look for a token that
+        // nobody holds on it.
+        self::assertStringContainsString('<d:href>/calendars/work.ics</d:href>', $body);
+        self::assertStringNotContainsString('<d:href>/calendars</d:href>', $body);
     }
 
     /**
@@ -436,7 +444,6 @@ final class LockEnforcementTest extends TestCase
             fn (Locks $locks) => $locks->refuseAWriteToAHeldPath(new BeforeWriteContent('calendars/work.ics', 'x')),
             fn (Locks $locks) => $locks->refuseAWriteToAHeldPath(new BeforeBind('calendars/work.ics')),
             fn (Locks $locks) => $locks->refuseAWriteToAHeldPath(new BeforeUnbind('calendars/work.ics')),
-            fn (Locks $locks) => $locks->refuseACopyOntoAHeldPath(new BeforeCopy('calendars/other.ics', 'calendars/work.ics')),
             fn (Locks $locks) => $locks->refuseAMoveThatIsHeld(new BeforeMove('calendars/other.ics', 'calendars/work.ics')),
             fn (Locks $locks) => $locks->refuseAPropertyChangeOnAHeldPath(
                 new PropertiesChanging(new PropPatchResult('calendars/work.ics', ['{DAV:}displayname' => 'x']), new MemoryFile('work.ics', '')),
@@ -449,7 +456,7 @@ final class LockEnforcementTest extends TestCase
             }
         }
 
-        self::assertSame(6, $refusals, 'Every seam a write passes through refuses a held path.');
+        self::assertSame(5, $refusals, 'Every seam a write passes through refuses a held path.');
     }
 
     /**
@@ -461,7 +468,6 @@ final class LockEnforcementTest extends TestCase
         $locks = $this->plugin($this->holding($this->held()));
 
         $locks->refuseAWriteToAHeldPath(new BeforeWriteContent('calendars/other.ics', 'x'));
-        $locks->refuseACopyOntoAHeldPath(new BeforeCopy('calendars/work.ics', 'calendars/copy.ics'));
         $locks->refuseAMoveThatIsHeld(new BeforeMove('calendars/other.ics', 'calendars/moved.ics'));
 
         self::expectNotToPerformAssertions();

@@ -19,7 +19,6 @@ use DavServices\Backend\ILockBackend;
 use DavServices\Dav\Event\AfterBind;
 use DavServices\Dav\Event\AfterCreateFile;
 use DavServices\Dav\Event\BeforeBind;
-use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\BeforeMove;
 use DavServices\Dav\Event\BeforeUnbind;
@@ -149,11 +148,13 @@ final class Locks
 
         $events->on(BeforeMethod::class, $this->holdTheRequestToWhatItClaimed(...));
 
+        // A `COPY` needs no seam of its own: it reads its source and binds
+        // its destination, and binding is one of these three. Nothing about
+        // the source changes, so a lock there is no reason to refuse it.
         foreach ([BeforeWriteContent::class, BeforeBind::class, BeforeUnbind::class] as $seam) {
             $events->on($seam, $this->refuseAWriteToAHeldPath(...));
         }
 
-        $events->on(BeforeCopy::class, $this->refuseACopyOntoAHeldPath(...));
         $events->on(BeforeMove::class, $this->refuseAMoveThatIsHeld(...));
         $events->on(PropertiesChanging::class, $this->refuseAPropertyChangeOnAHeldPath(...));
     }
@@ -294,18 +295,6 @@ final class Locks
     public function refuseAWriteToAHeldPath(BeforeWriteContent|BeforeBind|BeforeUnbind $event): void
     {
         $this->refuseUnlessFree($event->path());
-    }
-
-    /**
-     * A `COPY` reads its source and writes its destination, so only the
-     * destination is a write: nothing about the source changes.
-     *
-     * @throws Locked If the destination is held by a lock this request did
-     *                not name
-     */
-    public function refuseACopyOntoAHeldPath(BeforeCopy $event): void
-    {
-        $this->refuseUnlessFree($event->to());
     }
 
     /**
