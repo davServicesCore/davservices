@@ -46,12 +46,27 @@ asks (R-LOCK-03). An hour is the default. `Timeout: Infinite` is answered with
 that maximum rather than with forever: a lock that never ends is one nobody can
 clear after a client has crashed.
 
-**What this plugin does not yet do is refuse the writes a lock stands in the
-way of.** That needs the `If` header evaluated against the locks held, and it
-is the next piece of work. Until then a lock is a promise this server keeps a
-record of and tells the truth about, in `OPTIONS`, in `DAV:lockdiscovery` and
-in the answer to a second `LOCK` — but a `PUT` from somebody who never asked
-still goes through.
+**The same plugin refuses the writes a lock stands in the way of.** Two
+answers, and keeping them apart is the whole of it:
+
+- **`423 Locked`** — the resource is held and the request submitted no token
+  for it. The client claimed nothing; it simply may not write. The body names
+  `DAV:lock-token-submitted`, which tells a client that a token is what is
+  missing.
+- **`412 Precondition Failed`** — the request put a condition on itself in an
+  `If` header, and the condition does not hold. This is owed even when nothing
+  is locked at all: `If: (<opaquelocktoken:made-up>)` on a free resource is a
+  claim that is simply false.
+
+Nothing of that reaches into a method class. Every refusal hangs on a seam
+that was already there — `BeforeWriteContent`, `BeforeBind`, `BeforeUnbind`,
+`BeforeCopy`, `BeforeMove`, and `PropertiesChanging` for `PROPPATCH`, because
+a write lock holds the dead properties too (RFC 4918 §7.5). If a write could
+not be caught, the answer would be a missing seam rather than a special case
+inside the method.
+
+**A read is not guarded**, and a read that puts a condition on itself still
+is: `If` guards the request, not only the write.
 
 ## The browser is not a web interface
 

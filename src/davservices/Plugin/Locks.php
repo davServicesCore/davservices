@@ -19,21 +19,33 @@ use DavServices\Backend\ILockBackend;
 use DavServices\Dav\Event\AfterBind;
 use DavServices\Dav\Event\AfterCreateFile;
 use DavServices\Dav\Event\BeforeBind;
+use DavServices\Dav\Event\BeforeCopy;
+use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\BeforeMove;
+use DavServices\Dav\Event\BeforeUnbind;
+use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\OptionsRequested;
+use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\IFile;
+use DavServices\Dav\Locks\IfEvaluator;
 use DavServices\Dav\Locks\LockDiscovery;
 use DavServices\Dav\Locks\LockInfo;
 use DavServices\Dav\Locks\LockRequest;
 use DavServices\Dav\Locks\LockScope;
 use DavServices\Dav\Locks\LockToken;
+use DavServices\Dav\Locks\ResourceState;
 use DavServices\Dav\Server;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Conflict;
+use DavServices\Exception\DavException;
 use DavServices\Exception\Locked;
 use DavServices\Exception\PreconditionFailed;
+use DavServices\Http\ETag;
 use DavServices\Http\IfHeader;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
+use DavServices\Uri\MalformedPath;
 use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 use InvalidArgumentException;
@@ -83,6 +95,13 @@ final class Locks
     private readonly Closure $now;
 
     /**
+     * The request being answered, kept from `BeforeMethod` so that the guards
+     * on the write seams can read its `If` header. The seams carry paths
+     * rather than requests, because a write is a write whoever asked for it.
+     */
+    private ?Request $request = null;
+
+    /**
      * @param int $maximumSeconds The longest a lock is handed out for,
      *                            whatever the client asks (R-LOCK-03)
      * @param (callable(): DateTimeImmutable)|null $now The clock, handed in so
@@ -110,15 +129,63 @@ final class Locks
 
     /**
      * Switches locking on: the two methods, the compliance class `OPTIONS`
-     * answers with, and the two properties a `PROPFIND` may ask for.
+     * answers with, the two properties a `PROPFIND` may ask for, and the
+     * guard on every seam a write passes through.
+     *
+     * **Nothing here reaches into a method class.** Every refusal hangs on a
+     * seam that was already there, which is what R-ARC-02 is for: if a write
+     * could not be caught, the answer would be a missing seam rather than a
+     * special case inside the method.
      */
     public function register(): void
     {
+        $events = $this->server->events();
+
         $this->server->onMethod('LOCK', $this->lock(...));
         $this->server->onMethod('UNLOCK', $this->unlock(...));
 
-        $this->server->events()->on(OptionsRequested::class, $this->announce(...));
-        $this->server->events()->on(PropertiesRequested::class, $this->describe(...));
+        $events->on(OptionsRequested::class, $this->announce(...));
+        $events->on(PropertiesRequested::class, $this->describe(...));
+
+        $events->on(BeforeMethod::class, $this->holdTheRequestToWhatItClaimed(...));
+
+        foreach ([BeforeWriteContent::class, BeforeBind::class, BeforeUnbind::class] as $seam) {
+            $events->on($seam, $this->refuseAWriteToAHeldPath(...));
+        }
+
+        $events->on(BeforeCopy::class, $this->refuseACopyOntoAHeldPath(...));
+        $events->on(BeforeMove::class, $this->refuseAMoveThatIsHeld(...));
+        $events->on(PropertiesChanging::class, $this->refuseAPropertyChangeOnAHeldPath(...));
+    }
+
+    /**
+     * R-HTTP-07: a request that put a condition on itself is held to it.
+     *
+     * Done once, before the method runs, because the `If` header is about the
+     * **request** and not about any one write inside it. **A condition that
+     * does not hold is `412` even where nothing is locked at all:**
+     * `If: (<opaquelocktoken:made-up>)` on a free resource is a claim that is
+     * simply false, and answering `204` would tell the client its claim was
+     * good.
+     *
+     * @throws PreconditionFailed If no list of the header holds
+     * @throws BadRequest If the header cannot be read
+     */
+    public function holdTheRequestToWhatItClaimed(BeforeMethod $event): void
+    {
+        $this->request = $event->request();
+
+        $header = $this->request->headers()->first('If');
+
+        if ($header === null) {
+            return;
+        }
+
+        $stateOf = fn (?string $resource): ResourceState => $this->stateOf($resource);
+
+        if (!IfEvaluator::holds(IfHeader::parse($header), $stateOf)) {
+            throw new PreconditionFailed('The If header of this request names a state this server is not in.');
+        }
     }
 
     /**
@@ -216,6 +283,147 @@ final class Locks
         if ($result->wants(self::SUPPORTED_LOCK)) {
             $result->set(self::SUPPORTED_LOCK, self::supported());
         }
+    }
+
+    /**
+     * The three seams that carry one path: content being written, something
+     * being bound at a path, something being removed from one.
+     *
+     * @throws Locked If something holds it that this request did not name
+     */
+    public function refuseAWriteToAHeldPath(BeforeWriteContent|BeforeBind|BeforeUnbind $event): void
+    {
+        $this->refuseUnlessFree($event->path());
+    }
+
+    /**
+     * A `COPY` reads its source and writes its destination, so only the
+     * destination is a write: nothing about the source changes.
+     *
+     * @throws Locked If the destination is held by a lock this request did
+     *                not name
+     */
+    public function refuseACopyOntoAHeldPath(BeforeCopy $event): void
+    {
+        $this->refuseUnlessFree($event->to());
+    }
+
+    /**
+     * A `MOVE` changes both ends, and the source **and everything inside it**:
+     * a collection cannot be moved out from under a lock on one of its
+     * members, because the lock names a path that would stop existing.
+     *
+     * @throws Locked If either end is held by a lock this request did not name
+     */
+    public function refuseAMoveThatIsHeld(BeforeMove $event): void
+    {
+        $this->refuseUnlessFree($event->from(), alsoBelow: true);
+        $this->refuseUnlessFree($event->to());
+    }
+
+    /**
+     * RFC 4918 §7.5: a write lock holds the dead properties as well as the
+     * content, and `PROPPATCH` passes through none of the seams above — its
+     * own is the one where it asks who will write what.
+     *
+     * @throws Locked If something holds it that this request did not name
+     */
+    public function refuseAPropertyChangeOnAHeldPath(PropertiesChanging $event): void
+    {
+        $this->refuseUnlessFree($event->result()->path());
+    }
+
+    /**
+     * R-LOCK-04: a write to a held resource by somebody who submitted no
+     * token for it is `423`.
+     *
+     * **The request submitted it, not the client**, because without
+     * authentication there is nobody to ask who the client is. RFC 4918 §7.5
+     * is honest about that: submitting the token is what a server can check,
+     * and a token nobody else knows is what keeps it worth checking — which
+     * is why {@see LockToken} draws it from `random_bytes()`.
+     *
+     * @throws Locked If something holds it that this request did not name
+     */
+    private function refuseUnlessFree(string $path, bool $alsoBelow = false): void
+    {
+        $now = ($this->now)();
+        $held = $this->locks->locksOn($path, $now);
+
+        if ($alsoBelow) {
+            $held = [...$held, ...$this->locks->locksBelow($path, $now)];
+        }
+
+        $submitted = self::tokensIn($this->request?->headers()->first('If'));
+
+        foreach ($held as $lock) {
+            if (!in_array($lock->token(), $submitted, true)) {
+                throw new Locked(
+                    sprintf('"%s" is held, and this request submitted no token for it.', $lock->root()),
+                    '{DAV:}lock-token-submitted',
+                );
+            }
+        }
+    }
+
+    /**
+     * What a client could have known about one resource: the tokens held on
+     * it, and its entity tag.
+     *
+     * A resource tag that names another server, or a path outside this tree,
+     * yields a state that satisfies nothing. **Fail closed:** a condition
+     * this server cannot check is not one it may call true, and a client that
+     * meant something by it is told `412` rather than let through.
+     */
+    private function stateOf(?string $resource): ResourceState
+    {
+        try {
+            $path = $resource === null
+                ? $this->server->path($this->requestMade())
+                : $this->server->pathOfUrl($resource, $this->requestMade());
+        } catch (DavException | MalformedPath $elsewhere) {
+            return new ResourceState([], null);
+        }
+
+        $tokens = [];
+
+        foreach ($this->locks->locksOn($path, ($this->now)()) as $lock) {
+            $tokens[] = $lock->token();
+        }
+
+        return new ResourceState($tokens, $this->etagOf($path));
+    }
+
+    /**
+     * The entity tag of what is at the path, where there is something there
+     * and it has one.
+     */
+    private function etagOf(string $path): ?ETag
+    {
+        try {
+            $node = $this->server->tree()->node($path);
+        } catch (DavException $nothingThere) {
+            // The path came through `pathOf()` already, so it cannot be a
+            // malformed one here: what is caught is "there is nothing there".
+            return null;
+        }
+
+        $etag = $node instanceof IFile ? $node->etag() : null;
+
+        return $etag === null ? null : ETag::parse($etag);
+    }
+
+    /**
+     * The request being answered.
+     *
+     * There is always one by the time a write happens: `BeforeMethod` is
+     * raised before any method runs. A plugin asked outside a request at all
+     * is answered with an empty one, so that a guard still guards rather than
+     * falling over.
+     */
+    private function requestMade(): Request
+    {
+        return $this->request ?? new Request('GET', '/');
     }
 
     /**

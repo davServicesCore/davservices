@@ -18,6 +18,7 @@ use DavServices\Dav\Event\AfterMethod;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\ExceptionRaised;
 use DavServices\Event\EventEmitter;
+use DavServices\Exception\BadRequest;
 use DavServices\Exception\IHttpFailure;
 use DavServices\Exception\NotFound;
 use DavServices\Exception\NotImplemented;
@@ -119,6 +120,53 @@ final class Server
     public function pathOf(string $target): string
     {
         return $this->inside(Path::normalise($target));
+    }
+
+    /**
+     * The path a URL in a header names.
+     *
+     * Two headers carry one: the `Destination` of a `COPY` or `MOVE`, and the
+     * resource tag of an `If`. **Both have to become a path by the same
+     * rule**, or one of them ends up more trusting than the other — and the
+     * trusting one decides whether somebody else's lock counts.
+     *
+     * Ports are not compared. A server behind a proxy is told one thing in
+     * the `Host` header and another in the URL a client built, and refusing
+     * that would break every deployment that terminates TLS somewhere else.
+     * The host itself is: a URL naming another one is not ours, and neither
+     * is one naming any host at all where the request named none, because
+     * then there is nothing left to check it against.
+     *
+     * @throws BadRequest If it cannot be read as a URL
+     * @throws NotFound If it names another server, or a path outside this tree
+     * @throws MalformedPath If it cannot be resolved safely
+     */
+    public function pathOfUrl(string $url, Request $request): string
+    {
+        $parts = parse_url($url);
+
+        if ($parts === false) {
+            throw new BadRequest(sprintf('"%s" is no URL.', $url));
+        }
+
+        $host = $parts['host'] ?? null;
+        $ours = $request->headers()->first('Host');
+
+        if ($host !== null && ($ours === null || strtolower($host) !== self::hostIn($ours))) {
+            throw new NotFound(sprintf('"%s" is on another server.', $url));
+        }
+
+        return $this->pathOf($parts['path'] ?? '/');
+    }
+
+    /**
+     * The host out of an authority, without the port.
+     */
+    private static function hostIn(string $authority): string
+    {
+        $colon = strrpos($authority, ':');
+
+        return strtolower($colon === false ? $authority : substr($authority, 0, $colon));
     }
 
     /**

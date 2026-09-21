@@ -168,56 +168,12 @@ abstract class Transfer
         }
 
         try {
-            return $this->server->pathOf(self::targetOf($destination, $request));
+            return $this->server->pathOfUrl($destination, $request);
         } catch (NotFound $elsewhere) {
-            // The same host, but not this server's tree: another application
-            // lives there, and this one cannot write into it.
+            // Another host, or this one but not this server's tree: either
+            // way somebody else lives there and this cannot write into it.
             throw new BadGateway('That destination is not served here.', null, $elsewhere);
         }
-    }
-
-    /**
-     * The path out of a `Destination`, once it is known to be ours.
-     *
-     * Ports are not compared. A server behind a proxy is told one thing in the
-     * `Host` header and another in the URL a client built, and refusing that
-     * would break every deployment that terminates TLS somewhere else. A
-     * destination that names a host where the request named none is refused,
-     * because nothing is left to check it against.
-     *
-     * @throws BadRequest If the destination cannot be read as a URL
-     * @throws BadGateway If it names another host
-     */
-    private static function targetOf(string $destination, Request $request): string
-    {
-        $parts = parse_url($destination);
-
-        if ($parts === false) {
-            throw new BadRequest('That Destination is no URL.');
-        }
-
-        $host = $parts['host'] ?? null;
-        $ours = $request->headers()->first('Host');
-
-        // A destination that names a host has to name this one. Where there is
-        // no `Host` to compare it against, this server cannot tell whether the
-        // client meant it or somebody else, and writing on a guess is how a
-        // copy meant for another server quietly lands here instead.
-        if ($host !== null && ($ours === null || strtolower($host) !== self::hostIn($ours))) {
-            throw new BadGateway('That destination is on another server.');
-        }
-
-        return $parts['path'] ?? '/';
-    }
-
-    /**
-     * The host out of an authority, without the port.
-     */
-    private static function hostIn(string $authority): string
-    {
-        $colon = strrpos($authority, ':');
-
-        return strtolower($colon === false ? $authority : substr($authority, 0, $colon));
     }
 
     /**
