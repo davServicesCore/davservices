@@ -68,6 +68,19 @@ inside the method.
 **A read is not guarded**, and a read that puts a condition on itself still
 is: `If` guards the request, not only the write.
 
+**Without these two lines the server is plain WebDAV**, and that is tested
+rather than asserted: `tests/unit/Dav/PlainWebDavServerTest.php` assembles a
+server with nothing about locks in it and holds the library to R-LOCK-06 — it
+says `DAV: 1`, answers `501` to `LOCK` and `UNLOCK`, lets every write through,
+and answers `404` for the two lock properties rather than an empty element
+that would claim nobody holds the resource.
+
+One thing that plain server does **not** do is evaluate an `If` header of
+entity tags alone, because the evaluation was built here with the locking.
+RFC 4918 §10.4 is core WebDAV and needs no locking for that half, so this is
+a gap rather than a decision, and it is written down in that test and on the
+way to being moved into the core.
+
 ## The browser is not a web interface
 
 ```php
