@@ -30,6 +30,8 @@ use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Tests\Unit\Dav\MemoryQuotaCollection;
 use DavServices\Tests\Unit\Dav\StreamFile;
+use DavServices\Tests\Unit\Dav\TypedCollection;
+use DavServices\Tests\Unit\Dav\TypedNode;
 use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -78,6 +80,40 @@ final class LivePropertiesTest extends TestCase
 
         self::assertInstanceOf(Element::class, $type);
         self::assertSame([], $type->children());
+    }
+
+    /**
+     * **A node may be more than a collection or not one.** RFC 3744 §4 wants
+     * `DAV:principal` in the `resourcetype` of a principal, RFC 4791 wants
+     * `CALDAV:calendar` in a calendar's — and none of that can be worked out
+     * from the outside. A node that knows says so through
+     * {@see \DavServices\Dav\IResourceType}, and what it names is added to
+     * what the server could tell by itself.
+     *
+     * Answering it here rather than leaving it to the node's own properties
+     * keeps the rule of P2-07 intact: listeners answer before the node is
+     * asked, so a node that tried to answer `resourcetype` itself would never
+     * be reached.
+     */
+    public function testANodeThatKnowsWhatItIsSaysSo(): void
+    {
+        $type = $this->valueOf(new TypedNode('alice', '{DAV:}principal'), '{DAV:}resourcetype');
+
+        self::assertInstanceOf(Element::class, $type);
+        self::assertSame('{DAV:}principal', self::childAt($type, 0)->name());
+    }
+
+    /**
+     * And a collection that knows is both: the collection element the server
+     * works out, and whatever the node adds to it.
+     */
+    public function testACollectionThatKnowsWhatItIsSaysBoth(): void
+    {
+        $type = $this->valueOf(new TypedCollection('users', '{DAV:}principal'), '{DAV:}resourcetype');
+
+        self::assertInstanceOf(Element::class, $type);
+        self::assertSame('{DAV:}collection', self::childAt($type, 0)->name());
+        self::assertSame('{DAV:}principal', self::childAt($type, 1)->name());
     }
 
     public function testAFileHandsOverWhatItKnowsAboutItself(): void

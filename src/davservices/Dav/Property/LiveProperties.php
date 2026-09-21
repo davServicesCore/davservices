@@ -19,6 +19,7 @@ use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\IQuota;
+use DavServices\Dav\IResourceType;
 use DavServices\Dav\PropFindResult;
 use DavServices\Http\HttpDate;
 use DavServices\Xml\Element;
@@ -142,12 +143,24 @@ final class LiveProperties
      * `resourcetype` rather than none. The property is how a client tells the
      * two apart, and leaving it out leaves it guessing.
      */
+    /**
+     * What the server can tell by itself, plus whatever the node says it is.
+     *
+     * A principal, a calendar, an address book: none of those can be seen
+     * from the outside, and {@see IResourceType} is how a node says so.
+     */
     private static function resourceType(INode $node): Element
     {
         $type = new Element(self::RESOURCE_TYPE);
 
         if ($node instanceof ICollection) {
             $type->append(new Element('{DAV:}collection'));
+        }
+
+        if ($node instanceof IResourceType) {
+            foreach ($node->resourceTypes() as $kind) {
+                $type->append(new Element($kind));
+            }
         }
 
         return $type;
