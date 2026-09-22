@@ -44,6 +44,25 @@ final class MultiStatus
      */
     public function addProperties(string $href, array $byStatus, ?string $description = null): void
     {
+        $this->responses[] = self::responseWith($href, $byStatus, $description);
+    }
+
+    /**
+     * One `response` on its own, without a document around it.
+     *
+     * **RFC 3253 §3.8 nests a whole response inside a property value:**
+     * `DAV:expand-property` replaces every `DAV:href` in a value with the
+     * response of the resource that href names. So the shape is needed where
+     * there is no multistatus to add it to — and it comes from here rather
+     * than being built again by the report, because this nesting is the part
+     * of WebDAV implementations get wrong most often and a second copy is a
+     * second chance to get it wrong.
+     *
+     * @param array<int, array<string, Element|string|null>> $byStatus As for
+     *                                                                 {@see self::addProperties()}
+     */
+    public static function responseWith(string $href, array $byStatus, ?string $description = null): Element
+    {
         $response = self::responseFor($href);
 
         foreach ($byStatus as $status => $properties) {
@@ -52,7 +71,7 @@ final class MultiStatus
 
         self::describe($response, $description);
 
-        $this->responses[] = $response;
+        return $response;
     }
 
     /**
