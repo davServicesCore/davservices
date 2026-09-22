@@ -213,6 +213,48 @@ final class MultiStatusTest extends TestCase
     }
 
     /**
+     * **One `response` on its own.** RFC 3253 §3.8 nests a whole response
+     * *inside a property value*: `DAV:expand-property` replaces every
+     * `DAV:href` in a value with the response of the resource it names.
+     *
+     * So the shape has to be available without a document around it — and
+     * from here, rather than built a second time by the report, because the
+     * nesting of §14.24 is the part implementations get wrong most often and
+     * a second copy is a second chance to get it wrong.
+     */
+    public function testBuildsOneResponseWithoutADocumentAroundIt(): void
+    {
+        $response = MultiStatus::responseWith('/principals/alice', [
+            200 => ['{DAV:}displayname' => 'Alice'],
+            404 => ['{DAV:}getctag' => null],
+        ]);
+
+        self::assertSame('{DAV:}response', $response->name());
+        self::assertSame('/principals/alice', self::childAt($response, 0)->text());
+        self::assertSame('{DAV:}propstat', self::childAt($response, 1)->name());
+        self::assertSame('{DAV:}propstat', self::childAt($response, 2)->name());
+    }
+
+    /**
+     * And it is the very same shape the document uses, which is the point of
+     * having one place: a response built on its own and one inside a
+     * multistatus differ in nothing.
+     */
+    public function testAResponseOnItsOwnIsTheSameShapeAsOneInTheDocument(): void
+    {
+        $multiStatus = new MultiStatus();
+
+        $multiStatus->addProperties('/principals/alice', [200 => ['{DAV:}displayname' => 'Alice']]);
+
+        $inside = (new Writer())->write(self::childAt($multiStatus->toElement(), 0));
+        $alone = (new Writer())->write(MultiStatus::responseWith('/principals/alice', [
+            200 => ['{DAV:}displayname' => 'Alice'],
+        ]));
+
+        self::assertSame($inside, $alone);
+    }
+
+    /**
      * The document a client actually receives, read back with this library's
      * own reader: the shape of RFC 4918 §14.24 end to end.
      */
