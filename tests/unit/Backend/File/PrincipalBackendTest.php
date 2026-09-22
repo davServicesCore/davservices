@@ -54,6 +54,7 @@ final class PrincipalBackendTest extends PrincipalBackendContract
             <principal xmlns="https://dav.services/principals" name="alice">
                 <display-name>Alice Ashton</display-name>
                 <alternate-uri>mailto:alice@example.test</alternate-uri>
+                <member-of>staff</member-of>
             </principal>
         ');
 
@@ -62,10 +63,32 @@ final class PrincipalBackendTest extends PrincipalBackendContract
                 <display-name>Carol Carter</display-name>
                 <alternate-uri>mailto:carol@example.test</alternate-uri>
                 <alternate-uri>mailto:c.carter@example.test</alternate-uri>
+                <member-of>staff</member-of>
+                <member-of>everyone</member-of>
             </principal>
         ');
 
         $this->write('plain.xml', '<principal xmlns="https://dav.services/principals" name="plain"/>');
+
+        $this->write('staff.xml', '
+            <principal xmlns="https://dav.services/principals" name="staff">
+                <display-name>The staff</display-name>
+                <member-of>everyone</member-of>
+                <members>
+                    <member>alice</member>
+                    <member>carol</member>
+                </members>
+            </principal>
+        ');
+
+        // A group nobody is in yet says so with an empty wrapper, which is a
+        // different answer from leaving the wrapper out.
+        $this->write('everyone.xml', '
+            <principal xmlns="https://dav.services/principals" name="everyone">
+                <display-name>Everybody here</display-name>
+                <members/>
+            </principal>
+        ');
     }
 
     protected function tearDown(): void
@@ -147,7 +170,7 @@ final class PrincipalBackendTest extends PrincipalBackendContract
 
         file_put_contents($stranger, 'Nothing to do with principals.');
 
-        self::assertCount(3, $this->backend()->principals());
+        self::assertCount(5, $this->backend()->principals());
         self::assertFileExists($stranger);
     }
 

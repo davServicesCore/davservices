@@ -31,6 +31,26 @@ const FORBIDDEN = [
 ];
 
 /**
+ * A forbidden word that a specification itself put after another one, where
+ * the name is not this library's to change.
+ *
+ * `DAV:group-membership` is RFC 3744 §4.4, and support for it is REQUIRED. The
+ * rule it would otherwise trip is a real one — this library must never learn
+ * about memberships of an application's own invention — but a property name
+ * out of the specification is not that, and renaming it would mean answering
+ * a property no client ever asks for.
+ *
+ * Keyed by the forbidden word, valued by the word that has to come before it.
+ * Anything else keeping the same company is still caught: `spaceMembership`
+ * trips, `group_membership` does not.
+ *
+ * @var array<string, string>
+ */
+const FROM_A_SPECIFICATION = [
+    'membership' => 'group',
+];
+
+/**
  * Splits an identifier into lower-case words.
  *
  * getSpaceAdmin  → get, space, admin
@@ -71,9 +91,19 @@ foreach (Scanner::productionFiles() as $file) {
         }
 
         $identifier = ltrim(trim($token[1], "'\""), '$');
-        $found = array_intersect(words($identifier), FORBIDDEN);
+        $parts = words($identifier);
+        $found = array_intersect($parts, FORBIDDEN);
 
-        foreach ($found as $term) {
+        foreach ($found as $where => $term) {
+            // A word the specification itself put after another one. The
+            // position matters: it is `group-membership` that is allowed, not
+            // the word on its own.
+            $before = $parts[$where - 1] ?? '';
+
+            if (isset(FROM_A_SPECIFICATION[$term]) && str_ends_with($before, FROM_A_SPECIFICATION[$term])) {
+                continue;
+            }
+
             $violations[] = sprintf(
                 '%s:%d  "%s" contains application-layer term "%s"',
                 Scanner::rel($file),

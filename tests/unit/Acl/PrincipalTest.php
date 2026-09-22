@@ -192,9 +192,56 @@ final class PrincipalTest extends TestCase
         self::assertNull($this->principal()->lastModified());
     }
 
+    /**
+     * **RFC 3744 §4.4: the groups this principal is *directly* in.** The node
+     * hands over the names the backend gave and nothing more — it cannot make
+     * hrefs of them for the same reason it cannot answer `DAV:principal-URL`:
+     * a node knows its name and nothing about where it hangs.
+     * {@see \DavServices\Plugin\Principals} turns them into URLs.
+     */
+    public function testSaysWhichGroupsItIsDirectlyIn(): void
+    {
+        self::assertSame(['staff'], $this->principal()->memberOf());
+    }
+
+    /**
+     * Somebody in no group is in no group — always an answer, because §4.4
+     * makes support for the property REQUIRED.
+     */
+    public function testAPrincipalInNoGroupSaysSo(): void
+    {
+        self::assertSame([], $this->plain()->memberOf());
+    }
+
+    /**
+     * §4.3: who is directly in this group.
+     */
+    public function testAGroupSaysWhoIsDirectlyInIt(): void
+    {
+        self::assertSame(['alice'], $this->group()->members());
+    }
+
+    /**
+     * **And a principal the backend said nothing about answers null, not an
+     * empty list.** §4.3 is the one property of §4 that need not be supported
+     * at all; `[]` would say "a group with nobody in it", which of somebody
+     * who is not a group is simply untrue.
+     */
+    public function testAPrincipalNobodySaidAnythingAboutIsNoEmptyGroup(): void
+    {
+        self::assertNull($this->principal()->members());
+    }
+
     private function principal(): Principal
     {
-        return new Principal(new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test']));
+        return new Principal(
+            new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test'], ['staff']),
+        );
+    }
+
+    private function group(): Principal
+    {
+        return new Principal(new PrincipalInfo('staff', 'The staff', [], [], ['alice']));
     }
 
     private function plain(): Principal

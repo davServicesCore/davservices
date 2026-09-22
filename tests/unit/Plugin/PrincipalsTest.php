@@ -92,6 +92,94 @@ final class PrincipalsTest extends TestCase
     }
 
     /**
+     * **RFC 3744 §4.4: the groups the principal is *directly* in**, as hrefs
+     * this server answers on. Support is REQUIRED, so there is always an
+     * answer.
+     */
+    public function testTellsAPrincipalWhichGroupsItIsIn(): void
+    {
+        $body = $this->propFind('/principals/alice', 'group-membership');
+
+        self::assertStringContainsString(
+            '<d:group-membership><d:href>/principals/staff</d:href></d:group-membership>',
+            $body,
+        );
+    }
+
+    /**
+     * **Directly, and only directly.** Alice is in `staff`, and `staff` is in
+     * `everyone` — but §4.4 says this property "identifies the groups in
+     * which the principal is **directly** a member", and goes on to tell a
+     * client that "the DAV:group-membership of those other groups would need
+     * to be queried" for the rest. A server answering the whole chain would
+     * be lying to a client doing exactly what it was told, and that client
+     * would count `everyone` twice.
+     */
+    public function testTheMembershipNamesOnlyTheDirectGroups(): void
+    {
+        $body = $this->propFind('/principals/alice', 'group-membership');
+
+        self::assertStringNotContainsString('/principals/everyone', $body);
+    }
+
+    /**
+     * Somebody in no group says so with an empty element rather than a `404`:
+     * §4.4 makes the property REQUIRED, and "in no group" is an answer while
+     * a missing property is the server declining to have one.
+     */
+    public function testAPrincipalInNoGroupSaysSo(): void
+    {
+        $body = $this->propFind('/principals/everyone', 'group-membership');
+
+        self::assertStringContainsString('<d:group-membership/>', $body);
+    }
+
+    /**
+     * **§4.3: who is *directly* in this group**, again as hrefs.
+     */
+    public function testAGroupSaysWhoIsInIt(): void
+    {
+        $body = $this->propFind('/principals/staff', 'group-member-set');
+
+        self::assertStringContainsString(
+            '<d:group-member-set><d:href>/principals/alice</d:href></d:group-member-set>',
+            $body,
+        );
+    }
+
+    /**
+     * **And where the backend does not say, neither does the server.** §4.3
+     * is the one property of §4 without "Support for this property is
+     * REQUIRED" — a directory that will not hand out rosters is within its
+     * rights. A `404` passes that on; an empty set would claim the group has
+     * nobody in it, which is a different thing and untrue.
+     */
+    public function testAServerThatDoesNotSayWhoIsInAGroupAnswersNothing(): void
+    {
+        $body = $this->propFind('/principals/alice', 'group-member-set');
+
+        self::assertStringContainsString('HTTP/1.1 404 Not Found', $body);
+        self::assertStringNotContainsString('<d:group-member-set>', $body);
+    }
+
+    /**
+     * A resource that is no principal has neither: a file is in no group, and
+     * saying it is in none would make every file look like a person.
+     */
+    public function testAResourceThatIsNoPrincipalIsInNoGroups(): void
+    {
+        $body = $this->propFind('/calendars/work.ics', 'group-membership');
+
+        // Named, and named as missing: R-DAV-04 wants every property that was
+        // asked for accounted for, so it appears in the `404` block rather
+        // than vanishing from the answer.
+        self::assertStringContainsString(
+            '<d:group-membership/></d:prop><d:status>HTTP/1.1 404 Not Found',
+            $body,
+        );
+    }
+
+    /**
      * A resource that is no principal has no `principal-URL`, and `404` says
      * so. Answering with the resource's own URL would make every file look
      * like a person.
@@ -331,7 +419,9 @@ final class PrincipalsTest extends TestCase
         $calendars->add(new MemoryFile('work.ics', 'BEGIN:VCALENDAR'));
         $root->add($calendars);
         $root->add(new PrincipalCollection('principals', new MemoryPrincipalBackend(
-            new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test']),
+            new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test'], ['staff']),
+            new PrincipalInfo('staff', 'The staff', [], ['everyone'], ['alice']),
+            new PrincipalInfo('everyone', 'Everybody here'),
         )));
 
         return $root;

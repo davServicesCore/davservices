@@ -14,8 +14,20 @@
 -- against that, and one that really keeps them here can normalise the column
 -- away without this library noticing — nothing is written through it.
 
+-- `group_membership` holds the groups a principal is **directly** in, one
+-- name per line, and `group_members` the principals **directly** in it. Both
+-- are direct because RFC 3744 §4.3 and §4.4 say so in as many words; the
+-- recursion of §2 happens where access is worked out, not in the storage.
+--
+-- `group_members` is NULL where this server does not say who is in a group --
+-- §4.3 is the one property of §4 a server need not support -- and empty where
+-- the group has nobody in it yet. Those are different answers, so the column
+-- is nullable on purpose.
+
 CREATE TABLE davservices_principals (
-    name           VARCHAR(255) NOT NULL PRIMARY KEY,
-    display_name   VARCHAR(255) NULL,
-    alternate_uris TEXT         NULL
+    name             VARCHAR(255) NOT NULL PRIMARY KEY,
+    display_name     VARCHAR(255) NULL,
+    alternate_uris   TEXT         NULL,
+    group_membership TEXT         NULL,
+    group_members    TEXT         NULL
 );
