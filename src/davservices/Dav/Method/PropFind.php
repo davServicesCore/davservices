@@ -45,6 +45,15 @@ use DavServices\Xml\MultiStatus;
  *
  *     $propFind = new PropFind($server, answersInfiniteDepth: true);
  *
+ * **A listing can be cut short** (R-ACL-08). A collection of a hundred
+ * thousand people is a document nobody can use and a server that stops
+ * answering anything else while it builds one, so a deployment may say how
+ * many members it will report. What is left out is not left silent: RFC 5323
+ * §2.3.1 has the answer carry a `507` for the collection itself inside the
+ * `207`, with the partial results beside it, and that is what this writes.
+ *
+ *     $propFind = new PropFind($server, atMostMembers: 500);
+ *
  * **A property that was asked for is always accounted for** (R-DAV-04). One
  * nobody has gets a `404` of its own, one that may not be read gets a `403`,
  * and they go in blocks of their own: a client handed three answers to five
@@ -66,10 +75,18 @@ final class PropFind
     /**
      * @param bool $answersInfiniteDepth Whether `Depth: infinity` is answered
      *                                   rather than refused (R-DAV-02)
+     * @param int|null $atMostMembers How many members of one collection are
+     *                                reported before the rest are left out and
+     *                                the client is told (R-ACL-08). Null is no
+     *                                limit, because R-ACL-08 asks for a server
+     *                                to be *limitable* and one that began
+     *                                truncating on its own would surprise a
+     *                                deployment that never asked (R-ARC-02)
      */
     public function __construct(
         private readonly Server $server,
         private readonly bool $answersInfiniteDepth = false,
+        private readonly ?int $atMostMembers = null,
     ) {
     }
 
@@ -187,9 +204,48 @@ final class PropFind
             return;
         }
 
-        foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
+        $members = VisibleMembers::of($this->server->events(), $path, $node);
+        $reported = $this->atMostMembers === null
+            ? $members
+            : array_slice($members, 0, $this->atMostMembers, true);
+
+        foreach ($reported as $member => $child) {
             $this->report($report, $member, $child, $form, $names, $depth - 1);
         }
+
+        if (count($reported) < count($members)) {
+            $this->sayThereWasMore($report, $path, $node, count($reported));
+        }
+    }
+
+    /**
+     * **RFC 5323 §2.3.1: a result set too large is a `507` inside the `207`.**
+     *
+     * > the reply MUST use status code 207, return a DAV:multistatus response
+     * > body, and indicate a status of 507 (Insufficient Storage) for the
+     * > search arbiter URI. It SHOULD include the partial results.
+     *
+     * §2.3.4 writes the document out: the partial results, then one more
+     * `DAV:response` for the resource the listing was about, carrying the
+     * status and a `DAV:responsedescription`. Here the collection stands
+     * where the search arbiter stands there — it is what the client asked
+     * about.
+     *
+     * RFC 4918 §11.5 alone would have made `507` look wrong, since it
+     * describes being unable to *store* something and calls the condition
+     * temporary. RFC 5323 is the one that settles it for a listing that was
+     * cut short, and it is a better answer than any of the alternatives: the
+     * request did not fail, the client has something usable, and it knows
+     * that it is not everything.
+     */
+    private function sayThereWasMore(MultiStatus $report, string $path, INode $node, int $reported): void
+    {
+        $report->addStatus(
+            $this->server->hrefOf($path, $node),
+            507,
+            null,
+            sprintf('Only the first %d members of this collection were reported.', $reported),
+        );
     }
 
     /**
