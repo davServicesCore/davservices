@@ -164,6 +164,41 @@ final class PrincipalBackendTest extends PrincipalBackendContract
      * Whatever else is in the directory belongs to somebody else, and
      * reading the people must not take it along.
      */
+    /**
+     * **A name written across lines is still that name.** These files are
+     * edited by people — that is the whole design of this backend — and a
+     * person indents. A member read as `"
+    alice
+"` names nobody: the
+     * group would look empty, or the principal would look as though it
+     * belonged to a group that does not exist.
+     *
+     * The same finding as the `
+` in a hand-edited column in P3-06c, from
+     * the other side.
+     */
+    public function testANameWrittenAcrossLinesIsStillThatName(): void
+    {
+        $this->write('loose.xml', '
+            <principal xmlns="https://dav.services/principals" name="loose">
+                <member-of>
+                    staff
+                </member-of>
+                <members>
+                    <member>
+                        alice
+                    </member>
+                </members>
+            </principal>
+        ');
+
+        $loose = $this->backend()->principal('loose');
+
+        self::assertNotNull($loose);
+        self::assertSame(['staff'], $loose->memberOf());
+        self::assertSame(['alice'], $loose->members());
+    }
+
     public function testLeavesAloneWhatIsNotItsOwn(): void
     {
         $stranger = $this->directory . '/notes.txt';
