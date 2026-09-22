@@ -35,6 +35,7 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Method\Copy`, `Method\Move` | Answer `COPY` and `MOVE`; what they share is in `Method\Transfer` |
 | `Method\Report` | Answers `REPORT`: whatever the body asks for, by name — and says which names it knows |
 | `ReportDepth` | A report without a `Depth` was asked for `0` — the opposite of `PROPFIND` |
+| `Report\ExpandProperty` | Answers `DAV:expand-property`: hrefs in a value replaced by the responses they name (RFC 3253 §3.8) |
 | `Event\BeforeCopy`, `AfterCopy` | Raised around a copy, with both ends of it |
 | `Event\BeforeMove`, `AfterMove` | Raised around a move; a move is not a removal and a creation |
 | `Event\BeforeBind`, `AfterBind` | Raised wherever a member appears, whatever method put it there |
@@ -43,7 +44,7 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Precondition\ResourceState` | What a client could have known about one resource: its tokens and its tag |
 | `Event\StateTokensRequested` | Where a plugin says which tokens a resource is in the state of |
 | `Event\CurrentPrincipalRequested` | The one question about who is asking, and the one place to answer it |
-| `Event\ListingMembers` | Raised with the members of a collection at once; a listener may conceal some |
+| `Event\ListingMembers` | Raised with the paths about to be named at once — a listing, or the hrefs a report would expand; a listener may conceal some |
 | `Locks\LockInfo` | One write lock: what it reaches, and when it ends |
 | `Locks\LockScope` | Whether anybody else may hold one at the same time |
 | `Locks\LockToken` | The name a lock is held by, made of cryptographic random |
