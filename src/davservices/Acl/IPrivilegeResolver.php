@@ -89,7 +89,28 @@ interface IPrivilegeResolver
      * The other direction, and the one `DAV:acl` is written from: a client
      * asking who may see a calendar is asking this.
      *
-     * @return array<string, PrivilegeSet> Keyed by principal URI
+     * **A key may be a principal URL or one of four names from RFC 3744
+     * §5.5.1**, which gives six forms an entry's principal may take:
+     *
+     *     <!ELEMENT principal (href | all | authenticated | unauthenticated
+     *      | property | self)>
+     *
+     * `{DAV:}all`, `{DAV:}authenticated`, `{DAV:}unauthenticated` and
+     * `{DAV:}self` are empty elements, so a name says all there is to say,
+     * and a URL never looks like one of them. A deployment whose rule is
+     * „everybody may read" names `{DAV:}all` here — **and has to be able
+     * to**, because §5.5 says this property is the list of entries, and one
+     * that named nobody where everybody may read would not be incomplete but
+     * untrue.
+     *
+     * The other two forms are not expressible: `DAV:property` carries a
+     * property name inside it and `DAV:invert` wraps a whole principal, so
+     * neither fits in a key. A deployment granting by those cannot report
+     * them through this seam — said plainly, because the alternative is
+     * finding out by reading somebody else's server.
+     *
+     * @return array<string, PrivilegeSet> Keyed by principal URI, or by one
+     *                                     of the four names above
      */
     public function principalsForPath(string $path): array;
 }
