@@ -19,6 +19,7 @@ use DavServices\Dav\Server;
 use DavServices\Event\EventEmitter;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
+use DavServices\Exception\NotFound;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Xml\Element;
@@ -113,11 +114,24 @@ final class Report
     /**
      * Hands the request to whichever report it names.
      *
+     * @throws NotFound If there is nothing at the path
      * @throws BadRequest If the body names nothing, or cannot be read
      * @throws Forbidden If this server does not answer that report
      */
     public function __invoke(Request $request): Response
     {
+        // **RFC 3253 §3.6: the Request-URI identifies the resource the report
+        // is about.** There being none is looked for here rather than in each
+        // report, because every report of this family is about that resource
+        // — and one that forgot to look would answer as though it were merely
+        // empty, which is a different thing and a worse answer.
+        //
+        // It is looked for **before** the body is read: a client that asked
+        // about something that is not there has that wrong with its request
+        // whatever the body says, and being told the body was malformed would
+        // send it looking in the wrong place.
+        $this->server->tree()->node($this->server->path($request));
+
         // **There is no default report**, unlike a `PROPFIND` with no body,
         // which asks for everything. Choosing one would be answering a
         // question nobody asked — so a body that names nothing is refused,

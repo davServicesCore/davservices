@@ -23,6 +23,7 @@ use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
+use DavServices\Exception\NotFound;
 use DavServices\Http\Body;
 use DavServices\Http\Headers;
 use DavServices\Http\Request;
@@ -144,6 +145,73 @@ final class ReportTest extends TestCase
         $response = $this->report(self::SOMETHING, null, 'this is no XML');
 
         self::assertSame(400, $response->status());
+    }
+
+    /**
+     * **RFC 3253 §3.6: „the Request-URI identifies the resource the report is
+     * about".** There is none here, so there is nothing to report about, and
+     * the answer is `404`.
+     *
+     * The check lives in the method rather than in each report, and that is
+     * the whole point of putting it here: every report of this family is
+     * about the resource at the request target, so a report that forgot to
+     * look would answer as though the resource were merely empty —
+     * `principal-property-search` did exactly that, with a `207` naming
+     * nobody. One place, and the family is right.
+     */
+    public function testAReportAboutNothingIsNotFound(): void
+    {
+        $server = $this->server(self::SOMETHING, static fn (): Response => new Response(207));
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/calendars/missing.ics',
+            body: new Body(sprintf('<t:%s xmlns:t="https://dav.services/test"/>', 'something')),
+        ));
+
+        self::assertSame(404, $response->status());
+    }
+
+    /**
+     * **And the report is not run at all.** A `404` worked out after the
+     * report had already answered would be a report that had gone to the
+     * storage for a resource nobody has — and, worse, one that could have
+     * said something about it on the way.
+     */
+    public function testAReportAboutNothingIsNeverRun(): void
+    {
+        $ran = 0;
+        $report = new Report(new Server(new Tree($this->tree())));
+
+        $report->on(self::SOMETHING, static function () use (&$ran): Response {
+            ++$ran;
+
+            return new Response(207);
+        });
+
+        try {
+            $report($this->request(self::SOMETHING, target: '/calendars/missing.ics'));
+        } catch (NotFound) {
+            // The refusal is the other test's business; this one counts.
+        }
+
+        self::assertSame(0, $ran);
+    }
+
+    /**
+     * **The resource is looked for before the body is read.** A client that
+     * asked about something that is not there has one thing wrong with its
+     * request whatever the body says, and the more specific answer is the
+     * useful one — telling it the body was malformed would send it looking
+     * in the wrong place.
+     */
+    public function testTheResourceIsLookedForBeforeTheBodyIsRead(): void
+    {
+        $report = new Report(new Server(new Tree($this->tree())));
+
+        $this->expectException(NotFound::class);
+
+        $report(new Request('REPORT', '/calendars/missing.ics', body: new Body('this is no XML')));
     }
 
     /**
@@ -296,11 +364,11 @@ final class ReportTest extends TestCase
         return $root;
     }
 
-    private function request(string $name, ?string $body = null): Request
+    private function request(string $name, ?string $body = null, string $target = '/calendars/work.ics'): Request
     {
         return new Request(
             'REPORT',
-            '/calendars/work.ics',
+            $target,
             body: new Body($body ?? sprintf('<t:%s xmlns:t="https://dav.services/test"/>', 'something')),
         );
     }
