@@ -84,14 +84,15 @@ final class GroupResolver
     public function identitiesOf(string $principalPath): array
     {
         $identities = [$principalPath];
-        $seen = [$principalPath => true];
 
         // Walked breadth first, so the groups come out in the order they were
-        // reached: the ones somebody is in, then the ones those are in.
+        // reached: the ones somebody is in, then the ones those are in. The
+        // answer is its own record of what has been visited — a group already
+        // in it is not followed again, which is the whole cycle guard and
+        // needs no second structure to hold a value nobody reads.
         for ($at = 0; $at < count($identities); ++$at) {
             foreach ($this->groupsOf($identities[$at]) as $group) {
-                if (!isset($seen[$group])) {
-                    $seen[$group] = true;
+                if (!in_array($group, $identities, true)) {
                     $identities[] = $group;
                 }
             }

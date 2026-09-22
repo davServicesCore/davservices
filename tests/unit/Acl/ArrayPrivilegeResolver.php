@@ -38,7 +38,12 @@ final class ArrayPrivilegeResolver implements IPrivilegeResolver
     /**
      * @param array<string, array<string, list<string>>> $rules Keyed by
      *                                                          principal URI,
-     *                                                          then by path
+     *                                                          then by path.
+     *                                                          `{DAV:}unauthenticated`
+     *                                                          is the key for
+     *                                                          nobody being
+     *                                                          signed in
+     *                                                          (RFC 3744 §5.5.1)
      */
     public function __construct(private readonly array $rules)
     {
@@ -113,11 +118,12 @@ final class ArrayPrivilegeResolver implements IPrivilegeResolver
 
     private function granted(?string $principalUri, string $path): PrivilegeSet
     {
-        if ($principalUri === null) {
-            return PrivilegeSet::nothing();
-        }
-
-        $names = $this->rules[$principalUri][$path] ?? [];
+        // **Nobody signed in is a principal too.** RFC 3744 §5.5.1 gives it a
+        // name — `DAV:unauthenticated` — and an entry may grant to it, so the
+        // rules decide rather than a special case here. A double that always
+        // answered "nothing" could not express a deployment where the public
+        // may read, and would hide a server that never asked.
+        $names = $this->rules[$principalUri ?? '{DAV:}unauthenticated'][$path] ?? [];
 
         return $names === [] ? PrivilegeSet::nothing() : PrivilegeSet::of($this->tree, ...$names);
     }

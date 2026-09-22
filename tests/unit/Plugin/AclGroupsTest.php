@@ -199,11 +199,27 @@ final class AclGroupsTest extends TestCase
     }
 
     /**
-     * **Nobody signed in is still asked about**, because an entry may name
-     * `DAV:unauthenticated` (§5.5.1) and that is an answer the resolver has
-     * to be allowed to give.
+     * **Nobody signed in is still asked about**, because RFC 3744 §5.5.1 has
+     * a principal for exactly that — `DAV:unauthenticated` — and an entry may
+     * grant to it. A server that skipped the question where nobody had signed
+     * in could not serve a public calendar at all, and would look identical
+     * to one whose rules simply said no.
      */
-    public function testNobodySignedInIsAskedAboutAsNobody(): void
+    public function testWhatIsGrantedToNobodySignedInIsGranted(): void
+    {
+        $server = $this->server(
+            ['{DAV:}unauthenticated' => ['calendars/work.ics' => ['{DAV:}read']]],
+            signedIn: false,
+        );
+
+        self::assertSame(200, $server->handle(new Request('GET', '/calendars/work.ics'))->status());
+    }
+
+    /**
+     * And what was granted to somebody by name is not thereby granted to
+     * everybody: the question is asked, the answer is no.
+     */
+    public function testNobodySignedInHoldsWhatWasGrantedToNobody(): void
     {
         $server = $this->server([self::ALICE => ['calendars/work.ics' => ['{DAV:}read']]], signedIn: false);
 
