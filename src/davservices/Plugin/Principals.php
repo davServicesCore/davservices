@@ -19,8 +19,10 @@ use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
 use DavServices\Http\Request;
+use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 
 /**
@@ -57,6 +59,10 @@ final class Principals
     private const PRINCIPAL_COLLECTION_SET = '{DAV:}principal-collection-set';
 
     private const CURRENT_USER = '{DAV:}current-user-principal';
+
+    private const GROUP_MEMBERSHIP = '{DAV:}group-membership';
+
+    private const GROUP_MEMBER_SET = '{DAV:}group-member-set';
 
     /** @var Closure(Request): ?string */
     private readonly Closure $whoIsThere;
@@ -145,14 +151,15 @@ final class Principals
     }
 
     /**
-     * Answers whichever of the three was asked for.
+     * Answers whichever of them was asked for.
      */
     public function describe(PropertiesRequested $event): void
     {
         $result = $event->result();
+        $node = $event->node();
 
-        if ($result->wants(self::PRINCIPAL_URL) && $event->node() instanceof Principal) {
-            $result->set(self::PRINCIPAL_URL, $this->holdingHref(self::PRINCIPAL_URL, $result->path()));
+        if ($node instanceof Principal) {
+            $this->describeThePrincipal($result, $node);
         }
 
         if ($result->wants(self::PRINCIPAL_COLLECTION_SET)) {
@@ -165,6 +172,60 @@ final class Principals
         if ($result->wants(self::CURRENT_USER)) {
             $result->set(self::CURRENT_USER, $this->currentUser());
         }
+    }
+
+    /**
+     * The three properties only a principal has.
+     *
+     * **`DAV:group-membership` is always answered** (RFC 3744 §4.4 makes
+     * support REQUIRED), and it names the groups this principal is *directly*
+     * in — §4.4's own word. A client wanting the rest is told by §4.4 to ask
+     * those groups in turn, which is what `DAV:expand-property` is for; a
+     * server answering the whole chain here would be lying to a client doing
+     * exactly what it was told, and counting some groups twice.
+     *
+     * **`DAV:group-member-set` is answered only where the backend says.**
+     * §4.3 is the one property of §4 without "Support for this property is
+     * REQUIRED", so a directory that will not hand out rosters is within its
+     * rights — and a `404` is how this server passes that on, rather than an
+     * empty set, which would claim the group has nobody in it.
+     */
+    private function describeThePrincipal(PropFindResult $result, Principal $node): void
+    {
+        if ($result->wants(self::PRINCIPAL_URL)) {
+            $result->set(self::PRINCIPAL_URL, $this->holdingHref(self::PRINCIPAL_URL, $result->path()));
+        }
+
+        if ($result->wants(self::GROUP_MEMBERSHIP)) {
+            $result->set(self::GROUP_MEMBERSHIP, $this->holdingMembers(self::GROUP_MEMBERSHIP, $node->memberOf()));
+        }
+
+        $members = $node->members();
+
+        if ($members !== null && $result->wants(self::GROUP_MEMBER_SET)) {
+            $result->set(self::GROUP_MEMBER_SET, $this->holdingMembers(self::GROUP_MEMBER_SET, $members));
+        }
+    }
+
+    /**
+     * One property holding an href per principal, built from the member names
+     * the backend gave — the node knows those, and only the server knows
+     * where the principal collection is mounted.
+     *
+     * @param list<string> $names
+     */
+    private function holdingMembers(string $name, array $names): Element
+    {
+        $property = new Element($name);
+
+        foreach ($names as $member) {
+            $href = new Element('{DAV:}href');
+
+            $href->appendText($this->server->href(Path::join($this->principalsAt, $member)));
+            $property->append($href);
+        }
+
+        return $property;
     }
 
     /**

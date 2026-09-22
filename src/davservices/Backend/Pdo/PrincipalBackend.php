@@ -111,15 +111,25 @@ final class PrincipalBackend implements IPrincipalBackend
      */
     private static function principalFrom(array $row): PrincipalInfo
     {
+        $members = $row['group_members'] ?? null;
+
         return new PrincipalInfo(
             $row['name'] ?? '',
             $row['display_name'] ?? null,
             self::urisIn($row['alternate_uris'] ?? null),
+            self::urisIn($row['group_membership'] ?? null),
+            // **Null is not the empty column.** RFC 3744 §4.3 is the one
+            // property of §4 a server need not support, so a NULL here says
+            // "this server does not say who is in that group" while an empty
+            // column says "nobody, yet". A backend collapsing the two would
+            // tell every client that every group it declines to describe is
+            // empty.
+            $members === null ? null : self::urisIn($members),
         );
     }
 
     /**
-     * One URI per line, which is what the column holds.
+     * One value per line, which is what these columns hold.
      *
      * Blank lines are skipped rather than handed over: a column somebody
      * edited by hand ends with a newline more often than not, and an empty

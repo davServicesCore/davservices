@@ -47,12 +47,14 @@ final class MemoryPrincipalBackendTest extends PrincipalBackendContract
     protected function backend(): IPrincipalBackend
     {
         return new MemoryPrincipalBackend(
-            new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test']),
+            new PrincipalInfo('alice', 'Alice Ashton', ['mailto:alice@example.test'], ['staff']),
             new PrincipalInfo('carol', 'Carol Carter', [
                 'mailto:carol@example.test',
                 'mailto:c.carter@example.test',
-            ]),
+            ], ['staff', 'everyone']),
             new PrincipalInfo('plain'),
+            new PrincipalInfo('staff', 'The staff', [], ['everyone'], ['alice', 'carol']),
+            new PrincipalInfo('everyone', 'Everybody here', [], [], []),
         );
     }
 }

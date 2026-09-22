@@ -39,7 +39,21 @@ use RuntimeException;
  *     <principal xmlns="https://dav.services/principals" name="alice">
  *         <display-name>Alice Ashton</display-name>
  *         <alternate-uri>mailto:alice@example.test</alternate-uri>
+ *         <member-of>staff</member-of>
  *     </principal>
+ *
+ * A group says who is in it, and the wrapper is what says it at all:
+ *
+ *     <principal xmlns="https://dav.services/principals" name="staff">
+ *         <members>
+ *             <member>alice</member>
+ *         </members>
+ *     </principal>
+ *
+ * **No `<members>` element means this server does not say** (RFC 3744 §4.3 is
+ * the one property of §4 that need not be supported), while an empty
+ * `<members/>` means a group nobody is in yet. Those are different answers,
+ * and repeated `<member>` elements alone could not tell them apart.
  *
  * **The directory is read once.** Every request asks about at least one
  * principal and a listing asks about all of them, so reading it per question
@@ -149,7 +163,13 @@ final class PrincipalBackend implements IPrincipalBackend
             throw new RuntimeException(sprintf('"%s" is no principal this server wrote.', $file));
         }
 
-        return new PrincipalInfo($name, self::displayNameIn($element), self::alternateUrisIn($element));
+        return new PrincipalInfo(
+            $name,
+            self::displayNameIn($element),
+            self::alternateUrisIn($element),
+            self::namesIn($element, 'member-of'),
+            self::membersIn($element),
+        );
     }
 
     /**
@@ -176,14 +196,43 @@ final class PrincipalBackend implements IPrincipalBackend
      */
     private static function alternateUrisIn(Element $principal): array
     {
-        $uris = [];
+        return self::namesIn($principal, 'alternate-uri');
+    }
 
-        foreach ($principal->children() as $child) {
-            if ($child->name() === self::PRINCIPALS . 'alternate-uri') {
-                $uris[] = $child->text();
+    /**
+     * Who is in this group (RFC 3744 §4.3), or null where the file does not
+     * say.
+     *
+     * **The wrapper is what says it.** §4.3 is the one property of §4 that a
+     * server need not support at all, so a file has to be able to decline —
+     * and „no `<members>` element" is how it declines, while an empty
+     * `<members/>` is a group nobody is in yet. Repeated `<member>` elements
+     * without a wrapper could not tell those two apart.
+     *
+     * @return list<string>|null
+     */
+    private static function membersIn(Element $principal): ?array
+    {
+        $members = $principal->child(self::PRINCIPALS . 'members');
+
+        return $members === null ? null : self::namesIn($members, 'member');
+    }
+
+    /**
+     * The text of every child of one name, in the order it was written.
+     *
+     * @return list<string>
+     */
+    private static function namesIn(Element $element, string $localName): array
+    {
+        $found = [];
+
+        foreach ($element->children() as $child) {
+            if ($child->name() === self::PRINCIPALS . $localName) {
+                $found[] = trim($child->text());
             }
         }
 
-        return $uris;
+        return $found;
     }
 }

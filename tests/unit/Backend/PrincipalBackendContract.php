@@ -93,6 +93,73 @@ abstract class PrincipalBackendContract extends TestCase
         );
     }
 
+    /**
+     * **RFC 3744 §4.4: the groups a principal is *directly* in, and no
+     * others.** The wording leaves no room — "identifies the groups in which
+     * the principal is **directly** a member" — and §4.4 goes on to tell a
+     * client how to find the rest: "the DAV:group-membership of those other
+     * groups would need to be queried in order to determine the groups in
+     * which the principal is indirectly a member".
+     *
+     * So a backend that answered transitively would be lying to a client
+     * doing exactly what the specification told it to do, and counting some
+     * groups twice. Alice is in `staff`; `staff` is in `everyone`; her
+     * membership names `staff` alone.
+     */
+    public function testKeepsTheGroupsAPrincipalIsDirectlyIn(): void
+    {
+        self::assertSame(['staff'], $this->backend()->principal('alice')?->memberOf());
+    }
+
+    /**
+     * §4.4 says support for the property is REQUIRED, so there is always an
+     * answer: somebody in no group at all is in no group, which is a
+     * different statement from the server declining to say.
+     */
+    public function testAPrincipalNeedBeInNoGroup(): void
+    {
+        self::assertSame([], $this->backend()->principal('plain')?->memberOf());
+    }
+
+    /**
+     * And every one of them, in the order they were written — the same rule
+     * as for addresses, and the same failure if it is broken: a client
+     * checking the second group would be told the person is not in it.
+     */
+    public function testKeepsEveryGroupTheyAreIn(): void
+    {
+        self::assertSame(['staff', 'everyone'], $this->backend()->principal('carol')?->memberOf());
+    }
+
+    /**
+     * **§4.3: the principals that are *direct* members of this group.** The
+     * same word again, and for the same reason — "since a group may be a
+     * member of another group, a group may also have indirect members (i.e.,
+     * the members of its direct members)", which is the specification saying
+     * plainly that this property does not include them.
+     */
+    public function testAGroupKeepsItsDirectMembers(): void
+    {
+        self::assertSame(['alice', 'carol'], $this->backend()->principal('staff')?->members());
+    }
+
+    /**
+     * **And a backend need not say at all.** §4.3 is the one property of the
+     * four in RFC 3744 §4 that does **not** carry the sentence "Support for
+     * this property is REQUIRED" — §4.1, §4.2 and §4.4 all do. A directory
+     * that will not hand out group rosters is within its rights, and `null`
+     * is how it says so.
+     *
+     * That is a different answer from an empty list, which says "a group with
+     * nobody in it". A backend that returned `[]` for both would tell a
+     * client every group it declines to describe is empty.
+     */
+    public function testABackendNeedNotSayWhoIsInAGroup(): void
+    {
+        self::assertNull($this->backend()->principal('alice')?->members(), 'not a group, and not claimed to be');
+        self::assertSame([], $this->backend()->principal('everyone')?->members(), 'a group nobody is in yet');
+    }
+
     public function testHandsBackEveryPrincipalItHas(): void
     {
         $names = array_map(
@@ -102,7 +169,7 @@ abstract class PrincipalBackendContract extends TestCase
 
         sort($names);
 
-        self::assertSame(['alice', 'carol', 'plain'], $names);
+        self::assertSame(['alice', 'carol', 'everyone', 'plain', 'staff'], $names);
     }
 
     /**
@@ -118,13 +185,17 @@ abstract class PrincipalBackendContract extends TestCase
      */
     public function testTheListingIsAList(): void
     {
-        self::assertSame([0, 1, 2], array_keys($this->backend()->principals()));
+        self::assertSame([0, 1, 2, 3, 4], array_keys($this->backend()->principals()));
     }
 
     /**
-     * The storage under test, holding Alice — who is called something and has
-     * an address — Carol, who has two addresses, and one plain principal that
-     * is nothing but a name.
+     * The storage under test, holding Alice — who is called something, has an
+     * address and is in `staff` — Carol, who has two addresses and is in two
+     * groups, and one plain principal that is nothing but a name.
+     *
+     * Plus the two groups themselves: `staff`, which says who is in it, and
+     * `everyone`, which is a group nobody is in yet. `staff` is a member of
+     * `everyone`, so that the contract has a chain to be direct about.
      */
     abstract protected function backend(): IPrincipalBackend;
 }

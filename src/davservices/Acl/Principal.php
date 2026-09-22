@@ -61,6 +61,34 @@ final class Principal implements INode, IProperties, IResourceType
     }
 
     /**
+     * The groups this principal is **directly** in (RFC 3744 §4.4), by their
+     * member names.
+     *
+     * **The node hands over names, not URLs**, for the same reason it cannot
+     * answer `DAV:principal-URL`: a node knows its name and nothing about
+     * where it hangs. {@see \DavServices\Plugin\Principals} turns these into
+     * hrefs, where the path is known.
+     *
+     * @return list<string>
+     */
+    public function memberOf(): array
+    {
+        return $this->principal->memberOf();
+    }
+
+    /**
+     * The principals **directly** in this group (§4.3), or null where this
+     * server does not say — which §4.3 allows, being the one property of §4
+     * that need not be supported at all.
+     *
+     * @return list<string>|null
+     */
+    public function members(): ?array
+    {
+        return $this->principal->members();
+    }
+
+    /**
      * Nothing: a backend that cannot say when a principal last changed says
      * so rather than guessing, because an invented time is handed out as
      * `DAV:getlastmodified` and cached by clients.

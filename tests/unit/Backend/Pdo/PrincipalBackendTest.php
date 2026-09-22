@@ -54,10 +54,17 @@ final class PrincipalBackendTest extends PrincipalBackendContract
 
         $this->connection = $connection;
 
-        $this->add('alice', 'Alice Ashton', 'mailto:alice@example.test');
+        $this->add('alice', 'Alice Ashton', 'mailto:alice@example.test', 'staff');
         $this->add('carol', 'Carol Carter', "mailto:carol@example.test
-mailto:c.carter@example.test");
+mailto:c.carter@example.test", "staff
+everyone");
         $this->add('plain', null, null);
+        $this->add('staff', 'The staff', null, 'everyone', "alice
+carol");
+
+        // An empty column is a group nobody is in yet; NULL, as for the
+        // others, is this server declining to say who is in one.
+        $this->add('everyone', 'Everybody here', null, null, '');
     }
 
     /**
@@ -155,7 +162,7 @@ mailto:c.carter@example.test");
             $this->backend()->principals(),
         );
 
-        self::assertSame(['alice', 'bob', 'carol', 'plain'], $names);
+        self::assertSame(['alice', 'bob', 'carol', 'everyone', 'plain', 'staff'], $names);
     }
 
     /**
@@ -186,14 +193,21 @@ mailto:c.carter@example.test");
         return $this->connection ?? self::fail('The test has no database.');
     }
 
-    private function add(string $name, ?string $displayName, ?string $uris): void
-    {
+    private function add(
+        string $name,
+        ?string $displayName,
+        ?string $uris,
+        ?string $membership = null,
+        ?string $members = null,
+    ): void {
         $statement = $this->connection()->prepare(
-            'INSERT INTO davservices_principals (name, display_name, alternate_uris) VALUES (?, ?, ?)',
+            'INSERT INTO davservices_principals'
+            . ' (name, display_name, alternate_uris, group_membership, group_members)'
+            . ' VALUES (?, ?, ?, ?, ?)',
         );
 
         self::assertNotFalse($statement);
 
-        $statement->execute([$name, $displayName, $uris]);
+        $statement->execute([$name, $displayName, $uris, $membership, $members]);
     }
 }
