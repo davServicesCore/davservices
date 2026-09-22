@@ -490,13 +490,48 @@ final class Acl
         return $list;
     }
 
+    /**
+     * The four principals of RFC 3744 §5.5.1 that are a name and nothing
+     * else.
+     *
+     * > `<!ELEMENT principal (href | all | authenticated | unauthenticated |
+     * > property | self)>`
+     *
+     * A resolver names principals by URL, and a URL never looks like
+     * `{DAV:}all` — so the same string carries both without ambiguity, and
+     * the seam did not have to change shape to say what §5.5 requires it to
+     * be able to say.
+     *
+     * `DAV:property` and `DAV:invert` are **not** here and cannot be: the
+     * first carries a property name inside it, the second wraps a whole
+     * principal. Neither fits in a name. A deployment granting by those forms
+     * cannot report them through this seam — written down rather than left
+     * to be discovered, because the alternative is a server that quietly
+     * reports something else.
+     *
+     * @var list<string>
+     */
+    private const PRINCIPALS_THAT_ARE_ONLY_A_NAME = [
+        '{DAV:}all',
+        '{DAV:}authenticated',
+        '{DAV:}unauthenticated',
+        '{DAV:}self',
+    ];
+
     private static function entry(string $principal, PrivilegeSet $held): Element
     {
         $ace = new Element('{DAV:}ace');
         $who = new Element('{DAV:}principal');
         $grant = new Element('{DAV:}grant');
 
-        $who->append(self::saying('{DAV:}href', $principal));
+        // Anything else is an href, whatever it looks like: guessing would be
+        // inventing an entry form §5.5.1 does not have.
+        $who->append(
+            in_array($principal, self::PRINCIPALS_THAT_ARE_ONLY_A_NAME, true)
+                ? new Element($principal)
+                : self::saying('{DAV:}href', $principal),
+        );
+
         $ace->append($who);
 
         foreach ($held->granted() as $name) {
