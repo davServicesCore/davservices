@@ -125,24 +125,16 @@ final class Basic
     /**
      * Says who is asking, where the credentials name somebody.
      *
-     * The answer is worked out once for a request and kept for it. Every
-     * guard in the access control plugin asks this, and a backend that
+     * Every guard in the access control plugin asks this, and a backend that
      * verified the password each time would hash it a dozen times over one
-     * request. It is kept for **one** request, on the same rule as the
-     * memoising privilege resolver: a memory that lived longer would go on
-     * naming somebody whose password had just been changed.
+     * request — see {@see self::whoIsThere()} for where that is held.
      */
     public function nameWhoIsThere(CurrentPrincipalRequested $event): void
     {
-        $request = $event->request();
+        $principal = $this->whoIsThere($event->request());
 
-        if ($this->answeredFor !== $request) {
-            $this->answeredFor = $request;
-            $this->answer = $this->principalFor($request);
-        }
-
-        if ($this->answer !== null) {
-            $event->answerWith($this->answer);
+        if ($principal !== null) {
+            $event->answerWith($principal);
         }
     }
 
@@ -158,7 +150,7 @@ final class Basic
             return;
         }
 
-        if ($this->principalFor($event->request()) !== null) {
+        if ($this->whoIsThere($event->request()) !== null) {
             // Signed in and still refused: authorisation, not authentication.
             return;
         }
@@ -172,6 +164,29 @@ final class Basic
                 sprintf('Basic realm="%s", charset="UTF-8"', $this->realm),
             ),
         );
+    }
+
+    /**
+     * Who is asking, worked out once for a request and kept for it.
+     *
+     * **The memory sits here rather than in the listener**, because the
+     * listener is not the only caller: a refusal asks again, to tell a
+     * stranger from somebody who signed in and still may not have it. Kept
+     * one level up, that second question would verify the password a second
+     * time — the very hashing this exists to do once.
+     *
+     * It is kept for **one** request, on the same rule as the memoising
+     * privilege resolver: a memory that lived longer would go on naming
+     * somebody whose password had just been changed.
+     */
+    private function whoIsThere(Request $request): ?string
+    {
+        if ($this->answeredFor !== $request) {
+            $this->answeredFor = $request;
+            $this->answer = $this->principalFor($request);
+        }
+
+        return $this->answer;
     }
 
     /**
@@ -218,7 +233,14 @@ final class Basic
             return null;
         }
 
-        $userPass = base64_decode(trim(substr($header, $divider + 1)), true);
+        // RFC 7235 §2.1: `credentials = auth-scheme [ 1*SP ( token68 / … ) ]`.
+        // **One space or more**, so what follows the scheme is handed over
+        // whole rather than stepped over by one — `Basic  dGVzdA==` carries
+        // the same credentials as `Basic dGVzdA==`. Nothing trims it: in
+        // strict mode `base64_decode()` skips whitespace and still refuses
+        // anything outside the alphabet, so a trim here would be a line that
+        // changes no answer.
+        $userPass = base64_decode(substr($header, $divider), true);
 
         if ($userPass === false) {
             return null;

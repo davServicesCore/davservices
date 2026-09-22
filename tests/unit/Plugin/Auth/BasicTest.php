@@ -147,6 +147,17 @@ final class BasicTest extends TestCase
         self::assertSame('principals/test', $this->whoIsThere('Basic dGVzdDoxMjPCow=='));
     }
 
+    /**
+     * **RFC 7235 §2.1: `auth-scheme [ 1*SP ( token68 / … ) ]`** — one space
+     * or more. A client that sends two is sending the same credentials, and a
+     * server that stepped over exactly one would hand the decoder a leading
+     * space and refuse somebody who did nothing wrong.
+     */
+    public function testMoreThanOneSpaceAfterTheSchemeIsStillTheScheme(): void
+    {
+        self::assertSame('principals/alice', $this->whoIsThere('Basic   ' . base64_encode('alice:open sesame')));
+    }
+
     public function testAWrongPasswordIsNobody(): void
     {
         self::assertNull($this->whoIsThere($this->credentials('alice', 'not it')));
@@ -174,13 +185,19 @@ final class BasicTest extends TestCase
     }
 
     /**
+     * **Each of these would sign somebody in if the rule were missing.** The
+     * backend knows `ali\nce` and it knows `ctl`, so a refusal here is the
+     * guard doing its work rather than the storage happening not to know the
+     * name — which is the difference between a test that holds and one that
+     * is green by accident.
+     *
      * @return iterable<string, array{string}>
      */
     public static function credentialsWithAControlCharacter(): iterable
     {
         yield 'a newline in the user-id' => ["ali\nce:open sesame"];
 
-        yield 'a newline in the password' => ["alice:open\nsesame"];
+        yield 'a newline in the password' => ["ctl:open\nsesame"];
 
         yield 'a null byte' => ["alice:open\0sesame"];
 
@@ -290,6 +307,28 @@ final class BasicTest extends TestCase
         $events->emit(new CurrentPrincipalRequested($request));
         $events->emit(new CurrentPrincipalRequested($request));
         $events->emit(new CurrentPrincipalRequested($request));
+
+        self::assertSame(1, $backend->asked);
+    }
+
+    /**
+     * **And a refusal does not ask again either.** Telling a stranger from
+     * somebody who signed in is a second question about the same request, and
+     * asking it of the backend would verify the password a second time — the
+     * very hashing the memory exists to do once.
+     */
+    public function testARefusalDoesNotVerifyThePasswordAgain(): void
+    {
+        $backend = $this->backend();
+        $root = new MemoryCollection('');
+        $file = new MemoryFile('work.ics', 'BEGIN:VCALENDAR');
+
+        $file->refuseReading();
+        $root->add($file);
+
+        $this->server($backend, $root)->handle(new Request('GET', '/work.ics', headers: new Headers([
+            'Authorization' => $this->credentials('alice', 'open sesame'),
+        ])));
 
         self::assertSame(1, $backend->asked);
     }
@@ -460,6 +499,12 @@ final class BasicTest extends TestCase
             'carol' => ['pass:word:with:colons', 'carol'],
             // RFC 7617 §2.1's own example: "123" followed by U+00A3.
             'test' => ["123\xC2\xA3", 'test'],
+            // **These two exist on purpose.** A control character has to be
+            // refused by the rule, not by the backend happening not to know
+            // the user — if the guard were missing, these would sign in, and
+            // a test looking only for "nobody" would never notice.
+            "ali\nce" => ['open sesame', 'smuggled'],
+            'ctl' => ["open\nsesame", 'smuggled'],
         ]);
     }
 }
