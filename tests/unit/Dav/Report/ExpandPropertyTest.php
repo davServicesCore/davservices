@@ -90,6 +90,8 @@ final class ExpandPropertyTest extends TestCase
 
     private const COLOUR = '{https://dav.services/test}colour';
 
+    private const NOTE = '{https://dav.services/test}note';
+
     private const EXPAND_MEMBERSHIP = <<<'XML'
         <D:expand-property xmlns:D="DAV:">
           <D:property name="group-membership">
@@ -152,7 +154,12 @@ final class ExpandPropertyTest extends TestCase
             $body,
         );
         self::assertStringContainsString('<d:displayname>Staff</d:displayname>', $body, 'and the second href too');
-        self::assertStringNotContainsString('<d:href>/principals/admins</d:href></d:group-membership>', $body);
+
+        // **Replaced, not reported beside.** The expanded value has to stand
+        // where the property stood, in the block of the status it came to —
+        // an answer carrying both would leave a client to guess which one
+        // the server meant.
+        self::assertStringNotContainsString('<d:group-membership><d:href>', $body);
     }
 
     /**
@@ -198,6 +205,70 @@ final class ExpandPropertyTest extends TestCase
             $body,
         );
         self::assertStringContainsString('<d:displayname>Administrators</d:displayname>', $body);
+        self::assertStringContainsString('<d:displayname>Staff</d:displayname>', $body, 'the second entry too');
+        self::assertStringContainsString('<d:href>/principals/</d:href>', $body, 'and the collection it came from');
+    }
+
+    /**
+     * **Several properties in one body, each accounted for** (R-DAV-04): the
+     * one this resource has and the one it does not, in blocks of their own.
+     * A client that asked for two and was handed one has nothing to tell it
+     * which went missing.
+     */
+    public function testReportsSeveralPropertiesAndAccountsForEachOfThem(): void
+    {
+        $body = (string) $this->expand($this->asking(
+            '<D:property name="displayname"/><D:property name="getctag"/>',
+        ))->body();
+
+        self::assertStringContainsString('<d:displayname>Alice</d:displayname>', $body);
+        self::assertStringContainsString('HTTP/1.1 404 Not Found', $body);
+    }
+
+    /**
+     * **Text that stands beside the hrefs stays.** Replacing an href does not
+     * make the rest of the value disappear — a property is whatever its
+     * owner put in it, and a report that quietly dropped the words around the
+     * links would be handing back a different property.
+     */
+    public function testKeepsTextThatStandsBesideTheHrefs(): void
+    {
+        $body = (string) $this->expand($this->asking(
+            '<D:property name="note" namespace="https://dav.services/test">'
+            . '<D:property name="displayname"/></D:property>',
+        ))->body();
+
+        self::assertStringContainsString('see also', $body);
+        self::assertStringContainsString('<d:displayname>Administrators</d:displayname>', $body);
+    }
+
+    /**
+     * **An href may be written across lines**, and RFC 3253 §3.8.1 writes one
+     * that way in its own example — indented, with the URL on a line of its
+     * own. A server comparing the raw text would find nothing to expand and
+     * would answer, quite correctly by its own lights, that there was nothing
+     * there.
+     */
+    public function testAnHrefWrittenAcrossLinesIsStillFound(): void
+    {
+        $body = (string) $this->expand($this->asking(
+            '<D:property name="owner"><D:property name="displayname"/></D:property>',
+        ))->body();
+
+        self::assertStringContainsString('<d:displayname>Staff</d:displayname>', $body);
+    }
+
+    /**
+     * **Exactly the budget is still expanded.** „At most" means the last one
+     * allowed is allowed; a report that refused at the limit would expand one
+     * fewer than it promised, and nobody would know which.
+     */
+    public function testExactlyTheBudgetIsStillExpanded(): void
+    {
+        $response = $this->expand(self::EXPAND_MEMBERSHIP, atMost: 2);
+
+        self::assertSame(207, $response->status());
+        self::assertStringContainsString('<d:displayname>Staff</d:displayname>', (string) $response->body());
     }
 
     /**
@@ -465,7 +536,9 @@ final class ExpandPropertyTest extends TestCase
             ->withProperty(self::COLOUR, 'blue')
             ->withProperty(self::MEMBERSHIP, self::hrefs(self::MEMBERSHIP, '/principals/admins', '/principals/staff'))
             ->withProperty(self::ADDRESSES, self::hrefs(self::ADDRESSES, 'mailto:alice@example.com'))
-            ->withProperty('{DAV:}acl', self::acl('/principals/admins'));
+            ->withProperty('{DAV:}acl', self::acl())
+            ->withProperty(self::NOTE, self::note())
+            ->withProperty('{DAV:}owner', self::ownerAcrossLines());
 
         $admins = (new MemoryFile('admins', ''))
             ->withProperty('{DAV:}displayname', 'Administrators')
@@ -502,19 +575,74 @@ final class ExpandPropertyTest extends TestCase
      * The shape of RFC 3744 §5.5, where the href a client cares about sits
      * two elements down.
      */
-    private static function acl(string $principal): Element
+    private static function acl(): Element
     {
         $acl = new Element('{DAV:}acl');
-        $ace = new Element('{DAV:}ace');
-        $who = new Element('{DAV:}principal');
-        $href = new Element('{DAV:}href');
 
-        $href->appendText($principal);
-        $who->append($href);
-        $ace->append($who);
-        $acl->append($ace);
+        // The first entry carries two hrefs of its own — RFC 3744 §5.5 lets
+        // an entry say where it was inherited from — and there are two
+        // entries, so that both the gathering and the rebuilding have more
+        // than one of everything to get right.
+        $acl->append(self::ace('/principals/admins', '/principals'));
+        $acl->append(self::ace('/principals/staff'));
 
         return $acl;
+    }
+
+    private static function ace(string $principal, ?string $inheritedFrom = null): Element
+    {
+        $ace = new Element('{DAV:}ace');
+        $who = new Element('{DAV:}principal');
+
+        $who->append(self::href($principal));
+        $ace->append($who);
+
+        if ($inheritedFrom !== null) {
+            $inherited = new Element('{DAV:}inherited');
+
+            $inherited->append(self::href($inheritedFrom));
+            $ace->append($inherited);
+        }
+
+        return $ace;
+    }
+
+    private static function href(string $url): Element
+    {
+        $href = new Element('{DAV:}href');
+
+        $href->appendText($url);
+
+        return $href;
+    }
+
+    /**
+     * A property that is not only hrefs: words of its own, and a link in the
+     * middle of them.
+     */
+    private static function note(): Element
+    {
+        $note = new Element(self::NOTE);
+
+        $note->appendText('see also');
+        $note->append(self::href('/principals/admins'));
+
+        return $note;
+    }
+
+    /**
+     * An href written the way RFC 3253 §3.8.1 writes one: on a line of its
+     * own, indented.
+     */
+    private static function ownerAcrossLines(): Element
+    {
+        $owner = new Element('{DAV:}owner');
+        $href = new Element('{DAV:}href');
+
+        $href->appendText("\n        /principals/staff\n      ");
+        $owner->append($href);
+
+        return $owner;
     }
 
     private static function hrefs(string $name, string ...$urls): Element
