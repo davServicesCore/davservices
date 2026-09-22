@@ -16,14 +16,21 @@ namespace DavServices\Dav\Event;
 use DavServices\Event\Event;
 
 /**
- * Raised while the members of a collection are being listed, so that a
- * listener can keep some of them out of the answer (RFC 3744 §8.1.1,
- * R-ACL-06).
+ * Raised where paths are about to be named in an answer, so that a listener
+ * can keep some of them out of it (RFC 3744 §8.1.1, R-ACL-06).
  *
- * **A `404` on a member nobody may read is only half the work.** If the
- * listing of its parent still names it, the client has been told it exists —
- * which is the one thing hiding it was meant to prevent. So the listing is
- * asked first, and what is concealed never reaches the report.
+ * **A `404` on a resource nobody may read is only half the work.** If an
+ * answer still names it, the client has been told it exists — which is the
+ * one thing hiding it was meant to prevent. So the question is asked first,
+ * and what is concealed never reaches the answer.
+ *
+ * Listing a collection is the commonest case and the one this was written
+ * for, which is why it carries the path being listed. It is not the only one:
+ * `DAV:expand-property` asks the same question about the hrefs inside a
+ * property value (RFC 3253 §3.8), because an expanded href reaches a resource
+ * no collection listing covers. **A listener answers about paths and needs to
+ * know nothing else** — which is what makes the second case the same question
+ * rather than a second seam saying the same thing twice.
  *
  * **Every member is offered at once**, not one at a time. Deciding this is a
  * question to whatever knows the rules, and a collection of two hundred
@@ -40,9 +47,11 @@ final class ListingMembers extends Event
     private array $concealed = [];
 
     /**
-     * @param string $path The collection being listed
-     * @param list<string> $members The paths of its members, as they would
-     *                              appear in the answer
+     * @param string $path What is being answered about: the collection being
+     *                     listed, or the resource whose property holds the
+     *                     hrefs
+     * @param list<string> $members The paths about to be named, as they
+     *                              would appear in the answer
      */
     public function __construct(
         private readonly string $path,
