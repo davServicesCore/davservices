@@ -21,6 +21,7 @@ those URLs. Everything else in this layer is built on that.
 | `MemoizingPrivilegeResolver` | The same, asked once per principal and path for the length of a request |
 | `SearchableProperty` | One property principals may be searched by, with the sentence that explains it |
 | `Report\PrincipalSearchPropertySet` | The report that says which of those there are (RFC 3744 §9.5) |
+| `Report\PrincipalPropertySearch` | The report that finds a person by what their properties hold (RFC 3744 §9.4) |
 
 The model they are made from is `Dav\Acl\PrincipalInfo`, one layer down,
 because a backend interface may not reach up into the layer that uses it —
@@ -60,6 +61,39 @@ The standard list is what this library can actually answer for a principal —
 `DAV:displayname` and `DAV:alternate-URI-set`. An application that answers
 more adds to it rather than replacing it, the same way the privilege tree
 grows.
+
+## Finding a person
+
+```php
+$report->on(
+    '{DAV:}principal-property-search',
+    (new Report\PrincipalPropertySearch($server, $searchable))(...),
+);
+```
+
+This is what happens when somebody types three letters into the invitation
+field of a calendar client. **What counts as a match is the server's to
+choose** (§9.4) — the people usually live in somebody else's directory, and an
+LDAP attribute already has its own answer. Where nothing constrains it, §9.4
+names the preferred default, and that is what this does: caseless substring,
+over each contiguous piece of text in the value (§9.4.1). The logic is not
+open: several searches, and several properties in one of them, are all AND.
+RFC 3744 has no `test` attribute.
+
+**The values are assembled the way a `PROPFIND` assembles them**, which is
+why `IPrincipalBackend` has no `search()`. Not every searchable property
+belongs to the backend: the one CalDAV clients really search by comes from a
+plugin, and dead properties come from the property storage. A backend search
+could only answer for its own, would need this path for the rest anyway, and
+would leave two places deciding what „matches“ means. It also settles what a
+client may not see — a concealed member is not searched, and a property
+answered with `403` does not match, because an href in the answer says the
+resource exists whether or not any properties come with it.
+
+The limit is not optional. A directory of a hundred thousand people answers a
+search for „a“ with all of them, so too many matches is refused with
+`DAV:number-of-matches-within-limits` — the postcondition §9.4 names, so
+clients meet a name they already understand.
 
 ## Privileges are a tree, and the tree can grow
 

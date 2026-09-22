@@ -63,6 +63,42 @@ final class Element
     }
 
     /**
+     * The first child of a name, or null where there is none.
+     *
+     * **Reading a request body is this question over and over** — which child
+     * is the `DAV:prop`, is there a `DAV:allprop` — so it is asked here
+     * rather than answered again in every method and every report. A body
+     * that names the same element twice is one the DTD does not describe;
+     * the first is taken, and taken the same way every time, so that one
+     * request cannot be read two ways.
+     *
+     * @param string $name As `{namespace}localname`
+     */
+    public function child(string $name): ?self
+    {
+        foreach ($this->children as $child) {
+            if ($child->name() === $name) {
+                return $child;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * What the elements inside this one are called, in the order they came.
+     *
+     * This is what a `DAV:prop` holds: the properties a client asked for, and
+     * the order is the client's — the reports that answer lists keep it.
+     *
+     * @return list<string>
+     */
+    public function childNames(): array
+    {
+        return array_map(static fn (self $child): string => $child->name(), $this->children);
+    }
+
+    /**
      * The text inside this one, as it stands.
      */
     public function text(): string

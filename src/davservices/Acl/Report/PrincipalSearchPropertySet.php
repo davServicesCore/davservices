@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Acl\Report;
 
 use DavServices\Acl\SearchableProperty;
+use DavServices\Dav\ReportDepth;
 use DavServices\Dav\Server;
 use DavServices\Exception\BadRequest;
 use DavServices\Http\Request;
@@ -90,7 +91,7 @@ final class PrincipalSearchPropertySet
      */
     public function __invoke(Request $request): Response
     {
-        self::onlyAtDepthZero($request);
+        ReportDepth::mustBeZero($request);
 
         $set = new Element(self::SET);
 
@@ -100,22 +101,6 @@ final class PrincipalSearchPropertySet
 
         return (new Response(200, body: $this->server->writer()->write($set)))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');
-    }
-
-    /**
-     * §9.5: "This report is only defined when the Depth header has value
-     * `0`; other values result in a 400 (Bad Request) error response."
-     *
-     * @throws BadRequest If some other depth was asked for
-     */
-    private static function onlyAtDepthZero(Request $request): void
-    {
-        // RFC 3253 §3.6: a report without the header is at depth 0. That is
-        // the other way round from PROPFIND, where a missing Depth means
-        // infinity — so the default is written out here rather than shared.
-        if (($request->headers()->first('Depth') ?? '0') !== '0') {
-            throw new BadRequest('This report says what may be searched here, so it is only defined at Depth: 0.');
-        }
     }
 
     /**

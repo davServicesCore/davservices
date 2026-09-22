@@ -655,6 +655,43 @@ final class ServerTest extends TestCase
         yield 'a name that would otherwise start a query' => ['/', 'a?b.ics', '/a%3Fb.ics'];
     }
 
+    /**
+     * **RFC 4918 §8.3: a collection is named with a trailing slash.** Clients
+     * build the addresses of its members by appending to it, and one handed
+     * `/calendars` would go looking for `/calendarswork.ics`.
+     *
+     * The rule lives here rather than in whichever method is writing hrefs,
+     * because `PROPFIND` is no longer the only one: a report that lists
+     * resources has to name them the same way, and two copies of this would
+     * be two chances to name a collection wrongly.
+     */
+    #[DataProvider('hrefsOfNodes')]
+    public function testNamesACollectionWithATrailingSlash(string $baseUri, string $path, bool $isCollection, string $href): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')), baseUri: $baseUri);
+        $node = $isCollection ? new MemoryCollection('calendars') : new MemoryFile('work.ics', '');
+
+        self::assertSame($href, $server->hrefOf($path, $node));
+    }
+
+    /**
+     * @return iterable<string, array{string, string, bool, string}>
+     */
+    public static function hrefsOfNodes(): iterable
+    {
+        yield 'a file' => ['/', 'calendars/work.ics', false, '/calendars/work.ics'];
+
+        yield 'a collection' => ['/', 'calendars', true, '/calendars/'];
+
+        yield 'a collection on a mounted server' => ['/dav/', 'calendars', true, '/dav/calendars/'];
+
+        // The root already ends in a slash, and a second one would address
+        // something else entirely.
+        yield 'the root collection' => ['/', '', true, '/'];
+
+        yield 'the root of a mounted server' => ['/dav/', '', true, '/dav/'];
+    }
+
     private function server(?EventEmitter $events = null): Server
     {
         return new Server(new Tree(new MemoryCollection('')), $events);

@@ -13,14 +13,12 @@ declare(strict_types=1);
 
 namespace DavServices\Dav\Method;
 
-use DavServices\Dav\Event\ListingMembers;
-use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
-use DavServices\Dav\IProperties;
+use DavServices\Dav\Property\Answers;
 use DavServices\Dav\PropFindForm;
-use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
+use DavServices\Dav\VisibleMembers;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\NotFound;
@@ -52,9 +50,8 @@ use DavServices\Xml\MultiStatus;
  * and they go in blocks of their own: a client handed three answers to five
  * questions has nothing to tell it which two went missing.
  *
- * Where the answers come from is {@see PropertiesRequested} — the listeners
- * first, the node after them, and the first answer for a property stands
- * (R-PROP-05).
+ * Where the answers come from is {@see Answers} — the listeners first, the
+ * node after them, and the first answer for a property stands (R-PROP-05).
  *
  * Registered like any other method:
  *
@@ -152,42 +149,23 @@ final class PropFind
             throw new BadRequest('The body of a PROPFIND is a DAV:propfind.');
         }
 
-        $named = self::childNamed($document, '{DAV:}prop');
+        $named = $document->child('{DAV:}prop');
 
         if ($named !== null) {
-            return [PropFindForm::Named, self::namesOf($named)];
+            return [PropFindForm::Named, $named->childNames()];
         }
 
-        if (self::childNamed($document, '{DAV:}propname') !== null) {
+        if ($document->child('{DAV:}propname') !== null) {
             return [PropFindForm::NamesOnly, []];
         }
 
-        if (self::childNamed($document, '{DAV:}allprop') === null) {
+        if ($document->child('{DAV:}allprop') === null) {
             throw new BadRequest('This PROPFIND asks for nothing.');
         }
 
-        $include = self::childNamed($document, '{DAV:}include');
+        $include = $document->child('{DAV:}include');
 
-        return [PropFindForm::Everything, $include === null ? [] : self::namesOf($include)];
-    }
-
-    private static function childNamed(Element $element, string $name): ?Element
-    {
-        foreach ($element->children() as $child) {
-            if ($child->name() === $name) {
-                return $child;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function namesOf(Element $element): array
-    {
-        return array_map(static fn (Element $child): string => $child->name(), $element->children());
+        return [PropFindForm::Everything, $include === null ? [] : $include->childNames()];
     }
 
     /**
@@ -203,62 +181,15 @@ final class PropFind
         array $names,
         int $depth,
     ): void {
-        $report->addProperties(self::href($this->server->href($path), $node), $this->answersFor($path, $node, $form, $names));
+        $report->addProperties($this->server->hrefOf($path, $node), $this->answersFor($path, $node, $form, $names));
 
         if ($depth === 0 || !$node instanceof ICollection) {
             return;
         }
 
-        foreach ($this->whatMayBeSeenIn($path, $node) as $member => $child) {
+        foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
             $this->report($report, $member, $child, $form, $names, $depth - 1);
         }
-    }
-
-    /**
-     * The members that are to appear, which is all of them until somebody
-     * says otherwise.
-     *
-     * **Refusing to read a resource is only half of hiding it** (R-ACL-06):
-     * a listing that still named it would have told the client the thing
-     * exists. So the listing is offered first — **all of it at once**,
-     * because deciding this is a question to whatever knows the rules, and a
-     * collection of two hundred members would otherwise be two hundred
-     * questions (R-PRIV-01).
-     *
-     * @return array<string, INode> Keyed by path
-     */
-    private function whatMayBeSeenIn(string $path, ICollection $node): array
-    {
-        $found = [];
-
-        foreach ($node->children() as $child) {
-            $found[Path::join($path, $child->name())] = $child;
-        }
-
-        $listing = $this->server->events()->emit(new ListingMembers($path, array_keys($found)));
-        $visible = [];
-
-        foreach ($listing->visible() as $member) {
-            // What comes back was in what went out: a listener conceals
-            // members, it does not invent them.
-            $visible[$member] = $found[$member] ?? $node;
-        }
-
-        return $visible;
-    }
-
-    /**
-     * RFC 4918 §8.3: a collection is named with a trailing slash. Clients
-     * build the addresses of its members by appending to it, and one handed
-     * `/calendars` would go looking for `/calendarswork.ics`.
-     */
-    private static function href(string $href, INode $node): string
-    {
-        if (!$node instanceof ICollection || str_ends_with($href, '/')) {
-            return $href;
-        }
-
-        return $href . '/';
     }
 
     /**
@@ -270,63 +201,6 @@ final class PropFind
      */
     private function answersFor(string $path, INode $node, PropFindForm $form, array $names): array
     {
-        $result = new PropFindResult($path, $form, $names);
-
-        // The listeners first: a plugin that must refuse a property the node
-        // would hand over can only do it by answering before the node does.
-        $this->server->events()->emit(new PropertiesRequested($result, $node));
-
-        if ($node instanceof IProperties) {
-            $this->askTheNode($result, $node);
-        }
-
-        return $result->byStatus();
-    }
-
-    /**
-     * What the node itself keeps, and only what is still open: a backend that
-     * is asked for what somebody has answered already runs a query for
-     * nothing, and on a listing of two hundred members that is two hundred of
-     * them.
-     */
-    private function askTheNode(PropFindResult $result, IProperties $node): void
-    {
-        if ($result->form() === PropFindForm::NamesOnly) {
-            // The values are dropped from the answer, so fetching them would
-            // turn the cheap question into the expensive one.
-            foreach ($node->propertyNames() as $name) {
-                $result->set($name, null);
-            }
-
-            return;
-        }
-
-        foreach ($node->properties(self::namesToAskFor($result, $node)) as $name => $value) {
-            $result->set($name, $value);
-        }
-    }
-
-    /**
-     * Under `allprop` the node's own names are the question: a property nobody
-     * has named can be learnt of in no other way, and every dead property is
-     * one of those.
-     *
-     * @return list<string>
-     */
-    private static function namesToAskFor(PropFindResult $result, IProperties $node): array
-    {
-        $candidates = $result->form() === PropFindForm::Everything
-            ? $node->propertyNames()
-            : $result->stillWanted();
-
-        $names = [];
-
-        foreach ($candidates as $name) {
-            if ($result->wants($name)) {
-                $names[] = $name;
-            }
-        }
-
-        return $names;
+        return Answers::about($this->server->events(), $path, $node, $form, $names)->byStatus();
     }
 }

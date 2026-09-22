@@ -26,12 +26,15 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Method\PropFind` | Answers `PROPFIND`: what a client is told about the resources under a path |
 | `PropFindResult`, `PropFindForm` | What has been answered for one resource, and how it was asked for |
 | `Event\PropertiesRequested` | Where live properties come from; raised before the node is asked |
+| `Property\Answers` | What this server says about the properties of one resource: listeners first, node after |
+| `VisibleMembers` | The members of a collection that are to appear at all — every walk goes through it |
 | `Property\LiveProperties` | The properties the server works out for itself; a listener on that event |
 | `Method\PropPatch` | Answers `PROPPATCH`: the properties of one resource, all of them or none |
 | `PropPatchResult` | The changes of one request, and the rule that one failure fails them all |
 | `Event\PropertiesChanging` | Raised before anything is written; a listener refuses or takes one on |
 | `Method\Copy`, `Method\Move` | Answer `COPY` and `MOVE`; what they share is in `Method\Transfer` |
 | `Method\Report` | Answers `REPORT`: whatever the body asks for, by name — and says which names it knows |
+| `ReportDepth` | A report without a `Depth` was asked for `0` — the opposite of `PROPFIND` |
 | `Event\BeforeCopy`, `AfterCopy` | Raised around a copy, with both ends of it |
 | `Event\BeforeMove`, `AfterMove` | Raised around a move; a move is not a removal and a creation |
 | `Event\BeforeBind`, `AfterBind` | Raised wherever a member appears, whatever method put it there |
