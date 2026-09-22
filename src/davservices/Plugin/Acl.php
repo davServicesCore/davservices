@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Plugin;
 
+use DavServices\Acl\GroupResolver;
 use DavServices\Acl\IPrivilegeResolver;
 use DavServices\Acl\Privilege;
 use DavServices\Acl\PrivilegeSet;
@@ -131,6 +132,13 @@ final class Acl
     private ?Request $request = null;
 
     /**
+     * Everything the asker counts as, worked out once for the request.
+     *
+     * @var list<string|null>|null
+     */
+    private ?array $identities = null;
+
+    /**
      * @param Privilege|null $privileges What this server can be asked to
      *                                   grant; the tree of RFC 3744 §3
      *                                   unless an extension has added to it
@@ -141,11 +149,20 @@ final class Acl
      *                                   deployment wants where the existence
      *                                   of a resource is itself a secret
      */
+    /**
+     * @param GroupResolver|null $groups What the asker counts as besides
+     *                                   themselves (RFC 3744 §2 and §5.5.1).
+     *                                   Null where a server keeps no
+     *                                   principals — there are then no groups
+     *                                   to be in, and the recursion is empty
+     *                                   rather than missing
+     */
     public function __construct(
         private readonly Server $server,
         private readonly IPrivilegeResolver $resolver,
         ?Privilege $privileges = null,
         private readonly bool $unreadableIsNotFound = false,
+        private readonly ?GroupResolver $groups = null,
     ) {
         $this->privileges = $privileges ?? Privilege::standard();
     }
@@ -190,13 +207,17 @@ final class Acl
     {
         $this->request = $event->request();
 
+        // A new request is a new asker. Remembering across one would go on
+        // granting what somebody had just been taken out of a group for.
+        $this->identities = null;
+
         $method = $event->request()->method();
         $needed = self::READING[$method] ?? null;
 
         if ($needed !== null) {
             $path = $this->server->path($event->request());
 
-            if (!$this->resolver->forPath($this->whoIsAsking(), $path)->has($needed)) {
+            if (!$this->heldOn($path)->has($needed)) {
                 throw $this->refusalToRead($path);
             }
 
@@ -312,9 +333,7 @@ final class Acl
      */
     public function concealWhatMayNotBeRead(ListingMembers $event): void
     {
-        $who = $this->whoIsAsking();
-
-        foreach ($this->resolver->forPaths($who, $event->members()) as $path => $held) {
+        foreach ($this->heldOnEach($event->members()) as $path => $held) {
             if (!$held->has('{DAV:}read')) {
                 $event->conceal($path);
             }
@@ -371,7 +390,7 @@ final class Acl
      */
     private function refuseUnlessAllowed(string $path, string $privilege): void
     {
-        if (!$this->resolver->forPath($this->whoIsAsking(), $path)->has($privilege)) {
+        if (!$this->heldOn($path)->has($privilege)) {
             throw new Forbidden(sprintf('"%s" may not be changed that way by whoever is asking.', $path));
         }
     }
@@ -446,7 +465,7 @@ final class Acl
      */
     private function whatTheAskerMayDo(string $path): Element
     {
-        $held = $this->resolver->forPath($this->whoIsAsking(), $path);
+        $held = $this->heldOn($path);
         $answer = new Element(self::CURRENT_USER);
 
         foreach ($held->flattened() as $name) {
@@ -507,22 +526,91 @@ final class Acl
     }
 
     /**
-     * The principal URI of whoever is asking, or null where nobody is signed
-     * in — which holds nothing (R-PRIV-03).
+     * What the asker holds on one path, through every identity they have.
      *
-     * The event carries a path inside the tree, because that is what the rest
-     * of this library deals in; the resolver is given the URL, because that
-     * is what an access control entry names.
+     * **RFC 3744 §5.5.1: the current user matches an entry naming a
+     * principal "as being (or being a member of)" it**, and §2 makes that
+     * membership recursive. So the question goes out once per identity and
+     * the answers are merged — which is how this library guarantees §2
+     * rather than leaving each application to remember it. A resolver that
+     * only ever compared the principal who signed in would deny somebody a
+     * group had been given the right to, and say nothing about it.
      */
-    private function whoIsAsking(): ?string
+    private function heldOn(string $path): PrivilegeSet
+    {
+        $held = PrivilegeSet::nothing();
+
+        foreach ($this->identitiesAsking() as $identity) {
+            $held = $held->merged($this->resolver->forPath($identity, $path));
+        }
+
+        return $held;
+    }
+
+    /**
+     * The same for a whole listing, keeping `forPaths()` batched.
+     *
+     * It is one question per identity, not one per path: a collection of two
+     * hundred members is still two hundred paths in one question, which is
+     * what the resolver contract counts (R-PRIV-01).
+     *
+     * @param list<string> $paths
+     *
+     * @return array<string, PrivilegeSet>
+     */
+    private function heldOnEach(array $paths): array
+    {
+        $held = [];
+
+        foreach ($this->identitiesAsking() as $identity) {
+            foreach ($this->resolver->forPaths($identity, $paths) as $path => $set) {
+                $held[$path] = isset($held[$path]) ? $held[$path]->merged($set) : $set;
+            }
+        }
+
+        return $held;
+    }
+
+    /**
+     * Everything the asker counts as, worked out once for this request.
+     *
+     * Nobody signed in counts as nobody — one identity, and a null one,
+     * because an entry may name `DAV:unauthenticated` and that has to be
+     * asked about too (§5.5.1). A server with no principal collection has no
+     * groups, so the asker counts as themselves alone; that is R-ARC-02, not
+     * a gap.
+     *
+     * @return list<string|null>
+     */
+    private function identitiesAsking(): array
+    {
+        if ($this->identities !== null) {
+            return $this->identities;
+        }
+
+        $path = $this->pathAsking();
+
+        if ($path === null) {
+            return $this->identities = [null];
+        }
+
+        $paths = $this->groups === null ? [$path] : $this->groups->identitiesOf($path);
+
+        // The resolver is given URLs, because that is what an access control
+        // entry names; the tree deals in paths.
+        return $this->identities = array_map($this->server->href(...), $paths);
+    }
+
+    /**
+     * The path of whoever is asking, or null where nobody is signed in.
+     */
+    private function pathAsking(): ?string
     {
         if ($this->request === null) {
             return null;
         }
 
-        $path = $this->server->events()->emit(new CurrentPrincipalRequested($this->request))->principal();
-
-        return $path === null ? null : $this->server->href($path);
+        return $this->server->events()->emit(new CurrentPrincipalRequested($this->request))->principal();
     }
 
     private static function holding(string $name, string $child): Element
