@@ -18,7 +18,6 @@ use DavServices\Acl\PrincipalCollection;
 use DavServices\Dav\Acl\PrincipalInfo;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
-use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
@@ -59,8 +58,10 @@ use PHPUnit\Framework\TestCase;
  * would be worse than saying nothing**: a client that believed it was
  * somebody would show that person's calendars.
  *
- * The plugin says `3` and `access-control` in `OPTIONS`, because a client
- * reads that header before it asks any of this.
+ * **The plugin announces no compliance class.** It used to say
+ * `access-control`, and RFC 3744 §7.2 makes that a promise of everything the
+ * specification requires — of which principal properties are one part in
+ * nine. `Plugin\Acl` is what says it now, and what owes it.
  */
 #[CoversClass(Principals::class)]
 final class PrincipalsTest extends TestCase
@@ -263,18 +264,30 @@ final class PrincipalsTest extends TestCase
     }
 
     /**
-     * RFC 3744 §5.1: a server that keeps access control says `3` and
-     * `access-control` in `OPTIONS`. A client reads that before it asks for
-     * any of this.
+     * **This plugin announces no compliance class, and used to announce
+     * `access-control`.** That was untrue. RFC 3744 §7.2 makes the value mean
+     * that the server "supports all MUST level requirements and REQUIRED
+     * features specified in this document", and what is here is §4 alone —
+     * the principal properties. None of §5's access control properties, none
+     * of §6's enforcement, none of §7.1.1's `DAV:need-privileges`, none of
+     * §9's four REQUIRED reports.
+     *
+     * RFC 5397, which is the other half of what this plugin answers, defines
+     * no compliance token at all — `DAV:current-user-principal` is found by
+     * asking for it.
+     *
+     * A server that really does support access control says so through
+     * {@see \DavServices\Plugin\Acl}, which owes what the word promises and
+     * is given the `REPORT` method to pay with.
      */
-    public function testSaysWhatItMakesTheServerCapableOf(): void
+    public function testSaysNothingAboutWhatTheServerIsCapableOf(): void
     {
         $server = $this->server();
         $options = new Options($server);
 
         $server->onMethod('OPTIONS', $options(...));
 
-        self::assertSame('1, 3, access-control', $server->handle(new Request('OPTIONS', '/'))->headers()->first('DAV'));
+        self::assertSame('1', $server->handle(new Request('OPTIONS', '/'))->headers()->first('DAV'));
     }
 
     /**
@@ -326,15 +339,6 @@ final class PrincipalsTest extends TestCase
         $this->plugin()->describe(new PropertiesRequested($result, new Principal(new PrincipalInfo('alice'))));
 
         self::assertSame([], $result->byStatus()[200] ?? []);
-    }
-
-    public function testAddsTheThirdComplianceClassToAnOptionsAnswer(): void
-    {
-        $event = new OptionsRequested(new Request('OPTIONS', '/'));
-
-        $this->plugin()->announce($event);
-
-        self::assertSame(['3', 'access-control'], $event->compliance());
     }
 
     /**

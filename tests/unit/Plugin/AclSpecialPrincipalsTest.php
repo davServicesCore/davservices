@@ -17,6 +17,7 @@ use DavServices\Acl\IPrivilegeResolver;
 use DavServices\Acl\Privilege;
 use DavServices\Acl\PrivilegeSet;
 use DavServices\Dav\Method\PropFind;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Http\Body;
@@ -198,7 +199,7 @@ final class AclSpecialPrincipalsTest extends TestCase
                     $this->entries,
                 );
             }
-        }))->register();
+        }))->register(new Report($server));
 
         return (string) $server->handle(new Request(
             'PROPFIND',

@@ -16,6 +16,7 @@ namespace DavServices\Tests\Unit\Plugin;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Method\Get;
 use DavServices\Dav\Method\Put;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Http\Body;
@@ -211,7 +212,7 @@ final class AclNeedPrivilegesTest extends TestCase
             static fn (CurrentPrincipalRequested $event) => $event->answerWith('principals/alice'),
         );
 
-        (new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted]), null, $hidden))->register();
+        (new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted]), null, $hidden))->register(new Report($server));
 
         return $server;
     }

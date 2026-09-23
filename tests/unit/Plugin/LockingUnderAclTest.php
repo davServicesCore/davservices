@@ -16,6 +16,7 @@ namespace DavServices\Tests\Unit\Plugin;
 use DateTimeImmutable;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Method\Get;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Http\Body;
@@ -242,7 +243,7 @@ final class LockingUnderAclTest extends TestCase
         (new Locks($server, new MemoryLockBackend(), 3600, static fn (): DateTimeImmutable => new DateTimeImmutable()))
             ->register();
 
-        (new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted])))->register();
+        (new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted])))->register(new Report($server));
 
         return $server;
     }

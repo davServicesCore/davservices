@@ -29,6 +29,7 @@ use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
 use DavServices\Dav\Method\Put;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropPatchResult;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
@@ -341,7 +342,7 @@ final class AclEnforcementTest extends TestCase
         $server = $this->server();
 
         (new Acl($server, new ArrayPrivilegeResolver([self::ALICE => ['calendars/work.ics' => ['{DAV:}read']]])))
-            ->register();
+            ->register(new Report($server));
 
         self::assertSame(403, $server->handle(new Request('GET', '/calendars/work.ics'))->status());
     }
@@ -506,7 +507,7 @@ final class AclEnforcementTest extends TestCase
 
         $acl = new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted]));
 
-        $acl->register();
+        $acl->register(new Report($server));
         $acl->guardTheRequest(new BeforeMethod(new Request('OPTIONS', '/calendars/work.ics')));
 
         return $acl;
@@ -582,7 +583,7 @@ final class AclEnforcementTest extends TestCase
             $server,
             $resolver ?? new ArrayPrivilegeResolver([self::ALICE => $granted ?? []]),
             unreadableIsNotFound: $hidden,
-        ))->register();
+        ))->register(new Report($server));
 
         return $server->handle($request);
     }

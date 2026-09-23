@@ -18,6 +18,7 @@ use DavServices\Dav\Acl\PrincipalInfo;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Method\Get;
 use DavServices\Dav\Method\PropFind;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Http\Body;
@@ -265,7 +266,7 @@ final class AclGroupsTest extends TestCase
             null,
             false,
             $withGroups ? new GroupResolver($this->principals(), 'principals') : null,
-        ))->register();
+        ))->register(new Report($server));
 
         return $server;
     }
