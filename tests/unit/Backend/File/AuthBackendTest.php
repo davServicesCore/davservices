@@ -105,14 +105,68 @@ final class AuthBackendTest extends AuthBackendContract
     }
 
     /**
-     * **A hash may hold colons and often does**, since `$2y$12$…` is full of
-     * characters and the format is not this library's to constrain. The line
-     * is split into three and no further, so everything between the first and
-     * the last field is the hash.
+     * **And an account commented out is an account out of service.** This is
+     * the one that matters: somebody takes a person's access away by putting
+     * a `#` in front of their line, and a parser that read past it would find
+     * three perfectly good fields and hand the account straight back. The
+     * person would still be signing in, and the file would say they were not.
      */
-    public function testAHashIsTakenWholeHoweverItIsWritten(): void
+    public function testAnAccountCommentedOutCannotSignIn(): void
     {
+        $this->write([
+            '# ' . $this->line('bob', 'open sesame', 'bob'),
+            '#' . $this->line('bobby', 'open sesame', 'bobby'),
+            $this->line('alice', 'open sesame', 'alice'),
+        ]);
+
+        $backend = $this->backend();
+
+        self::assertNull($backend->principalFor('bob', 'open sesame'));
+        self::assertNull($backend->principalFor('# bob', 'open sesame'), 'nor under the commented name');
+        self::assertNull($backend->principalFor('bobby', 'open sesame'), 'nor without the space');
+        self::assertSame('alice', $backend->principalFor('alice', 'open sesame'), 'and the rest still works');
+    }
+
+    /**
+     * **A line somebody indented is still that line.** These files are edited
+     * by people — that is the whole design — and a person indents, or leaves a
+     * space at the end without seeing it.
+     */
+    public function testALineWrittenWithSpacesAroundItStillWorks(): void
+    {
+        $this->write(['   ' . $this->line('alice', 'open sesame', 'alice') . '   ']);
+
         self::assertSame('alice', $this->backend()->principalFor('alice', 'open sesame'));
+    }
+
+    /**
+     * **Exactly three fields.** A `password_hash()` string holds no colon and
+     * a principal name has no business holding one, so a fourth colon is a
+     * mistake — and a mistake is skipped rather than quietly made part of the
+     * name, which would let somebody sign in as a principal nobody meant.
+     */
+    public function testALineWithAFourthColonIsSkipped(): void
+    {
+        $this->write([$this->line('alice', 'open sesame', 'alice') . ':extra']);
+
+        self::assertNull($this->backend()->principalFor('alice', 'open sesame'));
+    }
+
+    /**
+     * And a line with an empty field says nothing usable, whichever field it
+     * is — a nameless account is not an account.
+     */
+    public function testALineWithAnEmptyFieldIsSkipped(): void
+    {
+        $this->write([
+            ':' . password_hash('open sesame', PASSWORD_BCRYPT, ['cost' => 4]) . ':ghost',
+            'nameless:' . password_hash('open sesame', PASSWORD_BCRYPT, ['cost' => 4]) . ':',
+        ]);
+
+        $backend = $this->backend();
+
+        self::assertNull($backend->principalFor('', 'open sesame'));
+        self::assertNull($backend->principalFor('nameless', 'open sesame'));
     }
 
     /**

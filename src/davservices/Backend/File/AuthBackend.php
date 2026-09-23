@@ -19,13 +19,20 @@ use RuntimeException;
 /**
  * Credentials in a file a person can edit, one line each.
  *
+ *     # Somebody taken out of service, and still out of service.
+ *     # bob:$2y$12$…:bob
  *     alice:$2y$12$…:alice
  *     c.carter:$2y$12$…:carol
  *
- * The user-id, the hash, and the principal name — **the last two need not be
- * the same as the first.** Somebody signs in as `c.carter` and is the
- * principal `carol`; that mapping is the kind of thing a deployment has and a
- * protocol library cannot guess.
+ * The user-id, the hash, and the principal name — **the last need not be the
+ * same as the first.** Somebody signs in as `c.carter` and is the principal
+ * `carol`; that mapping is the kind of thing a deployment has and a protocol
+ * library cannot guess.
+ *
+ * **Exactly three fields, and no colons inside any of them.** A
+ * `password_hash()` string holds none, and a principal name has no business
+ * holding one; a line with a fourth colon is a mistake, and a mistake is
+ * skipped rather than guessed at.
  *
  * ## Why this is not in the principal file
  *
@@ -111,7 +118,10 @@ final class AuthBackend implements IAuthBackend
             return $this->people;
         }
 
-        $lines = file($this->file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        // No flags: every line is trimmed below and an empty one is skipped
+        // there, so asking the reader to do it as well would be asking twice
+        // and proving nothing.
+        $lines = file($this->file);
 
         // @codeCoverageIgnoreStart
         // The file was there a moment ago, so a false here is a disc that has
@@ -143,6 +153,11 @@ final class AuthBackend implements IAuthBackend
      * typing mistake should not lock everybody else out — the person on that
      * line simply cannot sign in, which is visible the moment they try.
      *
+     * **A line beginning with `#` is a comment, whatever else it holds.**
+     * Somebody who takes an account out of service by commenting its line
+     * out has taken it out of service; a parser that looked past the `#` and
+     * found three fields would hand the account straight back.
+     *
      * @return array{string, string, string}|null
      */
     private static function personIn(string $line): ?array
@@ -154,16 +169,19 @@ final class AuthBackend implements IAuthBackend
             return null;
         }
 
-        $parts = explode(':', $line, 3);
+        // **Exactly three fields**, and a fourth colon makes the line
+        // unreadable rather than quietly part of one of them. A `password_hash()`
+        // string holds no colon, and a principal name has no business holding
+        // one either — so a line with more of them is a mistake, and a
+        // mistake is better skipped than guessed at.
+        $parts = explode(':', $line);
 
-        if (count($parts) !== 3) {
+        if (count($parts) !== 3 || in_array('', $parts, true)) {
             return null;
         }
 
         [$userId, $hash, $principal] = $parts;
 
-        return $userId === '' || $hash === '' || $principal === ''
-            ? null
-            : [$userId, $hash, $principal];
+        return [$userId, $hash, $principal];
     }
 }

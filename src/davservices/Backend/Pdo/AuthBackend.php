@@ -91,8 +91,8 @@ final class AuthBackend implements IAuthBackend
             ->fetch(PDO::FETCH_ASSOC);
 
         /** @var array<string, string|null>|false $row */
-        $hash = $row === false ? null : ($row['password_hash'] ?? null);
-        $principal = $row === false ? null : ($row['principal'] ?? null);
+        $hash = is_array($row) ? ($row['password_hash'] ?? null) : null;
+        $principal = is_array($row) ? ($row['principal'] ?? null) : null;
 
         // Verified either way, so that an unknown user-id costs what a known
         // one costs. The answer is then thrown away where there was nobody.

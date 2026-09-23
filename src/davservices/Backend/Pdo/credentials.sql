@@ -25,6 +25,16 @@
 -- the two can live in different databases, or this one can be left out
 -- entirely by a deployment that writes its own backend against a directory.
 
+-- One caveat that differs between databases, and it decides who gets in.
+-- RFC 7617 section 2.1 has recipients support the PRECIS
+-- "UsernameCasePreserved" profile, whose comparison is case-sensitive.
+-- SQLite and PostgreSQL compare this column that way by default; MySQL's
+-- usual collations (utf8mb4_general_ci, utf8mb4_0900_ai_ci) do not, so there
+-- `Alice` signs in as `alice`. A deployment that wants the specified
+-- behaviour declares the column with a binary or _bin collation. This file
+-- says it rather than choosing, because a collation clause here would stop
+-- the statement running unchanged on all three.
+
 CREATE TABLE davservices_credentials (
     user_id       VARCHAR(255) NOT NULL PRIMARY KEY,
     password_hash VARCHAR(255) NOT NULL,
