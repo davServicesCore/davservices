@@ -17,6 +17,11 @@ use DavServices\Acl\GroupResolver;
 use DavServices\Acl\IPrivilegeResolver;
 use DavServices\Acl\Privilege;
 use DavServices\Acl\PrivilegeSet;
+use DavServices\Acl\Report\AclPrincipalPropSet;
+use DavServices\Acl\Report\PrincipalMatch;
+use DavServices\Acl\Report\PrincipalPropertySearch;
+use DavServices\Acl\Report\PrincipalSearchPropertySet;
+use DavServices\Acl\SearchableProperty;
 use DavServices\Dav\Event\BeforeBind;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\BeforeMove;
@@ -27,6 +32,8 @@ use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\Method\Report;
+use DavServices\Dav\Report\ExpandProperty;
 use DavServices\Dav\Server;
 use DavServices\Exception\DavException;
 use DavServices\Exception\Forbidden;
@@ -168,10 +175,18 @@ final class Acl
     }
 
     /**
-     * Switches the five properties on, and the compliance class that tells a
-     * client to ask for them.
+     * Switches the five properties on, the compliance class that tells a
+     * client to ask for them, and the five reports that class stands for.
+     *
+     * **`REPORT` is asked for rather than assumed** (RFC 3744 §7.2): the
+     * announcement this makes "MUST indicate that the server supports all
+     * MUST level requirements and REQUIRED features specified in this
+     * document", and five reports are among them. Taking the method here is
+     * what makes announcing without answering impossible — the application
+     * builds one `REPORT` and hands it round, so a deployment cannot switch
+     * access control on and leave a promise unkept.
      */
-    public function register(): void
+    public function register(Report $report): void
     {
         $events = $this->server->events();
 
@@ -189,6 +204,46 @@ final class Acl
         $events->on(BeforeMove::class, $this->guardMoving(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
         $events->on(ListingMembers::class, $this->concealWhatMayNotBeRead(...));
+
+        $this->answerTheReportsItOwes($report);
+    }
+
+    /**
+     * The five reports a server announcing `access-control` owes.
+     *
+     * Four of them say so themselves — §9.2, §9.3, §9.4 and §9.5 each end
+     * on "Support for this report is REQUIRED" — and §9.1 adds the fifth
+     * from another specification: "A server that supports the WebDAV Access
+     * Control Protocol MUST support the DAV:expand-property report (defined
+     * in Section 3.8 of [RFC3253])."
+     *
+     * **What is registered is a default, not a decision taken from the
+     * application.** A deployment with its own idea of what may be searched,
+     * or its own limit on how much is reported at once, registers its own
+     * afterwards and that one answers: this fills the gap rather than
+     * holding the place.
+     *
+     * `DAV:principal-match` is given the group resolver, because §2 makes
+     * matching reach through the groups somebody is in and this plugin
+     * already holds what works that out. A report wired without it would
+     * give a client a narrower answer than the same server gives everywhere
+     * else.
+     */
+    private function answerTheReportsItOwes(Report $report): void
+    {
+        $searchable = SearchableProperty::standard();
+
+        $report->on('{DAV:}expand-property', (new ExpandProperty($this->server))(...));
+        $report->on('{DAV:}acl-principal-prop-set', (new AclPrincipalPropSet($this->server))(...));
+        $report->on('{DAV:}principal-match', (new PrincipalMatch($this->server, $this->groups))(...));
+        $report->on(
+            '{DAV:}principal-property-search',
+            (new PrincipalPropertySearch($this->server, $searchable))(...),
+        );
+        $report->on(
+            '{DAV:}principal-search-property-set',
+            (new PrincipalSearchPropertySet($this->server, $searchable))(...),
+        );
     }
 
     /**

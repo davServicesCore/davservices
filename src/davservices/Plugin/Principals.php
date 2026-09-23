@@ -17,7 +17,6 @@ use Closure;
 use DavServices\Acl\Principal;
 use DavServices\Dav\Event\BeforeMethod;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
-use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
@@ -97,15 +96,24 @@ final class Principals
     }
 
     /**
-     * Switches the three properties on, and the compliance class that tells a
-     * client to ask for them.
+     * Switches the three properties on.
+     *
+     * **It announces no compliance class.** It used to say `access-control`,
+     * and that was untrue: RFC 3744 §7.2 makes the value mean that the server
+     * "supports all MUST level requirements and REQUIRED features specified
+     * in this document", and principal properties are §4 alone — none of the
+     * access control properties of §5, none of the enforcement of §6, none of
+     * §7.1.1's `DAV:need-privileges`, none of §9's reports. RFC 5397, the
+     * other half of what this answers, defines no compliance token at all.
+     *
+     * A server that really does support access control says so through
+     * {@see Acl}, which owes what the word promises.
      */
     public function register(): void
     {
         $events = $this->server->events();
 
         $events->on(BeforeMethod::class, $this->rememberTheRequest(...));
-        $events->on(OptionsRequested::class, $this->announce(...));
         $events->on(PropertiesRequested::class, $this->describe(...));
 
         // What the application knows about who is signed in is answered on
@@ -129,16 +137,6 @@ final class Principals
         if ($path !== null) {
             $event->answerWith($path);
         }
-    }
-
-    /**
-     * RFC 3744 §5.1: a server that keeps access control is of compliance
-     * class `3` and says `access-control`. A client reads that before it asks
-     * for any of this.
-     */
-    public function announce(OptionsRequested $event): void
-    {
-        $event->addCompliance('3', 'access-control');
     }
 
     /**

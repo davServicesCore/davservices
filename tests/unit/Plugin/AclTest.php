@@ -20,6 +20,7 @@ use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
@@ -336,7 +337,7 @@ final class AclTest extends TestCase
     {
         $server = new Server(new Tree($this->tree()));
 
-        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects()))->register();
+        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects()))->register(new Report($server));
 
         $options = new Options($server);
 
@@ -370,7 +371,7 @@ final class AclTest extends TestCase
         $server = new Server(new Tree($this->tree()));
         $plugin = new Acl($server, ArrayPrivilegeResolver::asTheContractExpects());
 
-        $plugin->register();
+        $plugin->register(new Report($server));
         $server->events()->on(
             CurrentPrincipalRequested::class,
             static fn (CurrentPrincipalRequested $event) => $event->answerWith(self::ALICE),
@@ -405,7 +406,7 @@ final class AclTest extends TestCase
         $server = new Server(new Tree($this->tree()));
         $plugin = new Acl($server, $resolver ?? ArrayPrivilegeResolver::asTheContractExpects(), $privileges);
 
-        $plugin->register();
+        $plugin->register(new Report($server));
 
         return $plugin;
     }
@@ -418,7 +419,7 @@ final class AclTest extends TestCase
     ): string {
         $server = new Server(new Tree($this->tree()));
 
-        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects(), $privileges))->register();
+        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects(), $privileges))->register(new Report($server));
 
         // Somebody has to be signed in for any of this to be answered at
         // all: the plugin refuses a `PROPFIND` from whoever may not read
