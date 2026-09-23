@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Exception;
 
+use DavServices\Xml\Element;
 use RuntimeException;
 use Throwable;
 
@@ -38,12 +39,15 @@ abstract class DavException extends RuntimeException implements IHttpFailure
 
     /**
      * @param string $message For the log and for `DAV:responsedescription`
-     * @param string|null $errorElement Precondition of RFC 4918 §16, as `{namespace}localname`
+     * @param Element|string|null $errorElement Condition of RFC 4918 §16: its
+     *                                          name where it is empty, the
+     *                                          element itself where it carries
+     *                                          detail of its own
      * @param Throwable|null $previous The cause, which a log needs to stay useful
      */
     public function __construct(
         string $message = '',
-        private readonly ?string $errorElement = null,
+        private readonly Element|string|null $errorElement = null,
         ?Throwable $previous = null,
     ) {
         parent::__construct($message, static::STATUS, $previous);
@@ -60,7 +64,7 @@ abstract class DavException extends RuntimeException implements IHttpFailure
     /**
      * The precondition to name in a `DAV:error` body, or null.
      */
-    final public function errorElement(): ?string
+    final public function errorElement(): Element|string|null
     {
         return $this->errorElement;
     }

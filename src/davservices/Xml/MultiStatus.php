@@ -77,19 +77,23 @@ final class MultiStatus
     /**
      * Adds a resource that fared one way as a whole.
      *
-     * @param string|null $error A precondition of RFC 4918 §16 as
-     *                           `{namespace}localname`, where one applies
+     * @param Element|string|null $error A condition of RFC 4918 §16 where one
+     *                                   applies: its name where it is empty,
+     *                                   the element itself where it carries
+     *                                   detail of its own
      */
-    public function addStatus(string $href, int $status, ?string $error = null, ?string $description = null): void
-    {
+    public function addStatus(
+        string $href,
+        int $status,
+        Element|string|null $error = null,
+        ?string $description = null,
+    ): void {
         $response = self::responseFor($href);
 
         $response->append(self::status($status));
 
         if ($error !== null) {
-            $failed = new Element('{DAV:}error');
-            $failed->append(new Element($error));
-            $response->append($failed);
+            $response->append(Error::of($error));
         }
 
         self::describe($response, $description);

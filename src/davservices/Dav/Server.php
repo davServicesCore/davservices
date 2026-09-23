@@ -29,7 +29,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
 use DavServices\Uri\Path;
-use DavServices\Xml\Element;
+use DavServices\Xml\Error;
 use DavServices\Xml\Reader;
 use DavServices\Xml\Writer;
 use Throwable;
@@ -411,10 +411,7 @@ final class Server
             return new Response($failure->status());
         }
 
-        $error = new Element('{DAV:}error');
-        $error->append(new Element($precondition));
-
-        return (new Response($failure->status(), body: $this->writer->write($error)))
+        return (new Response($failure->status(), body: $this->writer->write(Error::of($precondition))))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');
     }
 }
