@@ -63,9 +63,17 @@ final class Body
     /**
      * The whole body, rewound and ready to be read again afterwards.
      *
+     * **Impure, and that is the point.** The first call draws the source into
+     * the buffer and every call rewinds it, so two calls are two different
+     * events however alike their answers look. A reader that assumed
+     * otherwise would conclude that reading a body twice cannot be worth
+     * testing — which is the one thing this class exists to make true.
+     *
      * @throws PayloadTooLarge If an earlier read refused the body
      *
      * @return resource
+     *
+     * @phpstan-impure
      */
     public function stream(): mixed
     {
@@ -84,6 +92,9 @@ final class Body
      *                               belongs to the read rather than to the body.
      *
      * @throws PayloadTooLarge If the body is longer than the ceiling
+     *
+     * @phpstan-impure See {@see self::stream()}: the first call fills the
+     *                 buffer, and every call moves the file pointer
      */
     public function contents(?int $maximumBytes = null): string
     {
