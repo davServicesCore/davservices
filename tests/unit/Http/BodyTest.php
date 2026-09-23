@@ -71,17 +71,27 @@ final class BodyTest extends TestCase
     {
         $body = new Body(self::streamOf('<propfind/>'));
 
-        self::assertSame('<propfind/>', $body->contents());
-        self::assertSame('<propfind/>', $body->contents());
-        self::assertSame('<propfind/>', stream_get_contents($body->stream()));
+        // Read three times over before anything is asserted, so that what is
+        // compared is three separate reads of one body and not one read
+        // compared with itself.
+        $first = $body->contents();
+        $again = $body->contents();
+        $fromTheStream = stream_get_contents($body->stream());
+
+        self::assertSame('<propfind/>', $first);
+        self::assertSame('<propfind/>', $again);
+        self::assertSame('<propfind/>', $fromTheStream);
     }
 
     public function testTheStreamIsHandedOverRewound(): void
     {
         $body = new Body('<propfind/>');
 
-        self::assertSame('<propfind/>', stream_get_contents($body->stream()));
-        self::assertSame('<propfind/>', stream_get_contents($body->stream()));
+        $first = stream_get_contents($body->stream());
+        $again = stream_get_contents($body->stream());
+
+        self::assertSame('<propfind/>', $first);
+        self::assertSame('<propfind/>', $again);
     }
 
     public function testReadingTheStreamDoesNotDisturbTheNextReader(): void
