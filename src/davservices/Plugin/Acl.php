@@ -218,7 +218,7 @@ final class Acl
             $path = $this->server->path($event->request());
 
             if (!$this->heldOn($path)->has($needed)) {
-                throw $this->refusalToRead($path);
+                throw $this->refusalToRead($path, $needed);
             }
 
             return;
@@ -391,8 +391,52 @@ final class Acl
     private function refuseUnlessAllowed(string $path, string $privilege): void
     {
         if (!$this->heldOn($path)->has($privilege)) {
-            throw new Forbidden(sprintf('"%s" may not be changed that way by whoever is asking.', $path));
+            throw new Forbidden(
+                sprintf('"%s" may not be changed that way by whoever is asking.', $path),
+                $this->needing($path, $privilege),
+            );
         }
+    }
+
+    /**
+     * **RFC 3744 §7.1.1: a refusal says what was missing, and where.**
+     *
+     * > If an HTTP method fails due to insufficient privileges, the response
+     * > body to the "403 Forbidden" error MUST contain the `<DAV:error>`
+     * > element, which in turn contains the `<DAV:need-privileges>` element,
+     * > which contains one or more `<DAV:resource>` elements indicating which
+     * > resource had insufficient privileges, and what the lacking privileges
+     * > were.
+     *
+     * **The resource named is the one that lacked the privilege**, which is
+     * not always the request target: a `PUT` that creates a member needs
+     * `DAV:bind` on the *collection*, and telling a client the file's own URL
+     * would send it to change the rights on something that does not exist
+     * yet.
+     *
+     * The href is made where every other href in this library is made, since
+     * a client is being told where to go and put something right.
+     */
+    private function needing(string $path, string $privilege): Element
+    {
+        $needed = new Element('{DAV:}need-privileges');
+        $resource = new Element('{DAV:}resource');
+
+        $tree = $this->server->tree();
+
+        // RFC 4918 §8.3: a collection is named with a trailing slash, and a
+        // client is about to compare this href with one it already holds. The
+        // node is asked for only where there is one — a request for something
+        // that is not there can be refused for want of a privilege before
+        // anything has looked for it.
+        $resource->append(self::saying(
+            '{DAV:}href',
+            $tree->exists($path) ? $this->server->hrefOf($path, $tree->node($path)) : $this->server->href($path),
+        ));
+        $resource->append(self::holding('{DAV:}privilege', $privilege));
+        $needed->append($resource);
+
+        return $needed;
     }
 
     /**
@@ -405,11 +449,18 @@ final class Acl
      * there — it is writing to it — so a `404` would be a lie it could see
      * through.
      */
-    private function refusalToRead(string $path): DavException
+    private function refusalToRead(string $path, string $privilege): DavException
     {
+        // §7.1.1 is about the body of a `403`. Where a deployment hides an
+        // unreadable resource instead, nothing is described: a server that
+        // will not admit a resource exists would hardly go on to say which
+        // privileges it wanted for it.
         return $this->unreadableIsNotFound
             ? new NotFound(sprintf('There is nothing at "%s".', $path))
-            : new Forbidden(sprintf('"%s" may not be read by whoever is asking.', $path));
+            : new Forbidden(
+                sprintf('"%s" may not be read by whoever is asking.', $path),
+                $this->needing($path, $privilege),
+            );
     }
 
     /**

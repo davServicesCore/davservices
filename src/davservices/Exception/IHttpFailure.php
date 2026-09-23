@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Exception;
 
+use DavServices\Xml\Element;
 use Throwable;
 
 /**
@@ -31,11 +32,19 @@ interface IHttpFailure extends Throwable
     public function status(): int;
 
     /**
-     * The precondition to name in a `DAV:error` body, as `{namespace}localname`.
+     * The condition to put in a `DAV:error` body (RFC 4918 §16).
      *
-     * Null where the status alone says everything there is to say. RFC 4918
-     * §16 defines the body; the element is chosen per throw site rather than
-     * per status, because one status serves several preconditions.
+     * Null where the status alone says everything there is to say. The
+     * condition is chosen per throw site rather than per status, because one
+     * status serves several of them.
+     *
+     * **A name where the element is empty, the element itself where it is
+     * not.** Most conditions mean only themselves —
+     * `DAV:propfind-finite-depth` has nothing inside it — but some carry
+     * their own detail: RFC 3744 §7.1.1's `DAV:need-privileges` names the
+     * resource that lacked a privilege and the privilege it lacked, and a
+     * refusal that could only give a name would leave a client knowing it may
+     * not and nothing about what to change.
      */
-    public function errorElement(): ?string;
+    public function errorElement(): Element|string|null;
 }
