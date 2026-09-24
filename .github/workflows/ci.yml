@@ -174,8 +174,12 @@ jobs:
         if: ${{ matrix.coverage }}
         run: php bin/check-coverage.php build/logs/clover.xml 100
 
+      # `always()`, because the one run whose report anybody wants to look at
+      # is the one that fell below the floor. On 24.09.2026 this job went red
+      # on `main` at 2613 of 2615 branches and the report was not kept, so
+      # finding out which two took a seeded re-run by hand.
       - name: Upload coverage report
-        if: ${{ matrix.coverage }}
+        if: ${{ always() && matrix.coverage }}
         uses: actions/upload-artifact@v7
         with:
           name: clover
