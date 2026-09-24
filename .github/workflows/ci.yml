@@ -133,9 +133,42 @@ jobs:
         if: ${{ !matrix.coverage }}
         run: vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --no-coverage
 
+      # Xdebug's coverage collector segfaults on a suite this size. It took
+      # this job down on 24.09.2026 at test 1934 of 1954, on a branch whose
+      # only change was a workflow file, and the nightly the same morning for
+      # the same reason. The run slows down steadily towards the end, which is
+      # what accumulating per-test path data looks like from outside.
+      #
+      # So it is tried once more, and only for that signature: 139 is 128 + 11,
+      # which is how a shell reports a child killed by SIGSEGV. A test that
+      # fails, or a floor that is not met, exits 1 or 2 — it fails on the first
+      # attempt and stays failed, because a real failure repeats.
+      #
+      # This is a plaster and is meant to be read as one. The collector is
+      # fragile in proportion to the suite, and the suite is still growing.
       - name: Unit tests with coverage
         if: ${{ matrix.coverage }}
-        run: vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --coverage-clover=build/logs/clover.xml
+        run: |
+          run() {
+            vendor/bin/phpunit \
+              --configuration=tests/.config/phpunit.xml.dist \
+              --coverage-clover=build/logs/clover.xml
+          }
+
+          status=0
+          run || status=$?
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$status" -ne 139 ]; then
+            echo "::error::The test run failed on its own terms; not retrying."
+            exit "$status"
+          fi
+
+          echo "::warning::Xdebug's coverage collector crashed (signal 11). Running once more."
+          run
 
       - name: Enforce coverage floor
         if: ${{ matrix.coverage }}
