@@ -12,8 +12,14 @@
 /**
  * Fails on a dependency that points from a lower layer to a higher one.
  *
- * Layer order (lowest first): Event, Uri, Http, Xml, Dav, Backend, Plugin.
- * Http may not know about Dav; Dav may not know about Plugin; and so on.
+ * Layer order (lowest first): VObject, Event, Uri, Http, Xml, Dav, Backend,
+ * Plugin. Http may not know about Dav; Dav may not know about Plugin; and so
+ * on.
+ *
+ * VObject lies at the very bottom because it is a reader and writer for two
+ * data formats and knows nothing else: not the transport, not the tree, not
+ * a request. Putting it there is what says so — it may use nothing above it,
+ * and everything above may use it, which CalDav and CardDav will.
  *
  * Backend lies below Plugin because that is the direction the dependency runs
  * in: a plugin is written against a backend's interface — the lock plugin
@@ -28,7 +34,7 @@ declare(strict_types=1);
 require __DIR__ . '/lib/Scanner.php';
 
 /** Lower index means lower layer. */
-const LAYERS = ['Event', 'Uri', 'Http', 'Xml', 'Dav', 'Backend', 'Acl', 'CalDav', 'CardDav', 'Plugin'];
+const LAYERS = ['VObject', 'Event', 'Uri', 'Http', 'Xml', 'Dav', 'Backend', 'Acl', 'CalDav', 'CardDav', 'Plugin'];
 
 $rank = array_flip(LAYERS);
 $violations = [];
