@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\VObject;
 
 use DavServices\VObject\Component;
+use DavServices\VObject\Lexer;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Property;
 use DavServices\VObject\Reader;
@@ -58,7 +59,32 @@ use PHPUnit\Framework\TestCase;
  * one can never be made strict again — by then nobody knows which files
  * depended on the leniency.
  */
+/*
+ * **`Lexer` is named here as well, and it has to be.** Xdebug attaches a
+ * function's branch map the first time that function runs in the process, and
+ * for a **generator** that map is then kept with whatever test triggered it.
+ * `Lexer::lines()` and `Lexer::unfolded()` are generators, and these tests run
+ * them — so when the suite happens to reach this file before `LexerTest`, the
+ * two maps are recorded against a test that covers `Reader`, thrown away with
+ * the rest of what this file does not target, and `LexerTest` afterwards only
+ * ever adds line hits to functions whose branches were never registered.
+ *
+ * The result is a coverage gate that fails on the order the tests ran in:
+ * `Lexer` comes out at 27 of 29 branches, both of them function entries, with
+ * every line covered. It took down `main` on 24.09.2026 and was reproduced by
+ * hand with the seed from that run and with `--order-by=reverse`.
+ *
+ * `UsesClass` does **not** do it: that keeps the class out of the "covered"
+ * reckoning, which is exactly the data being lost. Naming it as covered is
+ * also true — these tests do read whole calendar files through the lexer.
+ *
+ * What is given up is a little signal: a gap in `Lexer` could in principle be
+ * closed from here rather than from `LexerTest`. The mutation run is per class
+ * and still asks the sharper question, and the rule stands unchanged — a gap
+ * in a class is closed from that class's own tests.
+ */
 #[CoversClass(Reader::class)]
+#[CoversClass(Lexer::class)]
 final class ReaderTest extends TestCase
 {
     /**
