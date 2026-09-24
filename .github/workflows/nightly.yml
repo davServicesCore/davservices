@@ -34,8 +34,42 @@ jobs:
 
       - uses: ramsey/composer-install@v4
 
+      # Xdebug's coverage collector segfaults now and again on a suite this
+      # size. The nightly of 24.09.2026 died with signal 11 while running the
+      # initial test suite, and the very same commit then finished three times
+      # in a row on the same runner image: twice as a plain coverage run and
+      # once as the whole mutation run. That is the measuring device falling
+      # over, not the code — and the one thing it must not do is turn into a
+      # red build that nobody believes any more.
+      #
+      # So it is tried once more, and only for that one signature. A run that
+      # comes in under the mutation floor, or fails for any other reason,
+      # fails on the first attempt and stays failed. Both halves were checked
+      # on the runner: the happy path finished at MSI 96 %, and a run pointed
+      # at a configuration that does not exist failed once and stopped.
       - name: Infection
-        run: vendor/bin/infection --configuration=tests/.config/infection.json5 --min-msi=85 --min-covered-msi=90 --threads=max --no-progress
+        run: |
+          set -o pipefail
+          mkdir -p build
+
+          attempt() {
+            vendor/bin/infection \
+              --configuration=tests/.config/infection.json5 \
+              --min-msi=85 --min-covered-msi=90 --threads=max --no-progress 2>&1 \
+              | tee build/infection.out
+          }
+
+          if attempt; then
+            exit 0
+          fi
+
+          if ! grep -q 'signaled with signal "11"' build/infection.out; then
+            echo "::error::Infection failed on its own terms; not retrying."
+            exit 1
+          fi
+
+          echo "::warning::Xdebug's coverage collector crashed (signal 11). Running once more."
+          attempt
 
       - uses: actions/upload-artifact@v7
         if: always()
