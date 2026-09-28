@@ -133,6 +133,16 @@ jobs:
         if: ${{ !matrix.coverage }}
         run: vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --no-coverage
 
+      # `--order-by=default` because this is the run that **measures**, and a
+      # measurement has to be reproducible. The suite runs in random order
+      # everywhere else — the three jobs above this one — which is where an
+      # order dependence between tests actually shows itself. Here it only
+      # shows itself in Xdebug: a generator's branch map is attached the first
+      # time that function runs in the process, and for a class driven by
+      # another class's tests the map can land on a test that does not cover
+      # it and be thrown away. Naming the class in a second `CoversClass`
+      # cures each case (#72), and a fixed order cures the kind.
+      #
       # Xdebug's coverage collector segfaults on a suite this size. It took
       # this job down on 24.09.2026 at test 1934 of 1954, on a branch whose
       # only change was a workflow file, and the nightly the same morning for
@@ -152,6 +162,7 @@ jobs:
           run() {
             vendor/bin/phpunit \
               --configuration=tests/.config/phpunit.xml.dist \
+              --order-by=default \
               --coverage-clover=build/logs/clover.xml
           }
 

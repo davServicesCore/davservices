@@ -90,7 +90,7 @@
         "test": "phpunit --configuration=tests/.config/phpunit.xml.dist",
         "test:coverage": [
             "@putenv XDEBUG_MODE=coverage",
-            "phpunit --configuration=tests/.config/phpunit.xml.dist --coverage-clover=build/logs/clover.xml --coverage-html=build/coverage",
+            "phpunit --configuration=tests/.config/phpunit.xml.dist --order-by=default --coverage-clover=build/logs/clover.xml --coverage-html=build/coverage",
             "@check:coverage"
         ],
         "mutation": [
