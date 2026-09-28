@@ -227,6 +227,23 @@ final class ValidatorTest extends TestCase
     }
 
     /**
+     * **But a range is a version too.** §3.7.4 has `vervalue = "2.0" /
+     * maxver / (minver ";" maxver)`, so what a file needs may be written as
+     * the two ends of a range — and a range that names 2.0 is one this
+     * library is inside. The identifiers are IANA-registered names rather
+     * than numbers, and 2.0 is the only one registered, so there is nothing
+     * to compare for order.
+     */
+    public function testACalendarThatNamesTwoPointZeroInARangeIsRight(): void
+    {
+        $calendar = $this->calendar();
+
+        $calendar['VERSION'] = new Property('VERSION', '2.0;2.0');
+
+        self::assertSame([], $this->findingsIn($calendar));
+    }
+
+    /**
      * **"MUST be specified once"**, so twice is once too many — and which of
      * the two was meant is not something anybody else can say.
      */
@@ -282,6 +299,20 @@ final class ValidatorTest extends TestCase
         unset($card['VERSION']);
 
         self::assertContains([Severity::Warning, 'VCARD/VERSION'], $this->findingsIn($card));
+    }
+
+    /**
+     * **And §6.7.9 gives VERSION a cardinality of 1**, which §6.1 reads as
+     * "Exactly one instance per vCard MUST be present". Which of two was
+     * meant is not something anybody else can say.
+     */
+    public function testAVCardWithTwoVersionsIsAnError(): void
+    {
+        $card = $this->card();
+
+        $card->add(new Property('VERSION', '4.0'));
+
+        self::assertContains([Severity::Error, 'VCARD/VERSION'], $this->findingsIn($card));
     }
 
     /**

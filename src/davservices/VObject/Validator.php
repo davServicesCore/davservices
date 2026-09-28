@@ -50,8 +50,10 @@ final class Validator
     private const CARD = 'VCARD';
 
     /**
-     * RFC 5545 §3.1: `name = 1*(ALPHA / DIGIT / "-")`, which `param-name` is
-     * built from as well.
+     * RFC 5545 §3.1: `name = iana-token / x-name` and `param-name =
+     * iana-token / x-name`, and both of those are built from
+     * `1*(ALPHA / DIGIT / "-")` — so the whole of that character set, and
+     * nothing outside it, is a name.
      */
     private const NAME = '/^[A-Za-z0-9-]+$/';
 
@@ -176,7 +178,14 @@ final class Validator
         // §3.7.4: "A value of '2.0' corresponds to this memo." A file saying
         // it needs another one is saying it needs something that is not here,
         // and reading past that would be reading it as what it says it is not.
-        if ($version !== null && $version->value() !== '2.0') {
+        //
+        // **But the version may be written as a range**: `vervalue = "2.0" /
+        // maxver / (minver ";" maxver)`, so `2.0;2.0` says the same thing the
+        // long way round, and a range naming 2.0 is one this library is
+        // inside. The ends are IANA-registered identifiers rather than
+        // numbers, and 2.0 is the only one registered, so there is nothing to
+        // compare for order.
+        if ($version !== null && !in_array('2.0', explode(';', $version->value()), true)) {
             $findings[] = new Finding(
                 Severity::Error,
                 'VCALENDAR/VERSION',
@@ -236,17 +245,34 @@ final class Validator
      * is exactly what nobody else can supply. Out of place, though, has one
      * right place to go.
      *
+     * **The value is not judged here**, because §6.7.9 makes that conditional
+     * on the very thing it would be judging: "The value MUST be '4.0' **if
+     * the vCard corresponds to this specification**." A card saying `3.0` is
+     * an RFC 2426 card, and telling it to be a 4.0 one would be telling it to
+     * be a different document.
+     *
      * @return list<Finding>
      */
     private static function versionOf(Component $card): array
     {
-        $version = $card->property('VERSION');
+        $versions = $card->properties('VERSION');
+        $version = $versions[0] ?? null;
 
         if ($version === null) {
             return [new Finding(
                 Severity::Warning,
                 'VCARD/VERSION',
                 'A vCard of this specification has a VERSION (RFC 6350 §6.7.9); earlier ones were allowed none.',
+            )];
+        }
+
+        // §6.7.9 gives VERSION a cardinality of 1, which §6.1 reads as
+        // "Exactly one instance per vCard MUST be present".
+        if (count($versions) > 1) {
+            return [new Finding(
+                Severity::Error,
+                'VCARD/VERSION',
+                sprintf('VERSION MUST be present exactly once (RFC 6350 §6.7.9), and is here %d times.', count($versions)),
             )];
         }
 
