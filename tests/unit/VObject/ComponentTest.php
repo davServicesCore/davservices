@@ -318,10 +318,12 @@ final class ComponentTest extends TestCase
     }
 
     /**
-     * **Position is a rule in two places, and both are about the top.**
-     * RFC 6350 §6.7.9 has `VERSION` "immediately after BEGIN:VCARD", and
-     * RFC 5545 §3.6 has `icalbody = calprops component`. Moving one child to
-     * the front leaves every other where it was.
+     * **Position is a rule in one place**: RFC 6350 §6.7.9 has `VERSION`
+     * "immediately after BEGIN:VCARD". RFC 5545 has none at all — §3.5: "This
+     * memo imposes no ordering of properties within an iCalendar object."
+     *
+     * Moving one child to the front leaves every other where it was, which is
+     * what makes it usable where the order does carry meaning.
      */
     public function testMovingAChildToTheFrontLeavesTheRestInOrder(): void
     {

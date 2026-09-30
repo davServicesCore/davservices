@@ -90,9 +90,14 @@ final class Repairer
      */
     private static function put(Component $object, string $where): void
     {
-        // §3.7.4: "A value of '2.0' corresponds to this memo." It goes at the
-        // front because `icalbody = calprops component` (§3.6) — added at the
-        // end it would be written out after the last component.
+        // §3.7.4: "A value of '2.0' corresponds to this memo."
+        //
+        // **Where it goes is a free choice**, and deliberately so: §3.5 says
+        // "This memo imposes no ordering of properties within an iCalendar
+        // object", so nothing here is owed. It goes at the front because
+        // §3.4's own example puts it there, and because a `VERSION` appended
+        // after the last `END` would look to everyone who opened the file
+        // like it belonged to nothing.
         if ($where === self::CALENDAR_VERSION) {
             $object->add(new Property('VERSION', '2.0'));
             $object->moveFirst('VERSION');

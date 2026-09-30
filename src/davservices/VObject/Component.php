@@ -111,12 +111,15 @@ final class Component implements ArrayAccess, IteratorAggregate
      * Moves the first child of that name to the front, or does nothing where
      * there is none.
      *
-     * **Position is a rule in exactly two places**, and both are about what
-     * has to stand at the top: RFC 6350 §6.7.9 has `VERSION` "immediately
-     * after BEGIN:VCARD", and RFC 5545 §3.6 has `icalbody = calprops
-     * component`, so a calendar property put at the end would be written out
-     * after the last component. Everywhere else the order is the file's own,
-     * and is left as it was written.
+     * **Position is a rule in exactly one place in either specification**:
+     * RFC 6350 §6.7.9 has `VERSION` "immediately after BEGIN:VCARD", and
+     * §3.3's grammar says the same in a comment of its own. Nothing else is
+     * pinned anywhere — RFC 5545 §3.5 goes out of its way to say so: "This
+     * memo imposes no ordering of properties within an iCalendar object."
+     *
+     * So this exists for that one sentence, and for callers who want a
+     * property where a reader will see it. The order of a file that was read
+     * is the file's own, and is written back as it was.
      */
     public function moveFirst(string $name): void
     {
