@@ -57,8 +57,26 @@ namespace DavServices\VObject;
  * A repaired object is transformed content. So a `PUT` that was read
  * leniently and repaired **must not** be answered with an `ETag`, and the
  * client must fetch the resource again rather than trust what it still holds
- * in memory. That belongs to P5-06 and P6, where `PUT` is written; it is
- * named here so that the reader hands over what that layer will need.
+ * in memory.
+ *
+ * **And there is a second consequence, which comes first.** RFC 4791 §5.3.2
+ * and RFC 6352 §6.3.2 give `PUT` a precondition apiece, and both are about
+ * what the client sent rather than what the server made of it:
+ *
+ * > (CALDAV:valid-calendar-data): The resource **submitted in the PUT
+ * > request** […] MUST be valid data for the media type being specified
+ * > (i.e., MUST contain valid iCalendar data)
+ *
+ * A truncated calendar is not valid iCalendar data — it does not match
+ * `icalobject` — however well it can be repaired afterwards. **So the strict
+ * mode is the conformant one on the write path of a CalDAV or CardDAV
+ * server**, and leniency belongs where this library reads data it was not
+ * handed as a resource to store: an import, a backup, a migration from
+ * another server. An operator who chooses leniency on `PUT` anyway is
+ * choosing it over that precondition, and then owes RFC 9110 §9.3.4 as well.
+ *
+ * Both belong to P5-06 and P6, where `PUT` is written; they are named here so
+ * that the reader hands over what those layers will need.
  */
 enum Mode
 {

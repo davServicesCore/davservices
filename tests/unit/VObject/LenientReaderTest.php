@@ -242,6 +242,21 @@ final class LenientReaderTest extends TestCase
     }
 
     /**
+     * **And the spelling does not decide which one it names.** RFC 6350
+     * §6.1.2: "The value is case-insensitive", and RFC 5545 §3.5 says the
+     * same of enumerated values. It holds for the one immediately open, and
+     * it has to hold for the search further out as well.
+     */
+    public function testTheSearchFurtherOutIgnoresTheSpelling(): void
+    {
+        $calendar = $this->onlyObjectIn(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nend:vcalendar\r\n",
+        );
+
+        self::assertSame('x', $calendar->component('VEVENT')?->property('UID')?->value());
+    }
+
+    /**
      * **An `END` that closes nothing is left out.** It names a component that
      * was never opened, so there is nothing for it to close — and an `END`
      * carries no data of its own, so leaving it out drops nothing.
