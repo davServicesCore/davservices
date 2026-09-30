@@ -67,11 +67,13 @@ final class RepairerTest extends TestCase
     }
 
     /**
-     * **And it goes at the front**, because `icalbody = calprops component`
-     * (RFC 5545 §3.6): the calendar properties come before the components,
-     * and one added at the end would be written out after the last `END`.
+     * **And it goes at the front, which is a choice rather than a rule.**
+     * RFC 5545 §3.5: "This memo imposes no ordering of properties within an
+     * iCalendar object", so nothing is owed here. §3.4's own example puts
+     * `VERSION` at the top, and one appended after the last `END` would look
+     * to everyone who opened the file like it belonged to nothing.
      */
-    public function testTheVersionIsPutWhereTheGrammarHasIt(): void
+    public function testTheVersionIsPutAtTheFront(): void
     {
         $calendar = $this->calendar();
 
