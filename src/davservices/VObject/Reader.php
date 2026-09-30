@@ -44,22 +44,25 @@ use Generator;
  * *do not drop* means keep it. So an unknown component is read like any
  * other, which is also why `Component` keeps no list of names it knows.
  *
- * ## Strict, and deliberately so
+ * ## The two modes
  *
- * Every question this raises belongs to R-VOBJ-03's two modes, and this is
- * where they first arise: an `END` that closes something else, an `END` with
- * nothing open, a file that stops early, a property outside any component.
+ * **Strict is the default** (R-VOBJ-03), and refuses what it cannot read as
+ * written: an `END` that closes something else, an `END` with nothing open, a
+ * file that stops early, a property outside any component.
  *
- * **All of them are refused**, and P4-06 adds the lenient side. That order is
- * deliberate: a strict reader can be made lenient, while a lenient one can
- * never be made strict again — by then nobody knows which files came to
- * depend on the leniency.
+ * **Lenient repairs the one of those that has a single right answer** — a
+ * missing `END` — and refuses the others still. {@see Mode} sets out why the
+ * line falls there, and what a repaired object means for the protocol layer
+ * above. Every repair is on {@see self::repairs()}; none happens quietly.
  *
- * Two things are read rather than judged, and wait for P4-06 with the rest:
- * §3.6's `1*contentline`, which makes an empty component ill-formed, and the
- * `BEGIN-param = 0" "` of RFC 6350 §6.1.1, which allows it no parameters.
- * Neither stops the object being read, so neither is this reader's to
- * refuse.
+ * Two things are read rather than judged, in both modes, because they do not
+ * stop the object being read: §3.6's `1*contentline`, which makes an empty
+ * component ill-formed, and the `BEGIN-param = 0" "` of RFC 6350 §6.1.1,
+ * which allows `BEGIN` no parameters. **The first is
+ * {@see Validator}'s** — and the second cannot be anybody's from here on,
+ * because this reader turns `BEGIN` and `END` into structure and the
+ * parameters are gone with them. It is the one rule of the two
+ * specifications this library reads past.
  */
 final class Reader
 {
@@ -70,13 +73,32 @@ final class Reader
     /** @var resource|string */
     private mixed $source;
 
+    /** @var list<Finding> */
+    private array $repairs = [];
+
     /**
      * @param resource|string $source The stream or text to read, as
      *                                {@see Lexer} takes it
+     * @param Mode $mode Strict by default, which is R-VOBJ-03's own order:
+     *                   leniency is asked for, never assumed
      */
-    public function __construct(mixed $source)
+    public function __construct(mixed $source, private readonly Mode $mode = Mode::Strict)
     {
         $this->source = $source;
+    }
+
+    /**
+     * What had to be put right to read this stream at all.
+     *
+     * Always empty in strict mode, which refuses rather than repairs. Read it
+     * **after** the objects: a stream is handed over as it is read, so a
+     * repair in the last line is known only once the last line has been.
+     *
+     * @return list<Finding>
+     */
+    public function repairs(): array
+    {
+        return $this->repairs;
     }
 
     /**
@@ -91,6 +113,7 @@ final class Reader
         /** @var list<Component> $enclosing */
         $enclosing = [];
         $open = null;
+        $this->repairs = [];
 
         foreach ((new Lexer($this->source))->lines() as $line) {
             if (self::says($line, self::BEGIN)) {
@@ -117,7 +140,47 @@ final class Reader
                 continue;
             }
 
-            $closed = self::closing($open, $line);
+            if ($open === null) {
+                if ($this->mode === Mode::Strict) {
+                    throw new ParseError(sprintf('"END:%s" closes nothing: no component is open.', $line->value()));
+                }
+
+                $this->leftOut($line, $line->value());
+
+                continue;
+            }
+
+            $stays = self::staysOpen($enclosing, $open, $line);
+
+            if ($stays !== count($enclosing) && $this->mode === Mode::Strict) {
+                throw new ParseError(sprintf(
+                    '"END:%s" does not close "%s".',
+                    $line->value(),
+                    $open->name(),
+                ));
+            }
+
+            if ($stays === null) {
+                $this->leftOut($line, self::pathOf([...$enclosing, $open]) . '/' . $line->value());
+
+                continue;
+            }
+
+            // Everything still open inside the one this `END` names was never
+            // closed, so it is closed here — the same missing `END` as at the
+            // end of a truncated stream, met in the middle of the file.
+            $this->neverClosed(
+                [...$enclosing, $open],
+                $stays + 1,
+                sprintf('"END:%s" closes it here.', $line->value()),
+            );
+
+            foreach (array_reverse(array_splice($enclosing, $stays)) as $outer) {
+                $outer->add($open);
+                $open = $outer;
+            }
+
+            $closed = $open;
             $open = array_pop($enclosing);
 
             if ($open === null) {
@@ -129,38 +192,92 @@ final class Reader
             $open->add($closed);
         }
 
-        if ($open !== null) {
+        if ($open === null) {
+            return;
+        }
+
+        if ($this->mode === Mode::Strict) {
             throw new ParseError(sprintf('The stream ends while "%s" is still open.', $open->name()));
+        }
+
+        $this->neverClosed([...$enclosing, $open], 0, 'the stream ends first.');
+
+        foreach (array_reverse($enclosing) as $outer) {
+            $outer->add($open);
+            $open = $outer;
+        }
+
+        yield $open;
+    }
+
+    /**
+     * How many components stay open after this `END`: it closes the innermost
+     * open one of its name, and everything still open inside that one with
+     * it. Null where nothing of that name is open at all.
+     *
+     * @param list<Component> $enclosing Everything open around `$open`,
+     *                                   outermost first
+     */
+    private static function staysOpen(array $enclosing, Component $open, ContentLine $line): ?int
+    {
+        if (strcasecmp($open->name(), $line->value()) === 0) {
+            return count($enclosing);
+        }
+
+        foreach (array_reverse($enclosing, true) as $depth => $component) {
+            if (strcasecmp($component->name(), $line->value()) === 0) {
+                return $depth;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Says that everything open past the first `$closed` components was never
+     * closed, innermost first — the order the `END` lines are missing in.
+     *
+     * @param list<Component> $open Everything open, outermost first
+     */
+    private function neverClosed(array $open, int $closed, string $instead): void
+    {
+        for ($depth = count($open); $depth > $closed; --$depth) {
+            $this->repairs[] = new Finding(
+                Severity::Repair,
+                self::pathOf(array_slice($open, 0, $depth)),
+                'No END closes this component; ' . $instead,
+            );
         }
     }
 
     /**
-     * The component an `END` closes.
-     *
-     * The two names are compared without case, because RFC 6350 §6.1.1 and
-     * §6.1.2 both say "The value is case-insensitive" and RFC 5545 §3.1 puts
-     * enumerated values in the same sentence as names.
-     *
-     * @throws ParseError If nothing is open, or what is open is called
-     *                    something else. The message carries both names: the
-     *                    file has ten thousand lines in it and they are the
-     *                    only thing that says where to look
+     * Leaves out an `END` that closes nothing. It carries no data of its own
+     * — its value is the name of a component that was never opened — so
+     * nothing goes with it.
      */
-    private static function closing(?Component $open, ContentLine $line): Component
+    private function leftOut(ContentLine $line, string $where): void
     {
-        if ($open === null) {
-            throw new ParseError(sprintf('"END:%s" closes nothing: no component is open.', $line->value()));
+        $this->repairs[] = new Finding(
+            Severity::Repair,
+            $where,
+            sprintf('"END:%s" closes nothing that is open, and is left out.', $line->value()),
+        );
+    }
+
+    /**
+     * Where a component is, spelled the way {@see Finding} spells a place.
+     *
+     * @param list<Component> $components outermost first
+     */
+    private static function pathOf(array $components): string
+    {
+        $names = [];
+
+        foreach ($components as $component) {
+            $names[] = $component->name();
         }
 
-        if (strcasecmp($open->name(), $line->value()) !== 0) {
-            throw new ParseError(sprintf(
-                '"END:%s" does not close "%s".',
-                $line->value(),
-                $open->name(),
-            ));
-        }
-
-        return $open;
+        return implode('/', $names);
     }
 
     /**

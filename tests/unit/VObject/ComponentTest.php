@@ -318,6 +318,61 @@ final class ComponentTest extends TestCase
     }
 
     /**
+     * **Position is a rule in two places, and both are about the top.**
+     * RFC 6350 §6.7.9 has `VERSION` "immediately after BEGIN:VCARD", and
+     * RFC 5545 §3.6 has `icalbody = calprops component`. Moving one child to
+     * the front leaves every other where it was.
+     */
+    public function testMovingAChildToTheFrontLeavesTheRestInOrder(): void
+    {
+        $calendar = $this->calendar();
+
+        $calendar->moveFirst('VEVENT');
+
+        self::assertSame(['VEVENT', 'VERSION', 'PRODID'], self::namesIn($calendar));
+    }
+
+    /**
+     * And a name nothing is called moves nothing, the same as everywhere else
+     * in this class.
+     */
+    public function testMovingANameNothingIsCalledDoesNothing(): void
+    {
+        $calendar = $this->calendar();
+
+        $calendar->moveFirst('METHOD');
+
+        self::assertSame(['VERSION', 'PRODID', 'VEVENT'], self::namesIn($calendar));
+    }
+
+    /**
+     * **The spelling does not decide it.** RFC 5545 §3.5: "Property names,
+     * parameter names, and enumerated parameter values are case-insensitive."
+     */
+    public function testMovingAChildIgnoresTheSpelling(): void
+    {
+        $calendar = $this->calendar();
+
+        $calendar->moveFirst('prodid');
+
+        self::assertSame(['PRODID', 'VERSION', 'VEVENT'], self::namesIn($calendar));
+    }
+
+    /**
+     * And where a name is there twice, the first of them is the one that
+     * moves — an event has as many `ATTENDEE` properties as it has attendees.
+     */
+    public function testWhereANameIsThereTwiceTheFirstMoves(): void
+    {
+        $event = $this->event();
+
+        $event->moveFirst('ATTENDEE');
+
+        self::assertSame(['ATTENDEE', 'UID', 'SUMMARY', 'ATTENDEE'], self::namesIn($event));
+        self::assertSame('mailto:ada@example.com', $event->property('ATTENDEE')?->value());
+    }
+
+    /**
      * **Iterating gives every child in order**, properties and components
      * alike, which is what walking an object means.
      */
@@ -354,6 +409,20 @@ final class ComponentTest extends TestCase
             'PRODID/VERSION', 'PRODID/PRODID', 'PRODID/VEVENT',
             'VEVENT/VERSION', 'VEVENT/PRODID', 'VEVENT/VEVENT',
         ], $seen);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function namesIn(Component $component): array
+    {
+        $names = [];
+
+        foreach ($component->children() as $child) {
+            $names[] = $child->name();
+        }
+
+        return $names;
     }
 
     /**
