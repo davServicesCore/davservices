@@ -108,6 +108,36 @@ final class Component implements ArrayAccess, IteratorAggregate
     }
 
     /**
+     * Moves the first child of that name to the front, or does nothing where
+     * there is none.
+     *
+     * **Position is a rule in exactly two places**, and both are about what
+     * has to stand at the top: RFC 6350 §6.7.9 has `VERSION` "immediately
+     * after BEGIN:VCARD", and RFC 5545 §3.6 has `icalbody = calprops
+     * component`, so a calendar property put at the end would be written out
+     * after the last component. Everywhere else the order is the file's own,
+     * and is left as it was written.
+     */
+    public function moveFirst(string $name): void
+    {
+        $first = $this->firstCalled($name);
+
+        if ($first === null) {
+            return;
+        }
+
+        $others = [];
+
+        foreach ($this->children as $child) {
+            if ($child !== $first) {
+                $others[] = $child;
+            }
+        }
+
+        $this->children = [$first, ...$others];
+    }
+
+    /**
      * One property by name, whatever its spelling, or null where there is
      * none of that name.
      */
