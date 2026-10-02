@@ -102,6 +102,10 @@ final class RuleTest extends TestCase
 
         yield 'a week that starts on Sunday' => ['FREQ=WEEKLY;WKST=SU'];
 
+        yield 'a bound and a week start together, in that order' => [
+            'FREQ=DAILY;UNTIL=19971224T000000Z;WKST=SU',
+        ];
+
         yield 'seconds within the minute' => ['FREQ=MINUTELY;BYSECOND=0,30'];
 
         yield 'minutes within the hour' => ['FREQ=HOURLY;BYMINUTE=0,15,30,45'];
@@ -354,6 +358,11 @@ final class RuleTest extends TestCase
 
         yield 'a signed INTERVAL, which 1*DIGIT does not allow' => ['FREQ=DAILY;INTERVAL=-2'];
 
+        // Without the grammar check this one slips through: `(int) '2x'` is 2,
+        // which is a positive integer, and the file would be read as saying
+        // something it does not say.
+        yield 'an INTERVAL with something stuck to it' => ['FREQ=DAILY;INTERVAL=2x'];
+
         yield 'a COUNT that is no number' => ['FREQ=DAILY;COUNT=many'];
 
         yield 'an UNTIL that is no date' => ['FREQ=DAILY;UNTIL=soon'];
@@ -419,6 +428,50 @@ final class RuleTest extends TestCase
         yield 'a 367th position in the set' => ['FREQ=MONTHLY;BYDAY=MO;BYSETPOS=367'];
 
         yield 'a nought-th position in the set' => ['FREQ=MONTHLY;BYDAY=MO;BYSETPOS=0'];
+
+        yield 'a nought-th day of the year' => ['FREQ=YEARLY;BYYEARDAY=0'];
+
+        yield 'a nought-th week of the year' => ['FREQ=YEARLY;BYWEEKNO=0'];
+    }
+
+    /**
+     * **Every range is read to both its ends**, which is the half a test list
+     * forgets: a bound that is one out is refused by nothing and accepted by
+     * nothing a test looked at. §3.3.10 writes each range in the grammar's own
+     * comment, and each of those comments is a pair of numbers.
+     *
+     * @param non-empty-string $raw
+     */
+    #[DataProvider('theEndsOfEveryRange')]
+    public function testEveryRangeIsReadToItsEnds(string $raw): void
+    {
+        self::assertSame($raw, Rule::decode($raw)->encode());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function theEndsOfEveryRange(): iterable
+    {
+        yield 'seconds, 0 to 60' => ['FREQ=MINUTELY;BYSECOND=0,60'];
+
+        yield 'minutes, 0 to 59' => ['FREQ=HOURLY;BYMINUTE=0,59'];
+
+        yield 'hours, 0 to 23' => ['FREQ=DAILY;BYHOUR=0,23'];
+
+        yield 'days of the month, 1 to 31 or -31 to -1' => ['FREQ=MONTHLY;BYMONTHDAY=1,31,-1,-31'];
+
+        yield 'days of the year, 1 to 366 or -366 to -1' => ['FREQ=YEARLY;BYYEARDAY=1,366,-1,-366'];
+
+        yield 'weeks of the year, 1 to 53 or -53 to -1' => ['FREQ=YEARLY;BYWEEKNO=1,53,-1,-53'];
+
+        yield 'months, 1 to 12' => ['FREQ=YEARLY;BYMONTH=1,12'];
+
+        yield 'positions in the set, 1 to 366 or -366 to -1' => [
+            'FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1,366,-1,-366',
+        ];
+
+        yield 'the ordinal of a weekday, 1 to 53 either way' => ['FREQ=MONTHLY;BYDAY=1MO,53SU,-1FR,-53SA'];
     }
 
     /**
@@ -520,12 +573,34 @@ final class RuleTest extends TestCase
      * **A refusal says what it saw.** A calendar of ten thousand lines has
      * one bad rule in it, and the rule's own words are what say which.
      */
-    public function testARefusalSaysWhatItSaw(): void
+    #[DataProvider('refusalsAndWhatTheyName')]
+    public function testARefusalSaysWhatItSaw(string $raw, string $named): void
     {
         $this->expectException(ParseError::class);
-        $this->expectExceptionMessage('FORTNIGHTLY');
+        $this->expectExceptionMessage($named);
 
-        Rule::decode('FREQ=FORTNIGHTLY');
+        Rule::decode($raw);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function refusalsAndWhatTheyName(): iterable
+    {
+        // **The closing quote is part of what is asked for**, and it has to
+        // be: a message that named the whole part rather than its name —
+        // `"BYFORTNIGHT=2"` instead of `"BYFORTNIGHT"` — still holds the name
+        // as a substring, so asking for the name alone asks for nothing.
+        yield 'a frequency nobody has heard of' => ['FREQ=FORTNIGHTLY', '"FORTNIGHTLY" is no frequency'];
+
+        yield 'a rule part nobody has heard of' => [
+            'FREQ=DAILY;BYFORTNIGHT=2',
+            '"BYFORTNIGHT" is no rule part',
+        ];
+
+        yield 'a part specified twice' => ['FREQ=DAILY;COUNT=2;COUNT=3', '"COUNT" is specified twice'];
+
+        yield 'a value outside its range' => ['FREQ=DAILY;BYHOUR=24', '"24" is outside BYHOUR'];
     }
 
     /**

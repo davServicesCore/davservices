@@ -178,11 +178,24 @@ final class WeekdayNumberTest extends TestCase
      * **A refusal says what it saw**, because a calendar of ten thousand
      * lines has one bad `BYDAY` in it.
      */
-    public function testARefusalSaysWhatItSaw(): void
+    #[DataProvider('refusalsAndWhatTheyName')]
+    public function testARefusalSaysWhatItSaw(string $raw, string $named): void
     {
         $this->expectException(ParseError::class);
-        $this->expectExceptionMessage('54MO');
+        $this->expectExceptionMessage($named);
 
-        WeekdayNumber::decode('54MO');
+        WeekdayNumber::decode($raw);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function refusalsAndWhatTheyName(): iterable
+    {
+        yield 'an ordinal past ordwk names the whole entry' => ['54MO', '54MO'];
+
+        yield 'a day nobody has heard of names the day' => ['1XX', 'XX'];
+
+        yield 'and so does a bare one' => ['XX', 'XX'];
     }
 }

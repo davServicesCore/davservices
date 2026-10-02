@@ -535,6 +535,11 @@ final class Rule
      * "1 to 366 or -366 to -1" — and an unsigned one can hold nothing
      * negative to begin with.
      *
+     * **An empty value needs no check of its own.** Every list in §3.3.10 is
+     * `( value *("," value) )`, so `BYHOUR=` and `BYHOUR=9,,17` are both no
+     * list at all — and the grammar refuses the empty string that splitting
+     * them leaves behind, which is how it says so.
+     *
      * @param array<string, string> $parts
      *
      * @throws ParseError If a value is no number of that shape, or outside
@@ -552,7 +557,7 @@ final class Rule
 
         $numbers = [];
 
-        foreach (self::listIn($raw, $name) as $value) {
+        foreach (explode(',', $raw) as $value) {
             if (preg_match($grammar, $value) !== 1) {
                 throw new ParseError(sprintf('"%s" is no value of a %s list.', $value, $name));
             }
@@ -590,36 +595,11 @@ final class Rule
 
         $days = [];
 
-        foreach (self::listIn($raw, 'BYDAY') as $value) {
+        foreach (explode(',', $raw) as $value) {
             $days[] = WeekdayNumber::decode($value);
         }
 
         return $days;
-    }
-
-    /**
-     * The values of a COMMA-separated list.
-     *
-     * Every list in §3.3.10 is `( value *("," value) )` — one value at least,
-     * and a value between every pair of commas. So an empty list and a hole
-     * in one are both no list at all.
-     *
-     *
-     * @throws ParseError If any value is missing
-     *
-     * @return list<string>
-     */
-    private static function listIn(string $raw, string $name): array
-    {
-        $values = explode(',', $raw);
-
-        foreach ($values as $value) {
-            if ($value === '') {
-                throw new ParseError(sprintf('%s has an empty value in "%s".', $name, $raw));
-            }
-        }
-
-        return $values;
     }
 
     /**
@@ -755,7 +735,7 @@ final class Rule
      * them: "BYMONTH, BYWEEKNO, BYYEARDAY, BYMONTHDAY, BYDAY, BYHOUR,
      * BYMINUTE, BYSECOND and BYSETPOS".
      *
-     * @return array<string, list<string>>
+     * @return array<string, list<int|string>>
      */
     private function lists(): array
     {
@@ -766,31 +746,15 @@ final class Rule
         }
 
         return [
-            'BYMONTH' => self::asText($this->byMonth),
-            'BYWEEKNO' => self::asText($this->byWeekNumber),
-            'BYYEARDAY' => self::asText($this->byYearDay),
-            'BYMONTHDAY' => self::asText($this->byMonthDay),
+            'BYMONTH' => $this->byMonth,
+            'BYWEEKNO' => $this->byWeekNumber,
+            'BYYEARDAY' => $this->byYearDay,
+            'BYMONTHDAY' => $this->byMonthDay,
             'BYDAY' => $days,
-            'BYHOUR' => self::asText($this->byHour),
-            'BYMINUTE' => self::asText($this->byMinute),
-            'BYSECOND' => self::asText($this->bySecond),
-            'BYSETPOS' => self::asText($this->bySetPosition),
+            'BYHOUR' => $this->byHour,
+            'BYMINUTE' => $this->byMinute,
+            'BYSECOND' => $this->bySecond,
+            'BYSETPOS' => $this->bySetPosition,
         ];
-    }
-
-    /**
-     * @param list<int> $values
-     *
-     * @return list<string>
-     */
-    private static function asText(array $values): array
-    {
-        $text = [];
-
-        foreach ($values as $value) {
-            $text[] = (string) $value;
-        }
-
-        return $text;
     }
 }

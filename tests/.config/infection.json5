@@ -17,6 +17,30 @@
     "tmpDir": "../../build/test/infection",
     "minMsi": 85,
     "minCoveredMsi": 90,
+    // **This is not about slow mutants. It is about mutants being run at
+    // all.** Infection skips a mutant outright when the *nominal* time of the
+    // tests covering its line reaches this value:
+    //
+    //     if ($mutant->getMutation()->getNominalTestExecutionTime() < $this->timeout)
+    //
+    // That nominal time is the sum of the covering tests' durations as the
+    // **initial** run measured them — and that run is the one with Xdebug
+    // coverage switched on, where a test that takes a millisecond on its own
+    // is measured at two hundred. A class whose tests all reach one method
+    // therefore passes the default of ten seconds at about fifty tests, and
+    // every mutant on that line is then counted as "skipped" rather than run.
+    //
+    // It is silent: the console says how many mutants were generated and how
+    // many killed, and the difference only shows in
+    // `build/test/log/infection-summary.log` on the `Skipped:` line. P4-07
+    // generated 261 mutants and skipped 259 of them, for an MSI of 100 % over
+    // two. **Read that line before believing a figure.**
+    //
+    // A mutant process runs only the tests that cover it, and without
+    // coverage, so a sound one finishes in well under a second. Two minutes is
+    // the cost of noticing a mutant that loops for ever, which is what the
+    // timeout is really for.
+    "timeout": 120,
     "testFramework": "phpunit",
     "mutators": {
         "@default": true,

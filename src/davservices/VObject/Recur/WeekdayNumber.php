@@ -96,7 +96,7 @@ final class WeekdayNumber
      */
     public function encode(): string
     {
-        return ($this->ordinal === null ? '' : (string) $this->ordinal) . $this->day->value;
+        return ($this->ordinal === null ? '' : $this->ordinal) . $this->day->value;
     }
 
     /**
