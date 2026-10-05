@@ -17,6 +17,7 @@ use DavServices\VObject\Recur\ByRules;
 use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\NotExpanded;
 use DavServices\VObject\Recur\Rule;
+use DavServices\VObject\Recur\Weeks;
 use DavServices\VObject\Value\Date;
 use DavServices\VObject\Value\DateTime;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -87,6 +88,7 @@ use PHPUnit\Framework\TestCase;
  * answers — the best test of it there is.
  */
 #[CoversClass(ByRules::class)]
+#[CoversClass(Weeks::class)]
 #[CoversClass(Iterator::class)]
 final class ByDayTest extends TestCase
 {

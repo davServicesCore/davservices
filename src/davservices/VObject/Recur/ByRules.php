@@ -149,12 +149,6 @@ final class ByRules
      */
     private const LONGER_THAN_A_DAY = ['MONTHLY', 'YEARLY'];
 
-    /**
-     * The seven days of a week, as offsets from one of them — which is as
-     * far as a search for a weekday ever has to look.
-     */
-    private const A_WEEK = [0, 1, 2, 3, 4, 5, 6];
-
     /** @var array{values: list<int>, expands: bool, limits: bool} */
     private readonly array $months;
 
@@ -182,17 +176,16 @@ final class ByRules
     private readonly string $frequency;
 
     /**
-     * `WKST` as a rule spells it, which is what a day's own weekday is
-     * compared with — see {@see self::spellingOf()}.
+     * Weeks as §3.3.10 counts them, which is the one thing `WKST` decides.
      */
-    private readonly string $weekStart;
+    private readonly Weeks $weeks;
 
     private readonly bool $dayComesFromTheStart;
 
     public function __construct(Rule $rule, private readonly DateTimeImmutable $start)
     {
         $this->frequency = $rule->frequency()->value;
-        $this->weekStart = $rule->weekStart()->value;
+        $this->weeks = new Weeks($rule->weekStart()->value);
 
         $yearly = $this->frequency === 'YEARLY';
         $yearDays = $rule->byYearDay();
@@ -574,58 +567,17 @@ final class ByRules
      */
     private function weeksIn(DateTimeImmutable $anchor): array
     {
-        $year = (int) $anchor->format('Y');
-        $first = $this->startOfWeekOne($anchor, $year);
-        $length = $this->weeksInTheYear($anchor, $year);
         $weeks = [];
 
-        foreach (self::counted($this->weekNumbers['values'], $length) as $number) {
-            // "Valid values are 1 to 53 or -53 to -1" — and a year without
-            // the week named comes to nothing for it, which is the ignoring
-            // §3.3.10 asks for of a day that does not exist.
-            if ($number >= 1 && $number <= $length) {
-                $weeks[] = self::theWeekFrom($first->add(new DateInterval(sprintf('P%dW', $number - 1))));
+        foreach (self::counted($this->weekNumbers['values'], $this->weeks->inTheYearOf($anchor)) as $number) {
+            $week = $this->weeks->numbered($number, $anchor);
+
+            if ($week !== null) {
+                $weeks[] = $week;
             }
         }
 
         return $weeks;
-    }
-
-    /**
-     * How many weeks a year holds, which is fifty-two or fifty-three.
-     *
-     * A year is fifty-two weeks and a day or two, so there is a fifty-third
-     * exactly where the following year's first week begins later than
-     * fifty-two weeks on. **The memo checks the same arithmetic itself**:
-     * "Assuming a Monday week start, week 53 can only occur when Thursday is
-     * January 1 or if it is a leap year and Wednesday is January 1."
-     */
-    private function weeksInTheYear(DateTimeImmutable $moment, int $year): int
-    {
-        $fiftyTwo = $this->startOfWeekOne($moment, $year)->add(new DateInterval('P52W'));
-
-        return $fiftyTwo < $this->startOfWeekOne($moment, $year + 1) ? 53 : 52;
-    }
-
-    /**
-     * Where week one of a year begins.
-     *
-     * "Week number one of the calendar year is the first week that contains
-     * at least four (4) days in that calendar year." Four days of the year
-     * are the first of January and the three after it, so the week holding
-     * the first of January is week one where it begins no more than three
-     * days before it, and week two otherwise.
-     */
-    private function startOfWeekOne(DateTimeImmutable $moment, int $year): DateTimeImmutable
-    {
-        $january = $moment->setDate($year, 1, 1);
-        $week = $this->startOfTheWeekOf($january);
-
-        if ($week->add(new DateInterval('P3D')) >= $january) {
-            return $week;
-        }
-
-        return $week->add(new DateInterval('P1W'));
     }
 
     /**
@@ -645,7 +597,7 @@ final class ByRules
     private function thePeriodItself(DateTimeImmutable $moment): array
     {
         if ($this->frequency === 'WEEKLY') {
-            return $this->theWeekOf($moment);
+            return $this->weeks->holding($moment);
         }
 
         if ($this->frequency === 'YEARLY') {
@@ -666,7 +618,7 @@ final class ByRules
     private function unitAround(DateTimeImmutable $moment): array
     {
         if ($this->weekNumbers['expands']) {
-            return $this->theWeekOf($moment);
+            return $this->weeks->holding($moment);
         }
 
         if ($this->months['expands']) {
@@ -690,78 +642,6 @@ final class ByRules
         $year = (int) $moment->format('Y');
 
         return [$moment->setDate($year, $month, 1), $moment->setDate($year, $month + 1, 0)];
-    }
-
-    /**
-     * The week holding a day.
-     *
-     * @return array{DateTimeImmutable, DateTimeImmutable}
-     */
-    private function theWeekOf(DateTimeImmutable $day): array
-    {
-        return self::theWeekFrom($this->startOfTheWeekOf($day));
-    }
-
-    /**
-     * "A week is defined as a seven day period", counted from the day it
-     * begins on.
-     *
-     * @return array{DateTimeImmutable, DateTimeImmutable}
-     */
-    private static function theWeekFrom(DateTimeImmutable $first): array
-    {
-        return [$first, $first->add(new DateInterval('P6D'))];
-    }
-
-    /**
-     * Where the week holding a day begins.
-     *
-     * "A week is defined as a seven day period, starting on the day of the
-     * week defined to be the week start (see WKST)" — so it begins at the
-     * latest `WKST` day that is not after this one, which is one of the seven
-     * ending here.
-     *
-     * **Written without a way out of the loop on purpose.** Exactly one of
-     * seven consecutive days bears any given weekday, so a search that
-     * returned as soon as it found one would leave its empty-handed way
-     * through untestable, and the coverage gate would be right to say so.
-     */
-    private function startOfTheWeekOf(DateTimeImmutable $day): DateTimeImmutable
-    {
-        $start = $day;
-
-        foreach (self::A_WEEK as $back) {
-            $earlier = $day->sub(new DateInterval(sprintf('P%dD', $back)));
-
-            if (self::spellingOf($earlier) === $this->weekStart) {
-                $start = $earlier;
-            }
-        }
-
-        return $start;
-    }
-
-    /**
-     * The first day on or after a given one that bears a weekday.
-     *
-     * Written like {@see self::startOfTheWeekOf()}, and for the same reason:
-     * one of seven consecutive days bears any given weekday, so a search
-     * that returned on finding it would leave its empty-handed way through
-     * untestable.
-     */
-    private static function firstSuchDay(DateTimeImmutable $from, string $spelling): DateTimeImmutable
-    {
-        $first = $from;
-
-        foreach (self::A_WEEK as $forward) {
-            $later = $from->add(new DateInterval(sprintf('P%dD', $forward)));
-
-            if (self::spellingOf($later) === $spelling) {
-                $first = $later;
-            }
-        }
-
-        return $first;
     }
 
     /**
@@ -790,7 +670,7 @@ final class ByRules
         // A week names seven days and nothing else says which, so the start's
         // own weekday is the one: there is no other sense in which a week has
         // a day.
-        return self::daysOf($unit, self::spellingOf($this->start), null);
+        return self::daysOf($unit, Weeks::spellingOf($this->start), null);
     }
 
     /**
@@ -835,7 +715,7 @@ final class ByRules
      *
      * @param array{DateTimeImmutable, DateTimeImmutable} $unit
      * @param string $spelling One of the seven weekdays as §3.3.10 spells
-     *                         them, which is what {@see self::spellingOf()}
+     *                         them, which is what {@see Weeks::spellingOf()}
      *                         answers of a day
      *
      * @return list<DateTimeImmutable>
@@ -849,7 +729,7 @@ final class ByRules
         // day of the unit asked which weekday it is: a unit is a week, a
         // month or a year, and a year holds fifty-two or -three of any given
         // weekday among its three hundred and sixty-odd days.
-        for ($day = self::firstSuchDay($first, $spelling); $day <= $last; $day = $day->add(new DateInterval('P1W'))) {
+        for ($day = Weeks::firstSuchDay($first, $spelling); $day <= $last; $day = $day->add(new DateInterval('P1W'))) {
             $days[] = $day;
         }
 
@@ -881,20 +761,6 @@ final class ByRules
         }
 
         return $days;
-    }
-
-    /**
-     * How a day spells its weekday in a rule.
-     *
-     * §3.3.10 gives seven: `weekday = "SU" / "MO" / "TU" / "WE" / "TH" /
-     * "FR" / "SA"`. PHP's `D` gives `Sun` to `Sat`, whose first two letters
-     * in capitals are exactly those — so a day can say which weekday it is in
-     * the memo's own spelling, and no table of seven has to be kept in step
-     * with {@see Weekday}.
-     */
-    private static function spellingOf(DateTimeImmutable $day): string
-    {
-        return strtoupper(substr($day->format('D'), 0, 2));
     }
 
     /**

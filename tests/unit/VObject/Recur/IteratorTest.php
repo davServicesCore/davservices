@@ -17,6 +17,7 @@ use DavServices\VObject\ParseError;
 use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\Rule;
 use DavServices\VObject\Recur\TooManyIterations;
+use DavServices\VObject\Recur\Weeks;
 use DavServices\VObject\Value\Date;
 use DavServices\VObject\Value\DateTime;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -67,6 +68,7 @@ use PHPUnit\Framework\TestCase;
  * with the published answers without reading this paragraph first.
  */
 #[CoversClass(Iterator::class)]
+#[CoversClass(Weeks::class)]
 #[CoversClass(TooManyIterations::class)]
 final class IteratorTest extends TestCase
 {

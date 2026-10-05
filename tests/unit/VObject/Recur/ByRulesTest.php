@@ -18,6 +18,7 @@ use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\NotExpanded;
 use DavServices\VObject\Recur\Rule;
 use DavServices\VObject\Recur\TooManyIterations;
+use DavServices\VObject\Recur\Weeks;
 use DavServices\VObject\Value\Date;
 use DavServices\VObject\Value\DateTime;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -76,6 +77,7 @@ use PHPUnit\Framework\TestCase;
  * order cannot both be satisfied.
  */
 #[CoversClass(ByRules::class)]
+#[CoversClass(Weeks::class)]
 #[CoversClass(Iterator::class)]
 #[CoversClass(NotExpanded::class)]
 final class ByRulesTest extends TestCase
