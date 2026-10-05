@@ -106,6 +106,16 @@ throw new \LogicException('libxml reported failure without an error');
 
 Coverage alone is not the goal. The nightly mutation run changes your code and expects a test to fail; a test that executes a line without asserting anything will show up there.
 
+### The coverage run is split into shards
+
+Branch coverage needs Xdebug, and Xdebug makes every call slower the more calls the process has made before. In one process, the cost of the coverage run grows with the square of the suite: it had reached nine minutes for tests that take seconds without coverage. So the run is cut into shards, each a process of its own, and the shards run side by side in CI.
+
+You do not have to do anything for this. A new test file is picked up and placed in a shard on its own, and the number of shards grows with the suite (`bin/lib/TestShards.php`), so the run stays short as the suite grows. Three things keep it that way:
+
+- Name test files `*Test.php` and keep them below `tests/unit/`. Only those are split into shards, and a test outside them is missing from the coverage run.
+- Do not add a coverage run that bypasses the shards. `composer test:coverage` and every workflow go through `bin/coverage-shard.php` and `bin/merge-coverage.php`.
+- If one shard becomes noticeably slower than the others, lower `TestShards::BYTES_PER_SHARD` rather than accepting a slow job.
+
 ## Recognition
 
 Contributors are listed in the release notes of the version their change ships in. If you would rather not be named, say so in the pull request.
