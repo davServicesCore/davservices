@@ -178,7 +178,7 @@ final class ValidatorTest extends TestCase
         $event = $calendar->component('VEVENT');
 
         self::assertInstanceOf(Component::class, $event);
-        $event->add(new Property('DTSTART', '19980714T120000', [new Parameter('TZID', ['Europe/Berlin'])]));
+        $event['DTSTART'] = new Property('DTSTART', '19980714T120000', [new Parameter('TZID', ['Europe/Berlin'])]);
 
         self::assertSame([], $this->findingsIn($calendar));
     }
@@ -406,18 +406,23 @@ final class ValidatorTest extends TestCase
      * **And every empty component is named, not the first one.** A calendar
      * an export gave up half way through has one of these per component it
      * never filled.
+     *
+     * The two are `x-comp`s so that the emptiness is all that is asserted: a
+     * component RFC 5545 §3.6 has a table for would be missing its required
+     * properties as well, and what that composes to is
+     * {@see ComponentRulesTest}'s subject rather than this one's.
      */
     public function testEveryEmptyComponentIsNamed(): void
     {
         $calendar = $this->calendar();
 
-        $calendar->add(new Component('VTODO'));
-        $calendar->add(new Component('VJOURNAL'));
+        $calendar->add(new Component('X-BOX'));
+        $calendar->add(new Component('X-CRATE'));
 
         self::assertSame(
             [
-                [Severity::Error, 'VCALENDAR/VTODO'],
-                [Severity::Error, 'VCALENDAR/VJOURNAL'],
+                [Severity::Error, 'VCALENDAR/X-BOX'],
+                [Severity::Error, 'VCALENDAR/X-CRATE'],
             ],
             $this->findingsIn($calendar),
         );
@@ -494,7 +499,12 @@ final class ValidatorTest extends TestCase
 
         $event = new Component('VEVENT');
 
+        // Everything RFC 5545 §3.6 requires of an event: `dtstamp / uid` are
+        // REQUIRED, and `dtstart` is REQUIRED where the object names no
+        // METHOD, which this one does not.
+        $event->add(new Property('DTSTAMP', '19970610T172345Z'));
         $event->add(new Property('UID', '19970610T172345Z-AF23B2@example.com'));
+        $event->add(new Property('DTSTART', '19970714T170000Z'));
         $calendar->add($event);
 
         return $calendar;

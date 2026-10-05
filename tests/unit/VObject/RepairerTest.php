@@ -238,7 +238,12 @@ final class RepairerTest extends TestCase
 
         $event = new Component('VEVENT');
 
+        // Everything RFC 5545 §3.6 requires of an event: `dtstamp / uid` are
+        // REQUIRED, and `dtstart` is REQUIRED where the object names no
+        // METHOD, which this one does not.
+        $event->add(new Property('DTSTAMP', '19970610T172345Z'));
         $event->add(new Property('UID', '19970610T172345Z-AF23B2@example.com'));
+        $event->add(new Property('DTSTART', '19970714T170000Z'));
         $calendar->add($event);
 
         return $calendar;
