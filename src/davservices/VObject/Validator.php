@@ -58,6 +58,85 @@ final class Validator
     private const NAME = '/^[A-Za-z0-9-]+$/';
 
     /**
+     * RFC 5545 §3.6, component by component, as its grammar comments give
+     * them. Three of the four kinds of rule are worth a finding and the
+     * fourth is silence:
+     *
+     * - `required` — "REQUIRED, but MUST NOT occur more than once"
+     * - `once` — "OPTIONAL, but MUST NOT occur more than once"
+     * - `preferablyOnce` — "OPTIONAL, but SHOULD NOT occur more than once"
+     *
+     * **A property on none of these lists may appear as often as it likes**,
+     * because every one of §3.6's lists ends in `x-prop / iana-prop`, so any
+     * name at all matches the component's grammar. Where a property may
+     * stand is written in the property's own Conformance clause rather than
+     * here — §3.8.2.2 says `DTEND` belongs to a `VEVENT` or a `VFREEBUSY` —
+     * and reading all forty of those is a chunk of its own.
+     *
+     * **The lists differ from component to component**, which is why each
+     * has its own: `CONTACT` may appear as often as it likes in a `VEVENT`
+     * and once in a `VFREEBUSY`, and `DESCRIPTION` the other way about
+     * between a `VEVENT` and a `VJOURNAL`.
+     *
+     * **`VCALENDAR` is not here**, although `calprops` is a table of the same
+     * shape: its `VERSION` is a repair when missing rather than an error, and
+     * this table knows only errors. {@see self::calendarRules()} holds that
+     * one, and the two entries of `calprops` that belong here — "calscale /
+     * method — OPTIONAL, but MUST NOT occur more than once" — are checked
+     * there beside it.
+     *
+     * @var array<string, array{required: list<string>, once: list<string>, preferablyOnce: list<string>}>
+     */
+    private const COMPONENTS = [
+        'VEVENT' => [
+            'required' => ['DTSTAMP', 'UID'],
+            'once' => [
+                'CLASS', 'CREATED', 'DESCRIPTION', 'DTEND', 'DTSTART', 'DURATION', 'GEO',
+                'LAST-MODIFIED', 'LOCATION', 'ORGANIZER', 'PRIORITY', 'RECURRENCE-ID',
+                'SEQUENCE', 'STATUS', 'SUMMARY', 'TRANSP', 'URL',
+            ],
+            'preferablyOnce' => ['RRULE'],
+        ],
+        'VTODO' => [
+            'required' => ['DTSTAMP', 'UID'],
+            'once' => [
+                'CLASS', 'COMPLETED', 'CREATED', 'DESCRIPTION', 'DTSTART', 'DUE', 'DURATION',
+                'GEO', 'LAST-MODIFIED', 'LOCATION', 'ORGANIZER', 'PERCENT-COMPLETE',
+                'PRIORITY', 'RECURRENCE-ID', 'SEQUENCE', 'STATUS', 'SUMMARY', 'URL',
+            ],
+            'preferablyOnce' => ['RRULE'],
+        ],
+        'VJOURNAL' => [
+            'required' => ['DTSTAMP', 'UID'],
+            'once' => [
+                'CLASS', 'CREATED', 'DTSTART', 'LAST-MODIFIED', 'ORGANIZER',
+                'RECURRENCE-ID', 'SEQUENCE', 'STATUS', 'SUMMARY', 'URL',
+            ],
+            'preferablyOnce' => ['RRULE'],
+        ],
+        'VFREEBUSY' => [
+            'required' => ['DTSTAMP', 'UID'],
+            'once' => ['CONTACT', 'DTEND', 'DTSTART', 'ORGANIZER', 'URL'],
+            'preferablyOnce' => [],
+        ],
+        'VTIMEZONE' => [
+            'required' => ['TZID'],
+            'once' => ['LAST-MODIFIED', 'TZURL'],
+            'preferablyOnce' => [],
+        ],
+        'STANDARD' => [
+            'required' => ['DTSTART', 'TZOFFSETTO', 'TZOFFSETFROM'],
+            'once' => [],
+            'preferablyOnce' => ['RRULE'],
+        ],
+        'DAYLIGHT' => [
+            'required' => ['DTSTART', 'TZOFFSETTO', 'TZOFFSETFROM'],
+            'once' => [],
+            'preferablyOnce' => ['RRULE'],
+        ],
+    ];
+
+    /**
      * Everything wrong with this object.
      *
      * @return list<Finding>
@@ -201,7 +280,199 @@ final class Validator
             );
         }
 
+        // The rest of `calprops`: "calscale / method — OPTIONAL, but MUST NOT
+        // occur more than once."
+        foreach (['CALSCALE', 'METHOD'] as $name) {
+            $findings = [...$findings, ...self::atMostOnce($calendar, $name, Severity::Error, self::CALENDAR)];
+        }
+
+        // "The following is REQUIRED if the component appears in an iCalendar
+        // object that doesn't specify the 'METHOD' property" — the one rule of
+        // §3.6 that depends on the object around the component, which is why
+        // it can be checked here at all.
+        $namesAMethod = $calendar->property('METHOD') !== null;
+
+        foreach ($calendar->components() as $component) {
+            $findings = [
+                ...$findings,
+                ...self::componentRules($component, self::CALENDAR . '/' . $component->name(), $namesAMethod),
+            ];
+        }
+
         return $findings;
+    }
+
+    /**
+     * What §3.6 asks of one calendar component, and of everything inside it.
+     *
+     * A component this memo has never heard of is left alone, which §3.6 says
+     * in prose as well: "Applications MUST ignore x-comp and iana-comp values
+     * they don't recognize."
+     *
+     * @return list<Finding>
+     */
+    private static function componentRules(Component $component, string $where, bool $namesAMethod): array
+    {
+        $rules = self::COMPONENTS[$component->name()] ?? null;
+        $findings = $rules === null ? [] : [
+            ...self::countsIn($component, $rules, $where),
+            ...self::extraRulesOf($component, $where, $namesAMethod),
+        ];
+
+        foreach ($component->components() as $inside) {
+            $findings = [
+                ...$findings,
+                ...self::componentRules($inside, $where . '/' . $inside->name(), $namesAMethod),
+            ];
+        }
+
+        return $findings;
+    }
+
+    /**
+     * The three kinds of counting rule, in the order the grammar lists them.
+     *
+     * @param array{required: list<string>, once: list<string>, preferablyOnce: list<string>} $rules
+     *
+     * @return list<Finding>
+     */
+    private static function countsIn(Component $component, array $rules, string $where): array
+    {
+        $findings = [];
+
+        foreach ($rules['required'] as $name) {
+            $findings = [...$findings, ...self::exactlyOnce($component, $name, Severity::Error, $where)];
+        }
+
+        foreach ($rules['once'] as $name) {
+            $findings = [...$findings, ...self::atMostOnce($component, $name, Severity::Error, $where)];
+        }
+
+        foreach ($rules['preferablyOnce'] as $name) {
+            $findings = [...$findings, ...self::atMostOnce($component, $name, Severity::Warning, $where)];
+        }
+
+        return $findings;
+    }
+
+    /**
+     * The rules §3.6 writes out in prose beside a component's lists.
+     *
+     * **Each one is a named predicate and there is one finding made**, for the
+     * reason P4-07 measured: sequential independent branches multiply into
+     * paths, and five copies of `if (…) { $findings[] = … }` would say the
+     * same thing five times while hiding which of the five a reader is looking
+     * at.
+     *
+     * @return list<Finding>
+     */
+    private static function extraRulesOf(Component $component, string $where, bool $namesAMethod): array
+    {
+        $findings = [];
+
+        foreach (self::whatWouldBeWrong($component, $namesAMethod) as [$wrong, $at, $because]) {
+            if ($wrong) {
+                $findings[] = new Finding(Severity::Error, $where . $at, $because);
+            }
+        }
+
+        return $findings;
+    }
+
+    /**
+     * What would be wrong with this component, where to say it, and what to
+     * say.
+     *
+     * @return list<array{bool, string, string}>
+     */
+    private static function whatWouldBeWrong(Component $component, bool $namesAMethod): array
+    {
+        return [
+            [
+                self::anEventThatEndsTwice($component),
+                '',
+                'An event says when it ends with a DTEND or a DURATION, not both (RFC 5545 §3.6.1).',
+            ],
+            [
+                self::aTodoThatEndsTwice($component),
+                '',
+                'A to-do says when it is due with a DUE or a DURATION, not both (RFC 5545 §3.6.2).',
+            ],
+            [
+                self::aLengthWithNothingToMeasureFrom($component),
+                '/DURATION',
+                'A to-do with a DURATION MUST also have a DTSTART to measure it from (RFC 5545 §3.6.2).',
+            ],
+            [
+                self::aTimeZoneWithNoTimes($component),
+                '',
+                'A time zone MUST have one STANDARD or DAYLIGHT at least (RFC 5545 §3.6.5).',
+            ],
+            [
+                self::anEventWithNoStart($component, $namesAMethod),
+                '/DTSTART',
+                'An event in an object that names no METHOD MUST have a DTSTART (RFC 5545 §3.6.1).',
+            ],
+        ];
+    }
+
+    /**
+     * §3.6.1: "Either 'dtend' or 'duration' MAY appear in a 'eventprop', but
+     * 'dtend' and 'duration' MUST NOT occur in the same 'eventprop'."
+     */
+    private static function anEventThatEndsTwice(Component $component): bool
+    {
+        return $component->name() === 'VEVENT'
+            && $component->property('DTEND') !== null
+            && $component->property('DURATION') !== null;
+    }
+
+    /**
+     * §3.6.2, in the same words with the other two names: "Either 'due' or
+     * 'duration' MAY appear in a 'todoprop', but 'due' and 'duration' MUST
+     * NOT occur in the same 'todoprop'."
+     */
+    private static function aTodoThatEndsTwice(Component $component): bool
+    {
+        return $component->name() === 'VTODO'
+            && $component->property('DUE') !== null
+            && $component->property('DURATION') !== null;
+    }
+
+    /**
+     * §3.6.2, the rule an event has not: "If 'duration' appear in a
+     * 'todoprop', then 'dtstart' MUST also appear in the same 'todoprop'."
+     */
+    private static function aLengthWithNothingToMeasureFrom(Component $component): bool
+    {
+        return $component->name() === 'VTODO'
+            && $component->property('DURATION') !== null
+            && $component->property('DTSTART') === null;
+    }
+
+    /**
+     * §3.6.5: "One of 'standardc' or 'daylightc' MUST occur and each MAY
+     * occur more than once."
+     */
+    private static function aTimeZoneWithNoTimes(Component $component): bool
+    {
+        return $component->name() === 'VTIMEZONE'
+            && $component->components('STANDARD') === []
+            && $component->components('DAYLIGHT') === [];
+    }
+
+    /**
+     * §3.6.1: "The following is REQUIRED if the component appears in an
+     * iCalendar object that doesn't specify the 'METHOD' property; otherwise,
+     * it is OPTIONAL; in any case, it MUST NOT occur more than once."
+     *
+     * The cardinality is in the table; this is the half that needs the object.
+     */
+    private static function anEventWithNoStart(Component $component, bool $namesAMethod): bool
+    {
+        return $component->name() === 'VEVENT'
+            && !$namesAMethod
+            && $component->property('DTSTART') === null;
     }
 
     /**
@@ -286,6 +557,33 @@ final class Validator
             Severity::Repair,
             'VCARD/VERSION',
             'VERSION must appear immediately after BEGIN:VCARD (RFC 6350 §6.7.9).',
+        )];
+    }
+
+    /**
+     * A property a specification allows at most once.
+     *
+     * The severity carries whether the specification said MUST NOT or SHOULD
+     * NOT, which is what {@see Severity} is for, so one message serves both.
+     *
+     * @return list<Finding>
+     */
+    private static function atMostOnce(
+        Component $component,
+        string $name,
+        Severity $whenRepeated,
+        string $where,
+    ): array {
+        $found = count($component->properties($name));
+
+        if ($found < 2) {
+            return [];
+        }
+
+        return [new Finding(
+            $whenRepeated,
+            $where . '/' . $name,
+            sprintf('%s is specified at most once, and is here %d times.', $name, $found),
         )];
     }
 
