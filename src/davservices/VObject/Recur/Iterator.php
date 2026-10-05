@@ -95,6 +95,13 @@ final class Iterator
     private const LAST_YEAR = 9999;
 
     /**
+     * How many of the allowed iterations the expansion has spent. Set where
+     * it is spent — asking for the instances starts the count afresh, so that
+     * asking twice is asking twice.
+     */
+    private int $spent = 0;
+
+    /**
      * How long one turn of each frequency that counts a fixed length of time
      * comes to, as a `dur-value`. `P%dW` is PHP's own spelling of a week, so
      * the seven days need not be counted here.
@@ -131,6 +138,7 @@ final class Iterator
         private readonly Date|DateTime $start,
         private readonly int $iterations = self::ITERATIONS,
     ) {
+
         // §3.8.5.3 calls an unsynchronised pair undefined — "The recurrence
         // set generated with a 'DTSTART' property value not synchronized with
         // the recurrence rule is undefined" — so refusing is a choice. It is
@@ -141,6 +149,21 @@ final class Iterator
                 'A %s rule steps by a time, and a DATE start has none.',
                 $rule->frequency()->value,
             ));
+        }
+
+        // §3.3.10 licenses ignoring a rule part exactly once and says so by
+        // name; everywhere else the parts "are applied". So one this library
+        // cannot yet apply is refused — see {@see NotExpanded}.
+        $notExpanded = [
+            'BYWEEKNO' => $rule->byWeekNumber(),
+            'BYDAY' => $rule->byDay(),
+            'BYSETPOS' => $rule->bySetPosition(),
+        ];
+
+        foreach ($notExpanded as $part => $values) {
+            if ($values !== []) {
+                throw new NotExpanded($part);
+            }
         }
 
         // §3.3.10: "The value of the UNTIL rule part MUST have the same value
@@ -179,10 +202,10 @@ final class Iterator
     public function instances(): Generator
     {
         $yielded = 0;
-        $end = $this->endOfTheCalendar();
+        $start = $this->moment();
 
-        for ($step = 0; $step < $this->iterations; ++$step) {
-            // Asked before anything is worked out, because a count of nought
+        foreach ($this->moments() as $moment) {
+            // Asked before anything is handed over, because a count of nought
             // bounds the recurrence at nought: "The COUNT rule part defines
             // the number of occurrences at which to range-bound the
             // recurrence." The sentence about DTSTART says how the counting
@@ -191,22 +214,18 @@ final class Iterator
                 return;
             }
 
-            $moment = $this->momentAt($step);
-
-            // "Such recurrence instances MUST be ignored and MUST NOT be
-            // counted as part of the recurrence set."
-            if ($moment === null) {
+            // §3.8.5.3: "The 'DTSTART' property defines the first instance in
+            // the recurrence set." One period can hold candidates on either
+            // side of it — a monthly rule on the first and last day holds
+            // both — and the ones before it are not in the set.
+            if ($moment < $start) {
                 continue;
-            }
-
-            // The years have run out rather than anything being wrong, so the
-            // expansion ends instead of refusing.
-            if ($moment >= $end) {
-                return;
             }
 
             $instance = $this->sameKindAs($moment);
 
+            // "then COUNT and UNTIL are evaluated" — last of all, on what the
+            // BYxxx parts left.
             if ($this->isPastTheBound($instance)) {
                 return;
             }
@@ -215,8 +234,78 @@ final class Iterator
 
             ++$yielded;
         }
+    }
 
+    /**
+     * Every moment the rule considers, period after period, in order.
+     *
+     * **The hard limit is spent here**, and on two things: a period costs one
+     * iteration and so does every candidate looked at inside it. Both are
+     * ways for a rule to run away — a great many periods, or one period
+     * holding a great many candidates — and R-RRULE-04 asks for a bound on
+     * the work rather than on the answer.
+     *
+     *
+     * @throws TooManyIterations If the expansion passes its hard limit
+     *
+     * @return Generator<int, DateTimeImmutable>
+     */
+    private function moments(): Generator
+    {
+        $end = $this->endOfTheCalendar();
+        $by = new ByRules($this->rule, $this->moment());
+        $this->spent = 0;
+
+        // **A real bound rather than `for (;;)`.** A period costs one iteration
+        // at least, so there can be no more periods than iterations — and a
+        // loop whose only way out is a `return` leaves an edge the coverage
+        // gate is right to call unreachable, which is the lesson P4-05 paid
+        // for with `while (true)`.
+        for ($step = 0; $step < $this->iterations; ++$step) {
+            $this->spend();
+
+            $anchor = $this->anchorAt($step);
+
+            // The years have run out rather than anything being wrong, so the
+            // expansion ends instead of refusing.
+            //
+            // **Asked of the period and not of its candidates**, which is
+            // enough: a candidate's fields are set within its own period, so
+            // it falls in the same year as the anchor that named it. A second
+            // guard beside the candidates would be a guard nothing could
+            // reach.
+            if ($anchor >= $end) {
+                return;
+            }
+
+            foreach ($by->candidatesIn($anchor) as $candidate) {
+                $this->spend();
+
+                if ($candidate === null) {
+                    continue;
+                }
+
+                yield $candidate;
+            }
+        }
+
+        // Reached where every period cost exactly its own iteration and held
+        // no candidate at all — a rule naming the three-hundred-and-sixty-
+        // sixth day of a run of common years, say. {@see self::spend()} is
+        // what stops a single period from holding more than the whole budget.
         throw new TooManyIterations($this->iterations);
+    }
+
+    /**
+     * Spends one of the iterations the expansion is allowed.
+     *
+     * @throws TooManyIterations If there are none left
+     */
+    private function spend(): void
+    {
+        if (++$this->spent > $this->iterations) {
+            throw new TooManyIterations($this->iterations);
+        }
     }
 
     /**
@@ -227,7 +316,7 @@ final class Iterator
      * length of time and are added as one; the two that count calendar months
      * are worked out on the calendar, because a month is not a length.
      */
-    private function momentAt(int $step): ?DateTimeImmutable
+    private function anchorAt(int $step): DateTimeImmutable
     {
         $units = $step * $this->rule->interval();
         $frequency = $this->rule->frequency();
@@ -248,26 +337,23 @@ final class Iterator
      * (e.g., February 30)" — which is the rule that forbids reaching for
      * `modify('+1 month')` and its answer of the third of March.
      */
-    private function monthsOn(int $months): ?DateTimeImmutable
+    private function monthsOn(int $months): DateTimeImmutable
     {
         $date = $this->date();
         $counted = $date->month() - 1 + $months;
         $year = $date->year() + intdiv($counted, 12);
         $month = $counted % 12 + 1;
 
-        // Said as the end of the calendar rather than as the year it actually
-        // landed in: `checkdate` would answer "no such day" for a year past
-        // its own range, and that would be read as "ignore this one" instead
-        // of "the calendar has run out".
         if ($year > self::LAST_YEAR) {
             return $this->endOfTheCalendar();
         }
 
-        if (!checkdate($month, $date->day(), $year)) {
-            return null;
-        }
-
-        return $this->moment()->setDate($year, $month, $date->day());
+        // **The first of the month, not the start's day.** An anchor names a
+        // period rather than an instance, and which days of it are instances
+        // is {@see ByRules}' question — including the day the start would
+        // have given it, which February has not got when the start is the
+        // thirty-first of January.
+        return $this->moment()->setDate($year, $month, 1);
     }
 
     /**
