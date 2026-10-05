@@ -150,9 +150,10 @@ final class ByRules
     private const LONGER_THAN_A_DAY = ['MONTHLY', 'YEARLY'];
 
     /**
-     * How many days back the seven candidates for the start of a week lie.
+     * The seven days of a week, as offsets from one of them — which is as
+     * far as a search for a weekday ever has to look.
      */
-    private const A_WEEK_BACK = [0, 1, 2, 3, 4, 5, 6];
+    private const A_WEEK = [0, 1, 2, 3, 4, 5, 6];
 
     /** @var array{values: list<int>, expands: bool, limits: bool} */
     private readonly array $months;
@@ -729,7 +730,7 @@ final class ByRules
     {
         $start = $day;
 
-        foreach (self::A_WEEK_BACK as $back) {
+        foreach (self::A_WEEK as $back) {
             $earlier = $day->sub(new DateInterval(sprintf('P%dD', $back)));
 
             if (self::spellingOf($earlier) === $this->weekStart) {
@@ -738,6 +739,29 @@ final class ByRules
         }
 
         return $start;
+    }
+
+    /**
+     * The first day on or after a given one that bears a weekday.
+     *
+     * Written like {@see self::startOfTheWeekOf()}, and for the same reason:
+     * one of seven consecutive days bears any given weekday, so a search
+     * that returned on finding it would leave its empty-handed way through
+     * untestable.
+     */
+    private static function firstSuchDay(DateTimeImmutable $from, string $spelling): DateTimeImmutable
+    {
+        $first = $from;
+
+        foreach (self::A_WEEK as $forward) {
+            $later = $from->add(new DateInterval(sprintf('P%dD', $forward)));
+
+            if (self::spellingOf($later) === $spelling) {
+                $first = $later;
+            }
+        }
+
+        return $first;
     }
 
     /**
@@ -818,12 +842,15 @@ final class ByRules
      */
     private static function daysOf(array $unit, string $spelling, ?int $ordinal): array
     {
+        [$first, $last] = $unit;
         $days = [];
 
-        foreach (self::everyDayOf($unit) as $day) {
-            if (self::spellingOf($day) === $spelling) {
-                $days[] = $day;
-            }
+        // **Every seventh day from the first such one**, rather than every
+        // day of the unit asked which weekday it is: a unit is a week, a
+        // month or a year, and a year holds fifty-two or -three of any given
+        // weekday among its three hundred and sixty-odd days.
+        for ($day = self::firstSuchDay($first, $spelling); $day <= $last; $day = $day->add(new DateInterval('P1W'))) {
+            $days[] = $day;
         }
 
         if ($ordinal === null) {
