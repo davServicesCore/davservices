@@ -531,39 +531,25 @@ final class ByRulesTest extends TestCase
     }
 
     /**
-     * **A rule part this chunk does not expand is refused**, not left out.
-     * §3.3.10 licenses ignoring a part exactly once and by name — "These rule
-     * parts MUST be ignored in RECUR value that violate the above
-     * requirement" — and everywhere else says the parts "are applied". A set
-     * that quietly left one out would be a set the memo does not define.
+     * **The one part still not expanded is refused**, not left out. §3.3.10
+     * licenses ignoring a part exactly once and by name — "These rule parts
+     * MUST be ignored in RECUR value that violate the above requirement" —
+     * and everywhere else says the parts "are applied". A set that quietly
+     * left one out would be a set the memo does not define.
      *
-     * @param non-empty-string $rule
+     * `BYDAY` and `BYWEEKNO` were refused here until P4-08b, which expands
+     * them. `BYSETPOS` is the last, and the memo sets it apart twice over: it
+     * evaluates it after every other part, and it is the only one that needs
+     * a whole period at once — "BYSETPOS operates on a set of recurrence
+     * instances in one interval of the recurrence rule" — where this hands a
+     * period over one candidate at a time.
      */
-    #[DataProvider('thePartsThisChunkDoesNotExpand')]
-    public function testAPartThisChunkDoesNotExpandIsRefused(string $rule, string $named): void
+    public function testTheOnePartNotYetExpandedIsRefused(): void
     {
         $this->expectException(NotExpanded::class);
-        $this->expectExceptionMessage($named);
+        $this->expectExceptionMessage('BYSETPOS');
 
-        self::expand($rule, '19970101T090000');
-    }
-
-    /**
-     * @return iterable<string, array{string, string}>
-     */
-    public static function thePartsThisChunkDoesNotExpand(): iterable
-    {
-        yield 'BYDAY, which the memo sets apart in notes of its own' => [
-            'FREQ=MONTHLY;BYDAY=1MO', 'BYDAY',
-        ];
-
-        yield 'BYWEEKNO, whose one example does not stand without BYDAY' => [
-            'FREQ=YEARLY;BYWEEKNO=20', 'BYWEEKNO',
-        ];
-
-        yield 'BYSETPOS, which the memo evaluates last of all' => [
-            'FREQ=MONTHLY;BYMONTHDAY=1,2;BYSETPOS=-1', 'BYSETPOS',
-        ];
+        self::expand('FREQ=MONTHLY;BYMONTHDAY=1,2;BYSETPOS=-1', '19970101T090000');
     }
 
     /**

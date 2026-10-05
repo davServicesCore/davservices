@@ -29,10 +29,10 @@ use Generator;
  *     }
  *
  * **{@see Rule} read the rule; this works it out.** `FREQ`, `INTERVAL`,
- * `COUNT`, `UNTIL` and `WKST` for all seven frequencies. The `BYxxx` parts
- * narrow and widen the set and are P4-08's subject; a rule carrying one is
- * read already and expanded here without it, which is why that chunk follows
- * directly.
+ * `COUNT`, `UNTIL` and `WKST` for all seven frequencies, and every `BYxxx`
+ * part but one: {@see ByRules} narrows and widens each period. `BYSETPOS` is
+ * the one left, and it is refused rather than passed over — see
+ * {@see NotExpanded}.
  *
  * ## Four sentences decide nearly everything
  *
@@ -154,16 +154,8 @@ final class Iterator
         // §3.3.10 licenses ignoring a rule part exactly once and says so by
         // name; everywhere else the parts "are applied". So one this library
         // cannot yet apply is refused — see {@see NotExpanded}.
-        $notExpanded = [
-            'BYWEEKNO' => $rule->byWeekNumber(),
-            'BYDAY' => $rule->byDay(),
-            'BYSETPOS' => $rule->bySetPosition(),
-        ];
-
-        foreach ($notExpanded as $part => $values) {
-            if ($values !== []) {
-                throw new NotExpanded($part);
-            }
+        if ($rule->bySetPosition() !== []) {
+            throw new NotExpanded('BYSETPOS');
         }
 
         // §3.3.10: "The value of the UNTIL rule part MUST have the same value
@@ -267,13 +259,8 @@ final class Iterator
             $anchor = $this->anchorAt($step);
 
             // The years have run out rather than anything being wrong, so the
-            // expansion ends instead of refusing.
-            //
-            // **Asked of the period and not of its candidates**, which is
-            // enough: a candidate's fields are set within its own period, so
-            // it falls in the same year as the anchor that named it. A second
-            // guard beside the candidates would be a guard nothing could
-            // reach.
+            // expansion ends instead of refusing. The periods are in order,
+            // so the first one past the end is the last there is.
             if ($anchor >= $end) {
                 return;
             }
@@ -281,7 +268,13 @@ final class Iterator
             foreach ($by->candidatesIn($anchor) as $candidate) {
                 $this->spend();
 
-                if ($candidate === null) {
+                // **And asked of the candidates too, since P4-08b.** A week
+                // reaches outside the year that numbers it: the last week of
+                // 9999 runs to the second of January 10000, which is a date
+                // `date-fullyear = 4DIGIT` cannot write down. Before
+                // `BYWEEKNO` no candidate could leave its anchor's year, and
+                // the guard was rightly deleted then.
+                if ($candidate === null || $candidate >= $end) {
                     continue;
                 }
 
