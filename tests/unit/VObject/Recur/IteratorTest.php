@@ -394,21 +394,26 @@ final class IteratorTest extends TestCase
     public function testTheLimitIsConfigurableAndTenThousandByDefault(): void
     {
         self::assertSame(10000, Iterator::ITERATIONS);
-        self::assertCount(5, self::expand('FREQ=DAILY', self::START, 5, 5));
+        self::assertCount(5, self::expand('FREQ=DAILY', self::START, 5, 20));
     }
 
     /**
      * **The limit counts iterations and not instances**, which is what
      * „Harte Iterationsgrenze" says and what makes it a bound on the work
-     * rather than on the answer. Twelve iterations of a monthly rule on the
-     * thirty-first look at a year and find seven.
+     * rather than on the answer.
+     *
+     * **A period costs one and so does every candidate in it**, because both
+     * are ways for a rule to run away: a great many periods, or one period
+     * holding a great many candidates. So twenty-four iterations of a monthly
+     * rule on the thirty-first look at a year — twelve periods with one
+     * candidate each — and find the seven months that have one.
      */
     public function testTheLimitCountsIterationsRatherThanInstances(): void
     {
         $instances = [];
 
         try {
-            foreach ((new Iterator(Rule::decode('FREQ=MONTHLY'), Date::decode('19970131'), 12))->instances() as $one) {
+            foreach ((new Iterator(Rule::decode('FREQ=MONTHLY'), Date::decode('19970131'), 24))->instances() as $one) {
                 $instances[] = $one->encode();
             }
         } catch (TooManyIterations) {
@@ -420,7 +425,7 @@ final class IteratorTest extends TestCase
             return;
         }
 
-        self::fail('twelve iterations of an unbounded rule should have reached the limit');
+        self::fail('twenty-four iterations of an unbounded rule should have reached the limit');
     }
 
     /**
