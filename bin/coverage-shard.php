@@ -28,10 +28,8 @@
  * Xdebug's coverage collector has segfaulted on this suite (24.09.2026, at
  * test 1934 of 1954, in CI and in the nightly the same morning). Smaller
  * processes should make that rarer, but nothing says they make it
- * impossible, so a shard is tried once more — and only for that signature:
- * 139 is 128 + 11, which is how a shell reports a child killed by SIGSEGV. A
- * test that fails exits 1 or 2, fails on the first attempt and stays failed,
- * because a real failure repeats.
+ * impossible, so a shard is tried once more — and only for that signature,
+ * which is two numbers rather than one: see TestShards::crashed().
  *
  * Usage:
  *   php bin/coverage-shard.php 3      runs shard 3 (CI runs the shards side by side)
@@ -43,8 +41,6 @@
 declare(strict_types=1);
 
 require __DIR__ . '/lib/TestShards.php';
-
-const KILLED_BY_SIGSEGV = 139;
 
 $sizes = TestShards::testFiles(__DIR__ . '/../tests/unit');
 $count = TestShards::countFor($sizes);
@@ -92,7 +88,7 @@ foreach (TestShards::split($sizes, $count) as $index => $shard) {
     $status = 0;
     passthru($command, $status);
 
-    if ($status === KILLED_BY_SIGSEGV) {
+    if (TestShards::crashed($status)) {
         fwrite(STDOUT, "::warning::Xdebug's coverage collector crashed (signal 11) in shard {$number}. Running once more.\n");
         passthru($command, $status);
     }
