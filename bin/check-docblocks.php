@@ -134,14 +134,14 @@ function anonymousClassRanges(array $tokens): array
 
         $depth = 0;
 
-        foreach (array_slice($tokens, $start) as $offset => $current) {
-            if ($current === '{' || (is_array($current) && in_array($current[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true))) {
+        foreach (array_slice($tokens, $start) as $bodyOffset => $bodyToken) {
+            if ($bodyToken === '{' || (is_array($bodyToken) && in_array($bodyToken[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true))) {
                 $depth++;
-            } elseif ($current === '}') {
+            } elseif ($bodyToken === '}') {
                 $depth--;
 
                 if ($depth === 0) {
-                    $ranges[] = [$start, $start + $offset];
+                    $ranges[] = [$start, $start + $bodyOffset];
                     break;
                 }
             }

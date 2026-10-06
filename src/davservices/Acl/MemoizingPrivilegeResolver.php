@@ -79,8 +79,8 @@ final class MemoizingPrivilegeResolver implements IPrivilegeResolver
         }
 
         if ($wanted !== []) {
-            foreach ($this->resolver->forPaths($principalUri, $wanted) as $path => $set) {
-                $this->remembered[self::keyFor($principalUri, $path)] = $set;
+            foreach ($this->resolver->forPaths($principalUri, $wanted) as $answeredPath => $set) {
+                $this->remembered[self::keyFor($principalUri, $answeredPath)] = $set;
             }
         }
 
