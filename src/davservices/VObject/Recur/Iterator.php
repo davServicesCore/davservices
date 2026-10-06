@@ -29,10 +29,8 @@ use Generator;
  *     }
  *
  * **{@see Rule} read the rule; this works it out.** `FREQ`, `INTERVAL`,
- * `COUNT`, `UNTIL` and `WKST` for all seven frequencies, and every `BYxxx`
- * part but one: {@see ByRules} narrows and widens each period. `BYSETPOS` is
- * the one left, and it is refused rather than passed over — see
- * {@see NotExpanded}.
+ * `COUNT`, `UNTIL`, `WKST` and **every one of the `BYxxx` parts** for all
+ * seven frequencies; {@see ByRules} narrows and widens each period.
  *
  * ## Four sentences decide nearly everything
  *
@@ -151,13 +149,6 @@ final class Iterator
             ));
         }
 
-        // §3.3.10 licenses ignoring a rule part exactly once and says so by
-        // name; everywhere else the parts "are applied". So one this library
-        // cannot yet apply is refused — see {@see NotExpanded}.
-        if ($rule->bySetPosition() !== []) {
-            throw new NotExpanded('BYSETPOS');
-        }
-
         // §3.3.10: "The value of the UNTIL rule part MUST have the same value
         // type as the 'DTSTART' property." {@see Rule} could not check this,
         // having no DTSTART to compare with; here both are in hand.
@@ -270,6 +261,8 @@ final class Iterator
             // so the loop that spends it belongs beside the budget. A
             // generator there that both nested another and was walked from
             // here also crashed Xdebug's path collector — see that class.
+            $set = [];
+
             foreach ($by->daysIn($anchor) as $day) {
                 foreach ($by->timesIn($anchor) as $time) {
                     $this->spend();
@@ -295,9 +288,22 @@ final class Iterator
                         continue;
                     }
 
-                    yield $candidate;
+                    $set[] = $candidate;
                 }
             }
+
+            // **A whole interval at once, because `BYSETPOS` asks for one:**
+            // "BYSETPOS operates on a set of recurrence instances in one
+            // interval of the recurrence rule", and the memo evaluates it
+            // after every other part and before `COUNT` and `UNTIL`. So the
+            // interval is gathered, the positions pick from it, and only then
+            // is anything handed over.
+            //
+            // **The set is bounded by the budget**, which is the whole answer
+            // to how large an interval may grow: a candidate costs an
+            // iteration, so an interval can hold no more of them than
+            // {@see self::spend()} allows.
+            yield from $by->chosenOf($set);
         }
 
         // Reached where every period cost exactly its own iteration and held
