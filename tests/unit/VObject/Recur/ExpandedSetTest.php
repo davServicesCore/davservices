@@ -18,7 +18,9 @@ use DavServices\VObject\Parameter;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Property;
 use DavServices\VObject\Recur\ExpandedSet;
+use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\TooManyIterations;
+use DavServices\VObject\Value\Period;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -78,6 +80,9 @@ use PHPUnit\Framework\TestCase;
  * marked as one in the source.
  */
 #[CoversClass(ExpandedSet::class)]
+// Driven by this test as well; ci.yml says why naming them matters.
+#[CoversClass(Iterator::class)]
+#[CoversClass(Period::class)]
 final class ExpandedSetTest extends TestCase
 {
     /**

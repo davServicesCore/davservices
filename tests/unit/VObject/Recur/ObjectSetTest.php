@@ -487,6 +487,67 @@ final class ObjectSetTest extends TestCase
     }
 
     /**
+     * **A component without a `UID` is none of this series' business.** RFC
+     * 4791 §4.1 allows exactly one such component beside the events: a
+     * resource "MUST NOT contain more than one type of calendar component …
+     * with the exception of VTIMEZONE components, which MUST be specified for
+     * each unique TZID parameter value". It stands before the master here, so
+     * that passing over it does not mean stopping at it.
+     */
+    public function testAComponentWithoutAUidIsPassedOver(): void
+    {
+        $calendar = new Component('VCALENDAR');
+        $zone = new Component('VTIMEZONE');
+        $zone->add(new Property('TZID', 'Europe/Berlin'));
+        $calendar->add($zone);
+
+        $event = new Component('VEVENT');
+
+        foreach (self::weekly() as $property) {
+            $event->add(new Property($property[0], $property[1]));
+        }
+
+        $calendar->add($event);
+
+        $instances = [];
+
+        foreach (ObjectSet::of($calendar, 'weekly@example.com')->instances() as $instance) {
+            $instances[] = $instance->start()->encode();
+
+            if (count($instances) === 2) {
+                break;
+            }
+        }
+
+        self::assertSame(['20041206T120000Z', '20041213T120000Z'], $instances);
+    }
+
+    /**
+     * **And the form of the time has to match as well.** §3.8.4.4 asks for it
+     * in the same breath as the value type: "Furthermore, this property MUST
+     * be specified as a date with local time **if and only if** the 'DTSTART'
+     * property contained within the recurring component is specified as a
+     * date with local time."
+     *
+     * (The third form, a date with a time zone reference, is a `TZID`
+     * parameter and waits for P4-11 with everything else that needs the zone.)
+     */
+    public function testAnIdentifierInAnotherFormOfTimeIsRefused(): void
+    {
+        $this->expectException(ParseError::class);
+        $this->expectExceptionMessage('local time');
+
+        self::expand([
+            self::weekly(),
+            [
+                ['UID', 'weekly@example.com'],
+                ['RECURRENCE-ID', '20041213T120000'],
+                ['DTSTART', '20041213T140000'],
+            ],
+        ]);
+    }
+
+    /**
      * **Two components without an identifier are two masters**, and which of
      * them defines the series is nothing the memo answers — RFC 4791 §4.1
      * knows one "master recurring component" per resource.
@@ -497,6 +558,30 @@ final class ObjectSetTest extends TestCase
         $this->expectExceptionMessage('one master');
 
         self::expand([self::weekly(), self::weekly()]);
+    }
+
+    /**
+     * **A master without a `DTSTART` defines no series.** §3.8.5.1 computes
+     * the set "by considering the initial 'DTSTART' property", and §3.6.1
+     * requires one of an event in any case — so it is refused here rather
+     * than half-way through an expansion.
+     */
+    public function testAMasterWithoutAStartIsRefused(): void
+    {
+        $this->expectException(ParseError::class);
+        $this->expectExceptionMessage('master component has none');
+
+        self::expand([
+            [
+                ['UID', 'weekly@example.com'],
+                ['RRULE', 'FREQ=WEEKLY'],
+            ],
+            [
+                ['UID', 'weekly@example.com'],
+                ['RECURRENCE-ID', '20041213T120000Z'],
+                ['DTSTART', '20041213T140000Z'],
+            ],
+        ]);
     }
 
     /**

@@ -151,7 +151,16 @@ final class ObjectSet
         }
 
         if ($master !== null) {
-            self::refuseAMixtureOfValueTypes($master, $overrides);
+            $start = $master->property('DTSTART');
+
+            if ($start === null) {
+                throw new ParseError(
+                    'A series is computed from a DTSTART, and its master component has none '
+                    . '(RFC 5545 §3.8.5.1).',
+                );
+            }
+
+            self::refuseAMismatchedIdentifier(self::dateOf($start), $overrides);
         }
 
         return new self($master, self::inIdentifierOrder($overrides), $iterations);
@@ -309,22 +318,42 @@ final class ObjectSet
     }
 
     /**
-     * §3.8.4.4: "This property MUST have the same value type as the 'DTSTART'
-     * property contained within the recurring component."
+     * §3.8.4.4 asks for two things in one breath, and both are refused where
+     * they are not met:
      *
+     * > This property MUST have the same value type as the "DTSTART" property
+     * > contained within the recurring component. **Furthermore, this
+     * > property MUST be specified as a date with local time if and only if
+     * > the "DTSTART" property contained within the recurring component is
+     * > specified as a date with local time.**
+     *
+     * The third form a `date-time` can take, "a date with local time and time
+     * zone reference" (§3.3.5), is a `TZID` parameter rather than part of the
+     * value, so it waits for P4-11 with everything else that needs the zone.
+     *
+     * @param Date|DateTime $start The `DTSTART` of the master component
      * @param list<Instance> $overrides
      *
-     * @throws ParseError If one of them is of the other kind
+     * @throws ParseError If one of them does not match the series
      */
-    private static function refuseAMixtureOfValueTypes(Component $master, array $overrides): void
+    private static function refuseAMismatchedIdentifier(Date|DateTime $start, array $overrides): void
     {
-        $start = $master->property('DTSTART');
-        $days = $start !== null && self::dateOf($start) instanceof Date;
+        $days = $start instanceof Date;
+        $local = $start instanceof DateTime && !$start->isUtc();
 
         foreach ($overrides as $override) {
-            if ($override->recurrenceId() instanceof Date !== $days) {
+            $identifier = $override->recurrenceId();
+
+            if ($identifier instanceof Date !== $days) {
                 throw new ParseError(
                     'A RECURRENCE-ID has the same value type as the DTSTART it identifies (RFC 5545 §3.8.4.4).',
+                );
+            }
+
+            if ($identifier instanceof DateTime && !$identifier->isUtc() !== $local) {
+                throw new ParseError(
+                    'A RECURRENCE-ID is a date with local time if and only if the DTSTART it identifies is '
+                    . '(RFC 5545 §3.8.4.4).',
                 );
             }
         }
