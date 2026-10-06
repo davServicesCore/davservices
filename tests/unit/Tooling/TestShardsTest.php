@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\Tooling;
 
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use TestShards;
 
@@ -35,9 +36,49 @@ require_once __DIR__ . '/../../../bin/lib/TestShards.php';
  *   pace;
  * - the split is the same on every machine, because each shard works it out
  *   for itself and they have to agree.
+ *
+ * And the collector's crash is recognised by its signature rather than by any
+ * failure, which is **two** numbers: a POSIX shell reports a child killed by
+ * SIGSEGV as 128 + 11, and Windows, having no signals, hands back the access
+ * violation itself.
  */
 final class TestShardsTest extends TestCase
 {
+    /**
+     * **A crash is recognised, a failure is not.** The retry exists for the
+     * collector falling over, and for nothing else: a shard whose tests fail
+     * exits 1 or 2, fails on the first attempt and stays failed, because a
+     * real failure repeats.
+     *
+     * @param int $status What `passthru` gave back
+     */
+    #[DataProvider('theWaysAProcessComesBack')]
+    public function testACrashIsToldApartFromAFailure(int $status, bool $crashed): void
+    {
+        self::assertSame($crashed, TestShards::crashed($status));
+    }
+
+    /**
+     * @return iterable<string, array{int, bool}>
+     */
+    public static function theWaysAProcessComesBack(): iterable
+    {
+        yield 'killed by SIGSEGV, as a POSIX shell reports it' => [139, true];
+
+        // Windows has no signals: the process ends with the access violation
+        // itself, 0xC0000005, which comes back as a signed int.
+        yield 'an access violation, as Windows reports it' => [-1073741819, true];
+
+        yield 'nothing wrong' => [0, false];
+        yield 'a test that failed' => [1, false];
+        yield 'a run that could not start' => [2, false];
+
+        // 128 + 11 is the one signal the retry is for; 128 + 6 is an abort and
+        // 128 + 15 a process somebody stopped on purpose.
+        yield 'killed by SIGABRT' => [134, false];
+        yield 'killed by SIGTERM' => [143, false];
+    }
+
     public function testEveryTestFileLandsInExactlyOneShard(): void
     {
         $sizes = ['a/OneTest.php' => 5, 'b/TwoTest.php' => 3, 'c/ThreeTest.php' => 8, 'd/FourTest.php' => 1, 'e/FiveTest.php' => 4];
