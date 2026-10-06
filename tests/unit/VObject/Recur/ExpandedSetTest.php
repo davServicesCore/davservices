@@ -18,7 +18,9 @@ use DavServices\VObject\Parameter;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Property;
 use DavServices\VObject\Recur\ExpandedSet;
+use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\TooManyIterations;
+use DavServices\VObject\Value\Period;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -78,6 +80,9 @@ use PHPUnit\Framework\TestCase;
  * marked as one in the source.
  */
 #[CoversClass(ExpandedSet::class)]
+// Driven by this test as well; ci.yml says why naming them matters.
+#[CoversClass(Iterator::class)]
+#[CoversClass(Period::class)]
 final class ExpandedSetTest extends TestCase
 {
     /**
@@ -249,6 +254,25 @@ final class ExpandedSetTest extends TestCase
                 ['RDATE', '19970905', 'DATE'],
             ],
             ['19970902', '19970905'],
+        ];
+
+        // §3.1: "All names of properties, property parameters, enumerated
+        // property values, and property parameter values are
+        // case-insensitive."
+        yield 'a date whose VALUE parameter is written in lower case' => [
+            [
+                ['DTSTART', '19970902', 'date'],
+                ['RDATE', '19970905', 'Date'],
+            ],
+            ['19970902', '19970905'],
+        ];
+
+        yield 'a period whose VALUE parameter is written in lower case' => [
+            [
+                ['DTSTART', '19970902T090000', null],
+                ['RDATE', '19970910T090000/PT2H', 'period'],
+            ],
+            ['19970902T090000', '19970910T090000'],
         ];
 
         yield 'an exception given as a date' => [
