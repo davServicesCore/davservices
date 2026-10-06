@@ -15,7 +15,6 @@ namespace DavServices\Tests\Unit\VObject\Recur;
 
 use DavServices\VObject\Recur\ByRules;
 use DavServices\VObject\Recur\Iterator;
-use DavServices\VObject\Recur\NotExpanded;
 use DavServices\VObject\Recur\Rule;
 use DavServices\VObject\Recur\TooManyIterations;
 use DavServices\VObject\Recur\Weeks;
@@ -79,7 +78,6 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(ByRules::class)]
 #[CoversClass(Weeks::class)]
 #[CoversClass(Iterator::class)]
-#[CoversClass(NotExpanded::class)]
 final class ByRulesTest extends TestCase
 {
     /**
@@ -530,28 +528,6 @@ final class ByRulesTest extends TestCase
             self::expand('FREQ=MONTHLY;BYMONTHDAY=2,15;COUNT=4', '19970902'),
             self::expand('FREQ=MONTHLY;BYMONTHDAY=15,2;COUNT=4', '19970902'),
         );
-    }
-
-    /**
-     * **The one part still not expanded is refused**, not left out. §3.3.10
-     * licenses ignoring a part exactly once and by name — "These rule parts
-     * MUST be ignored in RECUR value that violate the above requirement" —
-     * and everywhere else says the parts "are applied". A set that quietly
-     * left one out would be a set the memo does not define.
-     *
-     * `BYDAY` and `BYWEEKNO` were refused here until P4-08b, which expands
-     * them. `BYSETPOS` is the last, and the memo sets it apart twice over: it
-     * evaluates it after every other part, and it is the only one that needs
-     * a whole period at once — "BYSETPOS operates on a set of recurrence
-     * instances in one interval of the recurrence rule" — where this hands a
-     * period over one candidate at a time.
-     */
-    public function testTheOnePartNotYetExpandedIsRefused(): void
-    {
-        $this->expectException(NotExpanded::class);
-        $this->expectExceptionMessage('BYSETPOS');
-
-        self::expand('FREQ=MONTHLY;BYMONTHDAY=1,2;BYSETPOS=-1', '19970101T090000');
     }
 
     /**

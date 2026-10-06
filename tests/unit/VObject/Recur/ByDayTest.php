@@ -15,7 +15,6 @@ namespace DavServices\Tests\Unit\VObject\Recur;
 
 use DavServices\VObject\Recur\ByRules;
 use DavServices\VObject\Recur\Iterator;
-use DavServices\VObject\Recur\NotExpanded;
 use DavServices\VObject\Recur\Rule;
 use DavServices\VObject\Recur\Weeks;
 use DavServices\VObject\Value\Date;
@@ -404,20 +403,6 @@ final class ByDayTest extends TestCase
             self::expand('FREQ=WEEKLY;BYDAY=TU,SU;COUNT=4;WKST=SU', '19970803'),
             self::expand('FREQ=WEEKLY;BYDAY=SU,TU;COUNT=4;WKST=SU', '19970803'),
         );
-    }
-
-    /**
-     * **`BYSETPOS` is still refused**, because the memo evaluates it after
-     * every other part and on a set this hands over one candidate at a time:
-     * "BYSETPOS operates on a set of recurrence instances in one interval of
-     * the recurrence rule." That is a stage of its own and P4-08c's subject.
-     */
-    public function testASetPositionIsStillRefused(): void
-    {
-        $this->expectException(NotExpanded::class);
-        $this->expectExceptionMessage('BYSETPOS');
-
-        self::expand('FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '19970901');
     }
 
     /**

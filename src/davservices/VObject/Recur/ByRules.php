@@ -185,6 +185,9 @@ final class ByRules
     /** @var array{values: list<int>, expands: bool, limits: bool} */
     private readonly array $seconds;
 
+    /** @var array{values: list<int>, expands: bool, limits: bool} */
+    private readonly array $setPositions;
+
     private readonly string $frequency;
 
     /**
@@ -250,6 +253,11 @@ final class ByRules
             self::inOrder($rule->bySecond()),
             in_array($this->frequency, self::MINUTELY_AND_COARSER, true),
         );
+
+        // The table gives `BYSETPOS` `Limit` at every one of the seven
+        // frequencies, so it never sets a field — it picks out of the set the
+        // other parts leave. {@see self::chosenOf()}.
+        $this->setPositions = self::part($rule->bySetPosition(), false);
 
         $this->dayComesFromTheStart = in_array($this->frequency, self::LONGER_THAN_A_DAY, true);
     }
@@ -430,6 +438,54 @@ final class ByRules
             [(int) $candidate->format('i'), $this->minutes['values'], $this->minutes['limits']],
             [(int) $candidate->format('s'), $this->seconds['values'], $this->seconds['limits']],
         ];
+    }
+
+    /**
+     * The members of one interval's set that `BYSETPOS` names, or the whole
+     * set where it names none.
+     *
+     * > The BYSETPOS rule part specifies a COMMA-separated list of values
+     * > that corresponds to the nth occurrence within the set of recurrence
+     * > instances specified by the rule. **BYSETPOS operates on a set of
+     * > recurrence instances in one interval of the recurrence rule.**
+     *
+     * **It is the only part that needs the whole interval**, which is why it
+     * is asked here rather than of a candidate: the memo evaluates it after
+     * every other part, so the set it counts through is what they left. And
+     * "a set of recurrence instances starts at the beginning of the interval
+     * defined by the FREQ rule part" — not at `DTSTART`, which is why the
+     * caller hands over everything the interval holds and leaves out what
+     * precedes the start only afterwards.
+     *
+     * The positions come back sorted and each instance once, {@see
+     * self::counted()} seeing to both: §3.1.1's "There is no significance to
+     * the order of values in a list", and §3.8.5.3's "Duplicate instances are
+     * ignored".
+     *
+     * @param list<DateTimeImmutable> $set One interval's instances, in order
+     *
+     * @return list<DateTimeImmutable>
+     */
+    public function chosenOf(array $set): array
+    {
+        if (!$this->setPositions['limits']) {
+            return $set;
+        }
+
+        $length = count($set);
+        $chosen = [];
+
+        foreach (self::counted($this->setPositions['values'], $length) as $position) {
+            // A position the set has not got names nothing, which is the same
+            // ignoring §3.3.10 asks of a day that does not exist — and
+            // `array_slice` would read a position below the first from the
+            // wrong end of the set.
+            if ($position >= 1 && $position <= $length) {
+                $chosen = array_merge($chosen, array_slice($set, $position - 1, 1));
+            }
+        }
+
+        return $chosen;
     }
 
     /**
