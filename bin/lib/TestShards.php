@@ -39,6 +39,27 @@ final class TestShards
     public const BYTES_PER_SHARD = 200_000;
 
     /**
+     * Whether a shard's process crashed rather than failed.
+     *
+     * **The retry is for the collector falling over and for nothing else.** A
+     * shard whose tests fail exits 1 or 2, fails on the first attempt and
+     * stays failed, because a real failure repeats.
+     *
+     * And the crash has **two** signatures, not one: a POSIX shell reports a
+     * child killed by SIGSEGV as 128 + 11, while Windows has no signals — the
+     * process ends with the access violation itself, `0xC0000005`, which
+     * `passthru` hands back as a signed int. This project is measured in CI on
+     * Linux and written on Windows, so a retry that knows only the first
+     * number is dead exactly where somebody would be watching it happen.
+     *
+     * @param int $status What `passthru` gave back
+     */
+    public static function crashed(int $status): bool
+    {
+        return $status === 139 || $status === -1073741819;
+    }
+
+    /**
      * @return array<string, int> Size in bytes of every *Test.php below $dir,
      *                            keyed by its path relative to $dir, sorted.
      */
