@@ -39,13 +39,15 @@ use RuntimeException;
  *
  * ## What it covers, and for how long
  *
- * `BYDAY`, `BYWEEKNO` and `BYSETPOS`, which P4-08b adds. The memo groups them
- * itself: it sets `BYDAY` apart in prose — "BYDAY has some special behavior
- * depending on the FREQ value and this is described in separate notes below
- * the table" — evaluates `BYSETPOS` after everything else, and gives
- * `BYWEEKNO` no worked example that stands without `BYDAY`.
+ * `BYSETPOS` alone, since P4-08b. **The memo sets it apart itself**, twice
+ * over: it evaluates it after every other part — "BYMONTH, BYWEEKNO,
+ * BYYEARDAY, BYMONTHDAY, BYDAY, BYHOUR, BYMINUTE, BYSECOND and BYSETPOS; then
+ * COUNT and UNTIL are evaluated" — and it is the one part that needs a whole
+ * period at once: "BYSETPOS operates on a set of recurrence instances in one
+ * interval of the recurrence rule." {@see ByRules} hands a period over one
+ * candidate at a time, so that is a stage of its own and P4-08c's subject.
  *
- * **This class goes when they arrive.** It is a statement about today's
+ * **This class goes when it arrives.** It is a statement about today's
  * library rather than about the format.
  */
 final class NotExpanded extends RuntimeException
