@@ -11,7 +11,8 @@ Thumbs.db
 composer.lock
 
 # --- Build and report output -----------------------------------------------
-# `composer test:coverage` writes build/logs/ and build/coverage/, the release
+# `composer test:coverage` writes build/logs/, build/coverage/ (one report per
+# shard) and build/coverage-html/, the release
 # workflow writes build/dist/, phpDocumentor writes build/api/, and Infection
 # writes build/test/ — the latter
 # via ../../ prefixes, because Infection resolves log and tmp paths against

@@ -42,7 +42,9 @@ jobs:
           composer validate --strict --no-check-lock
           composer analyse
           composer style
-          vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --coverage-clover=build/logs/clover.xml
+          # In shards, for the reason given in ci.yml; one after the other here.
+          php bin/coverage-shard.php all
+          php bin/merge-coverage.php build/coverage build/logs/clover.xml
           php bin/check-coverage.php build/logs/clover.xml 100
 
       - name: Tag matches composer branch-alias
