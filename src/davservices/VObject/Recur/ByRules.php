@@ -99,13 +99,25 @@ use Generator;
  * reading rather than a quotation**, and it is marked as one because the table
  * and the evaluation order cannot both be satisfied.
  *
- * ## Nothing is counted that was not looked at
+ * ## This answers questions; the caller drives the loop
  *
- * {@see self::candidatesIn()} hands over **every candidate it considers**,
- * and null where that candidate is no instance — February the thirtieth, or a
- * field a limiting part excludes. R-RRULE-04's hard limit is on iterations
- * rather than on instances, and a caller can only honour that if it is told
- * what was looked at rather than only what came of it.
+ * A period's days, its times, and whether a day and a time make an instance
+ * are three separate questions, and {@see Iterator} asks them in its own
+ * nested loop. **That is where R-RRULE-04's hard limit lives**, so that is
+ * where the loop that spends it belongs — and the limit is on iterations
+ * rather than on instances, so every candidate *looked at* has to be counted,
+ * which only the caller can do.
+ *
+ * **It is also what keeps the coverage driver on its feet.** A generator here
+ * that both nested another and was itself walked by the caller crashed
+ * Xdebug's path collector in four to five runs out of six; the same code
+ * without that one level crashed none of twenty-four. Measured on 06.10.2026,
+ * and written up in the progress file, because nothing in the source would
+ * ever suggest it.
+ *
+ * **{@see self::candidate()} answers null** where a day and a time make no
+ * instance — February the thirtieth, or a field a limiting part excludes —
+ * rather than leaving it out, so that the caller can count what was looked at.
  */
 final class ByRules
 {
@@ -243,21 +255,6 @@ final class ByRules
     }
 
     /**
-     * Every candidate one period holds, in order, and null where a candidate
-     * is no instance.
-     *
-     * @return Generator<int, ?DateTimeImmutable>
-     */
-    public function candidatesIn(DateTimeImmutable $anchor): Generator
-    {
-        foreach ($this->daysIn($anchor) as $day) {
-            foreach ($this->timesIn($anchor) as $time) {
-                yield $this->candidate($anchor, $day, $time);
-            }
-        }
-    }
-
-    /**
      * One part of the rule, with what the table makes of it here.
      *
      * @template TValue of int|WeekdayNumber
@@ -306,10 +303,13 @@ final class ByRules
      * One candidate, or null where its fields name no moment or a limiting
      * part excludes it.
      *
+     * **Null rather than nothing**, because R-RRULE-04's limit counts what was
+     * looked at: a caller told only of the instances could not honour it.
+     *
      * @param array{int, int, int} $day A year, a month and a day of it
-     * @param array{int, int, int} $time
+     * @param array{int, int, int} $time An hour, a minute and a second
      */
-    private function candidate(DateTimeImmutable $anchor, array $day, array $time): ?DateTimeImmutable
+    public function candidate(DateTimeImmutable $anchor, array $day, array $time): ?DateTimeImmutable
     {
         [$year, $month, $dayOfTheMonth] = $day;
         [$hour, $minute, $second] = $time;
@@ -454,7 +454,7 @@ final class ByRules
      *
      * @return list<array{int, int, int}>
      */
-    private function daysIn(DateTimeImmutable $anchor): array
+    public function daysIn(DateTimeImmutable $anchor): array
     {
         if ($this->yearDays['expands']) {
             return $this->daysOfTheYearIn($anchor);
@@ -793,7 +793,7 @@ final class ByRules
      *
      * @return Generator<int, array{int, int, int}>
      */
-    private function timesIn(DateTimeImmutable $anchor): Generator
+    public function timesIn(DateTimeImmutable $anchor): Generator
     {
         foreach (self::fieldIn($this->hours, $anchor, 'G') as $hour) {
             foreach (self::fieldIn($this->minutes, $anchor, 'i') as $minute) {

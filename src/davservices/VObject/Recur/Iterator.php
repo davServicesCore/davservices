@@ -265,20 +265,38 @@ final class Iterator
                 return;
             }
 
-            foreach ($by->candidatesIn($anchor) as $candidate) {
-                $this->spend();
+            // **The nested loop is here rather than in {@see ByRules}**, and
+            // this is the reason: the limit is spent per candidate looked at,
+            // so the loop that spends it belongs beside the budget. A
+            // generator there that both nested another and was walked from
+            // here also crashed Xdebug's path collector — see that class.
+            foreach ($by->daysIn($anchor) as $day) {
+                foreach ($by->timesIn($anchor) as $time) {
+                    $this->spend();
 
-                // **And asked of the candidates too, since P4-08b.** A week
-                // reaches outside the year that numbers it: the last week of
-                // 9999 runs to the second of January 10000, which is a date
-                // `date-fullyear = 4DIGIT` cannot write down. Before
-                // `BYWEEKNO` no candidate could leave its anchor's year, and
-                // the guard was rightly deleted then.
-                if ($candidate === null || $candidate >= $end) {
-                    continue;
+                    $candidate = $by->candidate($anchor, $day, $time);
+
+                    // **The calendar's end is asked of the candidates too,
+                    // since P4-08b.** A week reaches outside the year that
+                    // numbers it: the last week of 9999 runs to the second of
+                    // January 10000, which is a date `date-fullyear = 4DIGIT`
+                    // cannot write down. Before `BYWEEKNO` no candidate could
+                    // leave its anchor's year, and the guard was rightly
+                    // deleted then.
+                    // `continue` rather than `break`, and within one day
+                    // nothing can tell them apart: a candidate is refused for
+                    // its **day** — a date that does not exist, or a day a
+                    // limiting part excludes — which refuses every time of it
+                    // alike, and the one refusal that is about the time is a
+                    // sixtieth second, which {@see ByRules::counted()} sorts
+                    // last. The day that a part can refuse one time and admit
+                    // a later one, this is the line that was already right.
+                    if ($candidate === null || $candidate >= $end) {
+                        continue;
+                    }
+
+                    yield $candidate;
                 }
-
-                yield $candidate;
             }
         }
 
