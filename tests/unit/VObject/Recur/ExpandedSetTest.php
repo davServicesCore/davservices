@@ -251,6 +251,25 @@ final class ExpandedSetTest extends TestCase
             ['19970902', '19970905'],
         ];
 
+        // §3.1: "All names of properties, property parameters, enumerated
+        // property values, and property parameter values are
+        // case-insensitive."
+        yield 'a date whose VALUE parameter is written in lower case' => [
+            [
+                ['DTSTART', '19970902', 'date'],
+                ['RDATE', '19970905', 'Date'],
+            ],
+            ['19970902', '19970905'],
+        ];
+
+        yield 'a period whose VALUE parameter is written in lower case' => [
+            [
+                ['DTSTART', '19970902T090000', null],
+                ['RDATE', '19970910T090000/PT2H', 'period'],
+            ],
+            ['19970902T090000', '19970910T090000'],
+        ];
+
         yield 'an exception given as a date' => [
             [
                 ['DTSTART', '19970902', 'DATE'],

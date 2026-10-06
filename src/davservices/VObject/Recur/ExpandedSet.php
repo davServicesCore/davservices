@@ -371,7 +371,9 @@ final class ExpandedSet
      * kind it is.
      *
      * "The default value type for this property is DATE-TIME. The value type
-     * can be set to DATE" (§3.8.5.1), "or PERIOD" (§3.8.5.2).
+     * can be set to DATE" (§3.8.5.1), "or PERIOD" (§3.8.5.2). **Compared
+     * without regard to case**, §3.1 saying that "property parameter values
+     * are case-insensitive".
      *
      * **A period contributes its start and nothing else**, because that is
      * what the memo gathers: "all of the **start** DATE-TIME values". How
@@ -382,11 +384,11 @@ final class ExpandedSet
      */
     private static function valueOf(?string $type, string $raw): Date|DateTime
     {
-        if ($type === 'DATE') {
+        if ($type !== null && strcasecmp($type, 'DATE') === 0) {
             return Date::decode($raw);
         }
 
-        if ($type === 'PERIOD') {
+        if ($type !== null && strcasecmp($type, 'PERIOD') === 0) {
             return Period::decode($raw)->start();
         }
 
