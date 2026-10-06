@@ -607,6 +607,115 @@ final class ByDayTest extends TestCase
     }
 
     /**
+     * **Both ends of a named week belong to it.** A week is seven days
+     * inclusive, so the day a week begins on and the day it ends on are both
+     * in it — which the filter has to say as well as the expansion. Week
+     * fifteen of 1997 runs from the seventh to the thirteenth of April, and
+     * those are days ninety-seven and a hundred and three of the year.
+     *
+     * @param non-empty-string $rule
+     * @param list<string> $instances
+     */
+    #[DataProvider('theEndsOfANamedWeek')]
+    public function testBothEndsOfANamedWeekBelongToIt(string $rule, array $instances): void
+    {
+        self::assertSame($instances, self::expand($rule, '19970101'));
+    }
+
+    /**
+     * @return iterable<string, array{string, list<string>}>
+     */
+    public static function theEndsOfANamedWeek(): iterable
+    {
+        yield 'the day it begins on' => [
+            'FREQ=YEARLY;BYYEARDAY=97;BYWEEKNO=15;COUNT=1', ['19970407'],
+        ];
+
+        yield 'and the day it ends on' => [
+            'FREQ=YEARLY;BYYEARDAY=103;BYWEEKNO=15;COUNT=1', ['19970413'],
+        ];
+    }
+
+    /**
+     * **A period can name several weeks**, and they come out in order —
+     * §3.1.1 again. Weeks fifteen and twenty of 1997 begin on the seventh of
+     * April and the twelfth of May.
+     */
+    public function testAPeriodCanNameSeveralWeeks(): void
+    {
+        self::assertSame(
+            ['19970407', '19970512'],
+            self::expand('FREQ=YEARLY;BYWEEKNO=15,20;BYDAY=MO;COUNT=2', '19970101'),
+        );
+    }
+
+    /**
+     * **A year's unit begins on the first of January**, not on the last day
+     * of the year before. The first of January 1999 is a Friday, so the first
+     * Thursday of 1999 is the seventh — and the thirty-first of December 1998
+     * was a Thursday, which is the day a unit that began too early would
+     * offer instead.
+     */
+    public function testAYearsUnitBeginsOnTheFirstOfJanuary(): void
+    {
+        self::assertSame(['19990107'], self::expand('FREQ=YEARLY;BYDAY=1TH;COUNT=1', '19990101'));
+    }
+
+    /**
+     * **And it ends on the thirty-first of December.** The last Thursday of
+     * 1997 is the twenty-fifth of December, because the thirty-first is a
+     * Wednesday — and the first of January 1998 is a Thursday, which is the
+     * day a unit that ran on too long would offer instead.
+     */
+    public function testAndItEndsOnTheThirtyFirstOfDecember(): void
+    {
+        self::assertSame(['19971225'], self::expand('FREQ=YEARLY;BYDAY=-1TH;COUNT=1', '19970101'));
+    }
+
+    /**
+     * **An ordinal counts in the month where `BYMONTH` names one**, even
+     * though the rule is yearly and `BYDAY` only filters — Note 2's cascade
+     * reads the same for a set it filters as for one it builds. The
+     * thirteenth of June 1997 is the second Friday of **June**; the second
+     * Friday of the **year** is in January, so a rule counting there would
+     * find nothing.
+     */
+    public function testAnOrdinalCountsInTheMonthWhereOneIsNamed(): void
+    {
+        self::assertSame(
+            ['19970613'],
+            self::expand('FREQ=YEARLY;BYMONTH=6;BYMONTHDAY=13;BYDAY=2FR;COUNT=1', '19970101'),
+        );
+    }
+
+    /**
+     * **The last day of a week is one of its days**, where the week supplies
+     * the candidates for a `BYMONTHDAY` to filter. Week twenty of 1997 ends
+     * on Sunday the eighteenth of May.
+     */
+    public function testTheLastDayOfAWeekIsOneOfItsDays(): void
+    {
+        self::assertSame(
+            ['19970518'],
+            self::expand('FREQ=YEARLY;BYWEEKNO=20;BYMONTHDAY=18;COUNT=1', '19970101'),
+        );
+    }
+
+    /**
+     * **The last week is the fifty-third where there is one.** 1997 holds
+     * fifty-two weeks and 1998 fifty-three, so counting back from the end
+     * lands on the twenty-second of December in the one year and the
+     * twenty-eighth in the other.
+     */
+    public function testCountingBackFromTheEndFollowsTheLengthOfTheYear(): void
+    {
+        self::assertSame(
+            ['19971222', '19981228'],
+            self::expand('FREQ=YEARLY;BYWEEKNO=-1;BYDAY=MO;COUNT=2', '19970101'),
+        );
+    }
+
+    /**
      * The instances a rule expands to from a start, as they are written.
      *
      * @param non-empty-string $rule
