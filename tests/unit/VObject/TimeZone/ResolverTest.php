@@ -244,6 +244,41 @@ final class ResolverTest extends TestCase
     }
 
     /**
+     * **A name the database keeps as a synonym comes back under PHP's own
+     * spelling of the zone.** `GMT+0` and `GMT-0` are names
+     * `DateTimeZone::listIdentifiers(ALL_WITH_BC)` lists, and `DateTimeZone`
+     * resolves both to a fixed-offset zone it calls `+00:00` — the zone is the
+     * one asked for, the name is not the one given.
+     *
+     * **These two are the whole of it**, of the 597 names the database has,
+     * and they are here because a caller that compared `getName()` against its
+     * own `TZID` to decide whether it got what it asked for would be wrong
+     * exactly here. Comparing the zone is right; comparing the name is not.
+     *
+     * @param non-empty-string $written
+     */
+    #[DataProvider('theSynonymsPhpRenames')]
+    public function testASynonymComesBackUnderPhpsOwnSpelling(string $written): void
+    {
+        $zone = self::zone([['TZID', $written]]);
+
+        self::assertNotNull($zone);
+        self::assertSame(0, $zone->getOffset(new DateTimeImmutable('2024-07-15')));
+        self::assertSame((new DateTimeZone($written))->getName(), $zone->getName());
+        self::assertNotSame($written, $zone->getName());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function theSynonymsPhpRenames(): iterable
+    {
+        yield 'GMT+0' => ['GMT+0'];
+
+        yield 'GMT-0' => ['GMT-0'];
+    }
+
+    /**
      * The zone a `VTIMEZONE` of these properties comes to, by name.
      *
      * @param list<array{string, string}> $properties
