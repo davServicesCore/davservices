@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\VObject\Recur;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use DavServices\VObject\Component;
 use DavServices\VObject\Parameter;
 use DavServices\VObject\ParseError;
@@ -21,6 +23,8 @@ use DavServices\VObject\Recur\ExpandedSet;
 use DavServices\VObject\Recur\Instance;
 use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\ObjectSet;
+use DavServices\VObject\Recur\Zone;
+use DavServices\VObject\Value\DateTime;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
@@ -616,6 +620,45 @@ final class ObjectSetTest extends TestCase
     }
 
     /**
+     * **A zone reaches the series an object carries**, so §3.3.10's instance
+     * with no local time is passed over here as it is anywhere: "Such
+     * recurrence instances MUST be ignored and MUST NOT be counted as part of
+     * the recurrence set." The object-level set is what a server asks, so the
+     * rule has to hold at this level too.
+     */
+    public function testAZoneReachesTheSeriesTheObjectCarries(): void
+    {
+        $instances = [];
+
+        foreach (self::setOf([[
+            ['UID', 'across@example.com'],
+            ['DTSTART', '20240330T023000'],
+            ['RRULE', 'FREQ=DAILY;COUNT=3'],
+        ]], null, self::withoutTheMissingHour())->instances() as $instance) {
+            $instances[] = $instance->recurrenceId()->encode();
+        }
+
+        self::assertSame(['20240330T023000', '20240401T023000', '20240402T023000'], $instances);
+    }
+
+    /**
+     * A zone for which one single wall clock does not exist.
+     */
+    private static function withoutTheMissingHour(): Zone
+    {
+        return new class () implements Zone {
+            public function momentOf(DateTime $local): ?DateTimeImmutable
+            {
+                if ($local->encode() === '20240331T023000') {
+                    return null;
+                }
+
+                return new DateTimeImmutable($local->encode(), new DateTimeZone('UTC'));
+            }
+        };
+    }
+
+    /**
      * The instances of an object built from the components given, each as its
      * identifier and, where the two differ, the start it actually has.
      *
@@ -646,7 +689,7 @@ final class ObjectSetTest extends TestCase
      * @param string|null $uid The series to ask for, or null for the one the
      *                         first component carries
      */
-    private static function setOf(array $components, ?string $uid = null): ObjectSet
+    private static function setOf(array $components, ?string $uid = null, ?Zone $zone = null): ObjectSet
     {
         $calendar = new Component('VCALENDAR');
 
@@ -674,6 +717,11 @@ final class ObjectSetTest extends TestCase
 
         // Without one named, the UID the first component carries: every
         // test here builds a single series.
-        return ObjectSet::of($calendar, $uid ?? $calendar->component('VEVENT')?->property('UID')?->value() ?? '');
+        return ObjectSet::of(
+            $calendar,
+            $uid ?? $calendar->component('VEVENT')?->property('UID')?->value() ?? '',
+            Iterator::ITERATIONS,
+            $zone,
+        );
     }
 }

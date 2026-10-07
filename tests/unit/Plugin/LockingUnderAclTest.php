@@ -15,6 +15,7 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DateTimeImmutable;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
+use DavServices\Dav\Locks\LockInfo;
 use DavServices\Dav\Method\Get;
 use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
@@ -67,7 +68,12 @@ use PHPUnit\Framework\TestCase;
  * That is written down rather than left as silence, because the next person
  * to read RFC 3744 §3.5 will wonder where `DAV:unlock` went.
  */
+// Named because asking this backend which locks hold a path runs
+// `LockInfo::covers()`: coverage is attributed by `CoversClass`, and
+// without this the branches taken through that method are measured
+// and thrown away. See `MemoryLockBackendTest` for what that costs.
 #[CoversClass(Acl::class)]
+#[CoversClass(LockInfo::class)]
 final class LockingUnderAclTest extends TestCase
 {
     private const ALICE = '/principals/alice';

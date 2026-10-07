@@ -53,24 +53,30 @@ use Generator;
  * invented. The months and years are counted on the calendar instead and the
  * day is then asked whether it exists.
  *
- * ## What a value cannot know
+ * ## What a value cannot know, and what a zone is asked
  *
- * A `TZID` is a parameter of the property, and this expands the value. So two
- * things wait for the time-zone chunks (P4-11, P4-12) and are named here
- * rather than left to be discovered:
+ * A `TZID` is a parameter of the property, and this expands the value. So the
+ * zone reaches this class as {@see Zone} — one question, asked of an optional
+ * collaborator — and three things follow from that:
  *
- * - **The arithmetic is on the wall clock.** For a floating or UTC start that
- *   is exactly right. For one with a `TZID` it is right except across a
- *   change of offset, which is R-RRULE-05's "Wiederholungen über
- *   Zeitumstellungen" and P4-10's to settle.
- * - **And so is half of the sentence about ignoring an instance.** §3.3.10
- *   names two kinds: "an invalid date (e.g., February 30) **or nonexistent
- *   local time** (e.g., 1:30 AM on a day where the local time is moved
- *   forward by an hour at 1:00 AM)." The first is here; the second needs the
- *   zone that says when the clocks went forward, so it waits with the
- *   arithmetic above rather than being quietly forgotten.
- * - **So is the comparison with `UNTIL`** — and here the memo's own examples
- *   agree. "Every 3 hours from 9:00 AM to 5:00 PM on a specific day" starts
+ * - **The arithmetic is on the wall clock, and that is the answer rather than
+ *   a stopgap.** "Every week at nine" keeps nine o'clock across a change of
+ *   offset, which is what the clock on the wall does and what the people in
+ *   the meeting mean; as instants, two such weeks are then 167 or 169 hours
+ *   apart. That is R-RRULE-05's "Wiederholungen über Zeitumstellungen", and
+ *   it needs no zone at all.
+ * - **A zone is needed for the hour that does not exist.** §3.3.10 names two
+ *   kinds of instance to pass over: "an invalid date (e.g., February 30) **or
+ *   nonexistent local time** (e.g., 1:30 AM on a day where the local time is
+ *   moved forward by an hour at 1:00 AM)." The first is {@see
+ *   self::monthsOn()}; the second is {@see self::hasNoLocalTime()}, and both
+ *   obey the rest of the sentence — "MUST be ignored and **MUST NOT be
+ *   counted**" — by being skipped before anything counts them. **Without a
+ *   zone neither can happen**, a floating time being the same wall clock
+ *   everywhere.
+ * - **The comparison with `UNTIL` stays on the wall clock**, and the memo's
+ *   own examples are why. It is **not** to be "corrected" now that a zone is
+ *   at hand: "Every 3 hours from 9:00 AM to 5:00 PM on a specific day" starts
  *   at `19970902T090000` in New York and bounds itself with
  *   `UNTIL=19970902T170000Z`; nine in the morning there is 13:00 UTC, so
  *   15:00 local is 19:00 UTC, **past** the bound as an instant and inside it
@@ -135,6 +141,7 @@ final class Iterator
         private readonly Rule $rule,
         private readonly Date|DateTime $start,
         private readonly int $iterations = self::ITERATIONS,
+        private readonly ?Zone $zone = null,
     ) {
 
         // §3.8.5.3 calls an unsynchronised pair undefined — "The recurrence
@@ -206,6 +213,16 @@ final class Iterator
             }
 
             $instance = $this->sameKindAs($moment);
+
+            // §3.3.10's other kind of instance to pass over: "or nonexistent
+            // local time (e.g., 1:30 AM on a day where the local time is
+            // moved forward by an hour at 1:00 AM)." It is skipped before
+            // anything counts it, which is the rest of the same sentence —
+            // "MUST be ignored and MUST NOT be counted" — and the same way
+            // the invalid date is passed over in {@see self::monthsOn()}.
+            if ($this->hasNoLocalTime($instance)) {
+                continue;
+            }
 
             // "then COUNT and UNTIL are evaluated" — last of all, on what the
             // BYxxx parts left.
@@ -421,6 +438,24 @@ final class Iterator
         }
 
         return DateTime::decode($moment->format('Ymd\THis') . ($this->start->isUtc() ? 'Z' : ''));
+    }
+
+    /**
+     * Whether an instance names a local time that does not exist.
+     *
+     * **No zone, no missing hour**: a floating series is the same wall clock
+     * everywhere, and a series in UTC cannot carry a `TZID` at all (§3.2.19
+     * forbids it). **And a whole day cannot be missing either** — R-TZ-04
+     * forbids making an instant of a `DATE`, so {@see Zone} is not asked
+     * about one.
+     */
+    private function hasNoLocalTime(Date|DateTime $instance): bool
+    {
+        if ($this->zone === null || $instance instanceof Date) {
+            return false;
+        }
+
+        return $this->zone->momentOf($instance) === null;
     }
 
     /**

@@ -75,7 +75,12 @@ use PHPUnit\Framework\TestCase;
  * `BeforeMove`, `BeforeCopy` — which is what R-ARC-02 is for: if a write
  * could not be caught, the answer would be a missing seam, not a special case.
  */
+// Named because asking this backend which locks hold a path runs
+// `LockInfo::covers()`: coverage is attributed by `CoversClass`, and
+// without this the branches taken through that method are measured
+// and thrown away. See `MemoryLockBackendTest` for what that costs.
 #[CoversClass(Locks::class)]
+#[CoversClass(LockInfo::class)]
 final class LockEnforcementTest extends TestCase
 {
     private const NOW = '2026-09-21 12:00:00';

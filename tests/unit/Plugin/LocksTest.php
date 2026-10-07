@@ -79,7 +79,12 @@ use PHPUnit\Framework\TestCase;
  * being a plugin: **a server without it answers `501`**, and says so in its
  * `DAV` header (R-LOCK-06, which P3-05 finishes).
  */
+// Named because asking this backend which locks hold a path runs
+// `LockInfo::covers()`: coverage is attributed by `CoversClass`, and
+// without this the branches taken through that method are measured
+// and thrown away. See `MemoryLockBackendTest` for what that costs.
 #[CoversClass(Locks::class)]
+#[CoversClass(LockInfo::class)]
 final class LocksTest extends TestCase
 {
     private const NOW = '2026-09-21 12:00:00';
