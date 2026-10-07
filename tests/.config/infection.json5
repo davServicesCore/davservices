@@ -40,6 +40,15 @@
     // coverage, so a sound one finishes in well under a second. Two minutes is
     // the cost of noticing a mutant that loops for ever, which is what the
     // timeout is really for.
+    //
+    // **Since P4-10 the nominal times are honest, and that is why this value
+    // can stay where it is.** `composer mutation` hands Infection the coverage
+    // from the sharded run and the timings from a run **without** coverage
+    // (see bin/mutation-inputs.php), so the sum no longer carries Xdebug's
+    // inflation. Measured on 07.10.2026 over the six recurrence classes: left
+    // to measure for itself, Infection skipped 269 of 604 mutants and reported
+    // an MSI over the 312 that ran; given honest timings, it skipped none and
+    // killed 584.
     "timeout": 120,
     "testFramework": "phpunit",
     "mutators": {

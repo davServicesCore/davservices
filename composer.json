@@ -96,7 +96,11 @@
         ],
         "mutation": [
             "@putenv XDEBUG_MODE=coverage",
-            "infection --configuration=tests/.config/infection.json5 --min-msi=85 --min-covered-msi=90 --threads=max"
+            "@php bin/coverage-shard.php all",
+            "@putenv XDEBUG_MODE=off",
+            "phpunit --configuration=tests/.config/phpunit.xml.dist --no-coverage --order-by=default --log-junit=build/mutation/junit.xml",
+            "@php bin/mutation-inputs.php",
+            "infection --configuration=tests/.config/infection.json5 --coverage=../../build/mutation --skip-initial-tests --min-msi=85 --min-covered-msi=90 --threads=max"
         ]
     },
     "scripts-descriptions": {
