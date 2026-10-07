@@ -105,10 +105,17 @@ use Generator;
  *
  * ## What a value cannot know
  *
- * The same caveat as {@see Iterator}: a `TZID` is a parameter of the property
- * and this compares values, so the arithmetic is on the wall clock. For a
- * floating or UTC set that is exactly right; for one with a `TZID` it is
- * right except across a change of offset, which waits for P4-11.
+ * The same as {@see Iterator}: a `TZID` is a parameter of the property and
+ * this compares values, so the arithmetic is on the wall clock — which is
+ * right for a floating set, for one in UTC, and for one with a `TZID` too,
+ * "every Monday at nine" meaning nine o'clock on the wall.
+ *
+ * **Where a `TZID` names a zone it is handed in** ({@see Zone}) and reaches
+ * every rule of the set, because §3.3.10 asks for an instance with no local
+ * time to be passed over and not counted. **An `RDATE` is not passed over**:
+ * that sentence is about what "recurrence rules may generate", and a date its
+ * author wrote down stays in the set — a caller that asks the zone for its
+ * moment is told null and can decide, which is a thing it can see.
  */
 final class ExpandedSet
 {
@@ -118,6 +125,9 @@ final class ExpandedSet
      * @param list<Rule> $exceptionRules Every `EXRULE`, which RFC 5545 removed
      * @param list<Date|DateTime> $exceptions Every value of every `EXDATE`
      * @param int $iterations The hard limit each rule is given (R-CAL-08)
+     * @param Zone|null $zone The zone the values are written in, where a
+     *                        `TZID` names one: it decides which instances
+     *                        §3.3.10 passes over for having no local time
      */
     public function __construct(
         private readonly Date|DateTime $start,
@@ -126,6 +136,7 @@ final class ExpandedSet
         private readonly array $exceptionRules,
         private readonly array $exceptions,
         private readonly int $iterations = Iterator::ITERATIONS,
+        private readonly ?Zone $zone = null,
     ) {
     }
 
@@ -137,8 +148,11 @@ final class ExpandedSet
      * @throws ParseError If the component names no `DTSTART`, or one of its
      *                    recurrence properties cannot be read
      */
-    public static function of(Component $component, int $iterations = Iterator::ITERATIONS): self
-    {
+    public static function of(
+        Component $component,
+        int $iterations = Iterator::ITERATIONS,
+        ?Zone $zone = null,
+    ): self {
         $start = $component->property('DTSTART');
 
         if ($start === null) {
@@ -154,6 +168,7 @@ final class ExpandedSet
             self::rulesIn($component, 'EXRULE'),
             self::datesIn($component, 'EXDATE'),
             $iterations,
+            $zone,
         );
     }
 
@@ -205,7 +220,7 @@ final class ExpandedSet
         $streams = [];
 
         foreach ($rules as $rule) {
-            $streams[] = (new Iterator($rule, $this->start, $this->iterations))->instances();
+            $streams[] = (new Iterator($rule, $this->start, $this->iterations, $this->zone))->instances();
         }
 
         $streams[] = new ArrayIterator(self::inOrder($dates));

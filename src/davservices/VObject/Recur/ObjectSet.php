@@ -109,11 +109,14 @@ final class ObjectSet
      * @param list<Instance> $overrides The overriding components, in
      *                                  identifier order
      * @param int $iterations The hard limit the series is given (R-CAL-08)
+     * @param Zone|null $zone The zone the series is written in, where a
+     *                        `TZID` names one
      */
     private function __construct(
         private readonly ?Component $master,
         private readonly array $overrides,
         private readonly int $iterations,
+        private readonly ?Zone $zone,
     ) {
     }
 
@@ -125,8 +128,12 @@ final class ObjectSet
      * @throws ParseError If the object carries no such series, more than one
      *                    master for it, or a component this cannot read
      */
-    public static function of(Component $object, string $uid, int $iterations = Iterator::ITERATIONS): self
-    {
+    public static function of(
+        Component $object,
+        string $uid,
+        int $iterations = Iterator::ITERATIONS,
+        ?Zone $zone = null,
+    ): self {
         $master = null;
         $overrides = [];
 
@@ -163,7 +170,7 @@ final class ObjectSet
             self::refuseAMismatchedIdentifier(self::dateOf($start), $overrides);
         }
 
-        return new self($master, self::inIdentifierOrder($overrides), $iterations);
+        return new self($master, self::inIdentifierOrder($overrides), $iterations, $zone);
     }
 
     /**
@@ -233,7 +240,7 @@ final class ObjectSet
         }
 
         return [
-            ExpandedSet::of($master, $this->iterations)->instances(),
+            ExpandedSet::of($master, $this->iterations, $this->zone)->instances(),
             new ArrayIterator($identifiers),
         ];
     }
@@ -329,7 +336,9 @@ final class ObjectSet
      *
      * The third form a `date-time` can take, "a date with local time and time
      * zone reference" (§3.3.5), is a `TZID` parameter rather than part of the
-     * value, so it waits for P4-11 with everything else that needs the zone.
+     * value: **both halves are then local times and the sentence is met**, and
+     * which zone each of them names is a question for {@see Zone} rather than
+     * for this comparison.
      *
      * @param Date|DateTime $start The `DTSTART` of the master component
      * @param list<Instance> $overrides

@@ -13,11 +13,14 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\VObject\Recur;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\Rule;
 use DavServices\VObject\Recur\TooManyIterations;
 use DavServices\VObject\Recur\Weeks;
+use DavServices\VObject\Recur\Zone;
 use DavServices\VObject\Value\Date;
 use DavServices\VObject\Value\DateTime;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -611,12 +614,18 @@ final class IteratorTest extends TestCase
      *
      * @return list<string>
      */
-    private static function expand(string $rule, string $start, int $take = 500, ?int $iterations = null): array
-    {
+    private static function expand(
+        string $rule,
+        string $start,
+        int $take = 500,
+        ?int $iterations = null,
+        ?Zone $zone = null,
+    ): array {
         $iterator = new Iterator(
             Rule::decode($rule),
             str_contains($start, 'T') ? DateTime::decode($start) : Date::decode($start),
             $iterations ?? Iterator::ITERATIONS,
+            $zone,
         );
 
         $instances = [];
@@ -630,6 +639,91 @@ final class IteratorTest extends TestCase
         }
 
         return $instances;
+    }
+
+    /**
+     * **An instance whose local time does not exist is ignored**, which is the
+     * second half of §3.3.10's sentence: "Recurrence rules may generate
+     * recurrence instances with an invalid date (e.g., February 30) **or
+     * nonexistent local time** (e.g., 1:30 AM on a day where the local time is
+     * moved forward by an hour at 1:00 AM)."
+     *
+     * The zone here is a stand-in that says one single wall clock does not
+     * exist, so what is tested is the engine's side of the bargain and not any
+     * database's rules: given a null, the instance is gone from the set.
+     */
+    public function testAnInstanceWhoseLocalTimeDoesNotExistIsIgnored(): void
+    {
+        self::assertSame(
+            ['20240330T023000', '20240401T023000', '20240402T023000'],
+            self::expand('FREQ=DAILY', '20240330T023000', 3, null, self::withoutTheMissingHour()),
+        );
+    }
+
+    /**
+     * **And it is not counted**, which is the rest of the same sentence: "Such
+     * recurrence instances MUST be ignored and **MUST NOT be counted** as part
+     * of the recurrence set."
+     *
+     * `COUNT=3` therefore comes to three instances that exist, not to two and
+     * a gap. The first half of the sentence — the invalid date — has worked
+     * this way since P4-08a, and one sentence cannot mean two things.
+     */
+    public function testAnIgnoredInstanceIsNotCounted(): void
+    {
+        self::assertSame(
+            ['20240330T023000', '20240401T023000', '20240402T023000'],
+            self::expand('FREQ=DAILY;COUNT=3', '20240330T023000', 500, null, self::withoutTheMissingHour()),
+        );
+    }
+
+    /**
+     * **Without a zone nothing is ignored**, because a floating time is the
+     * same wall clock everywhere and there is no hour it can fall into
+     * (§3.2.19: "The use of local time in a DATE-TIME or TIME value without
+     * the 'TZID' property parameter is to be interpreted as floating time").
+     */
+    public function testWithoutAZoneNothingIsIgnored(): void
+    {
+        self::assertSame(
+            ['20240330T023000', '20240331T023000', '20240401T023000'],
+            self::expand('FREQ=DAILY', '20240330T023000', 3),
+        );
+    }
+
+    /**
+     * **A whole-day series is never asked about a local time**, a `DATE`
+     * having none to be missing: R-TZ-04 forbids making an instant of one at
+     * all, so the zone is not consulted and nothing is dropped.
+     */
+    public function testAWholeDaySeriesIsNotAskedAboutALocalTime(): void
+    {
+        self::assertSame(
+            ['20240330', '20240331', '20240401'],
+            self::expand('FREQ=DAILY', '20240330', 3, null, self::withoutTheMissingHour()),
+        );
+    }
+
+    /**
+     * A zone that answers for one wall clock only: half past two on the
+     * morning Central Europe moves its clocks forward does not exist, and
+     * everything else is read as if it were UTC.
+     *
+     * **A stand-in rather than a real zone**, so that this list tests what the
+     * engine does with a null and not what a database says.
+     */
+    private static function withoutTheMissingHour(): Zone
+    {
+        return new class () implements Zone {
+            public function momentOf(DateTime $local): ?DateTimeImmutable
+            {
+                if ($local->encode() === '20240331T023000') {
+                    return null;
+                }
+
+                return new DateTimeImmutable($local->encode(), new DateTimeZone('UTC'));
+            }
+        };
     }
 
     /**

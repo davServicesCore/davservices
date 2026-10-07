@@ -18,6 +18,7 @@ use DateTimeZone;
 use DavServices\VObject\Component;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Recur\Iterator;
+use DavServices\VObject\Recur\Zone;
 use DavServices\VObject\Value\DateTime;
 
 /**
@@ -84,7 +85,7 @@ use DavServices\VObject\Value\DateTime;
  * `DATE-TIME`: R-TZ-04 forbids turning an all-day value into an instant, and a
  * type is a better place to say so than a refusal at run time.
  */
-final class Definition
+final class Definition implements Zone
 {
     /**
      * @param non-empty-list<Observance> $observances

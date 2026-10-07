@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\VObject\Recur;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use DavServices\VObject\Component;
 use DavServices\VObject\Parameter;
 use DavServices\VObject\ParseError;
@@ -20,6 +22,8 @@ use DavServices\VObject\Property;
 use DavServices\VObject\Recur\ExpandedSet;
 use DavServices\VObject\Recur\Iterator;
 use DavServices\VObject\Recur\TooManyIterations;
+use DavServices\VObject\Recur\Zone;
+use DavServices\VObject\Value\DateTime;
 use DavServices\VObject\Value\Period;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -421,6 +425,64 @@ final class ExpandedSetTest extends TestCase
     }
 
     /**
+     * **A zone reaches every rule of the set**, so an instance whose local
+     * time does not exist is ignored wherever it was generated — §3.3.10's
+     * sentence is about what "recurrence rules may generate", and a set can
+     * hold more than one rule.
+     */
+    public function testAZoneReachesEveryRuleOfTheSet(): void
+    {
+        self::assertSame(
+            ['20240330T023000', '20240401T023000'],
+            self::expand([
+                ['DTSTART', '20240330T023000'],
+                ['RRULE', 'FREQ=DAILY;COUNT=2'],
+                ['RRULE', 'FREQ=DAILY;INTERVAL=1;UNTIL=20240331T023000'],
+            ], 500, null, self::withoutTheMissingHour()),
+        );
+    }
+
+    /**
+     * **An `RDATE` is not ignored, whatever the zone says.** §3.3.10 licenses
+     * passing over an instance exactly once and by name, and it is about what
+     * "recurrence **rules** may generate"; an `RDATE` is a date its author
+     * wrote down on purpose.
+     *
+     * So a date naming a local time that does not exist stays in the set, and
+     * what to make of it is the caller's to decide — {@see Zone::momentOf()}
+     * will answer null for it, which is a thing the caller can see. **Dropping
+     * it here would be a rule the memo does not have**, and silently.
+     */
+    public function testAnRdateIsNotIgnoredByTheZone(): void
+    {
+        self::assertSame(
+            ['20240330T023000', '20240331T023000'],
+            self::expand([
+                ['DTSTART', '20240330T023000'],
+                ['RDATE', '20240331T023000'],
+            ], 500, null, self::withoutTheMissingHour()),
+        );
+    }
+
+    /**
+     * A zone for which one single wall clock does not exist: half past two on
+     * the morning Central Europe moves its clocks forward.
+     */
+    private static function withoutTheMissingHour(): Zone
+    {
+        return new class () implements Zone {
+            public function momentOf(DateTime $local): ?DateTimeImmutable
+            {
+                if ($local->encode() === '20240331T023000') {
+                    return null;
+                }
+
+                return new DateTimeImmutable($local->encode(), new DateTimeZone('UTC'));
+            }
+        };
+    }
+
+    /**
      * The recurrence set of a component built from the properties given, as
      * the instances are written.
      *
@@ -428,8 +490,12 @@ final class ExpandedSetTest extends TestCase
      *
      * @return list<string>
      */
-    private static function expand(array $properties, int $take = 500, ?int $iterations = null): array
-    {
+    private static function expand(
+        array $properties,
+        int $take = 500,
+        ?int $iterations = null,
+        ?Zone $zone = null,
+    ): array {
         $event = new Component('VEVENT');
 
         foreach ($properties as $property) {
@@ -443,7 +509,7 @@ final class ExpandedSetTest extends TestCase
             $event->add($added);
         }
 
-        $set = ExpandedSet::of($event, $iterations ?? 10000);
+        $set = ExpandedSet::of($event, $iterations ?? 10000, $zone);
         $instances = [];
 
         foreach ($set->instances() as $instance) {
