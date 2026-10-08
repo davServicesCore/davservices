@@ -53,6 +53,7 @@
         }
     },
     "config": {
+        "process-timeout": 0,
         "sort-packages": true,
         "allow-plugins": {
             "infection/extension-installer": true
