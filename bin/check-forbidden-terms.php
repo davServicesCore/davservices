@@ -51,6 +51,23 @@ const FROM_A_SPECIFICATION = [
 ];
 
 /**
+ * Words a specification writes exactly so, where the word is the name of a
+ * property and not a concept of an application.
+ *
+ * `ROLE` is RFC 2426 §3.5.2 and RFC 6350 §6.6.2 — a vCard property carrying
+ * "the function or part played in a particular situation by the object the
+ * vCard represents" — and a library that converts vCards has to name it.
+ *
+ * **Matched whole and case-sensitively**, which is what keeps the rule
+ * intact: a memo writes its property names in capitals, so `'ROLE'` is the
+ * name, while `$role`, `'role'`, `userRole` and `space_admin_role` are the
+ * very thing this check exists for and still trip it.
+ *
+ * @var list<string>
+ */
+const A_NAME_IN_A_MEMO = ['ROLE'];
+
+/**
  * Splits an identifier into lower-case words.
  *
  * getSpaceAdmin  → get, space, admin
@@ -91,6 +108,11 @@ foreach (Scanner::productionFiles() as $file) {
         }
 
         $identifier = ltrim(trim($token[1], "'\""), '$');
+
+        if (in_array($identifier, A_NAME_IN_A_MEMO, true)) {
+            continue;
+        }
+
         $parts = words($identifier);
         $found = array_intersect($parts, FORBIDDEN);
 
