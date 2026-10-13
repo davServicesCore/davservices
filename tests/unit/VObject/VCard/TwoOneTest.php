@@ -508,6 +508,66 @@ END:VCARD
     }
 
     /**
+     * **Even `VERSION` is a name that may be written small.** It is the one
+     * property every card has, and a conversion that only recognised capitals
+     * would carry the old one across and write a second — leaving a card that
+     * claims two versions at once.
+     */
+    public function testEvenTheVersionIsANameThatMayBeWrittenSmall(): void
+    {
+        $converted = Converter::toThreeZero(self::read(
+            "BEGIN:VCARD
+version:2.1
+FN:Frank Dawson
+N:Dawson;Frank;;;
+END:VCARD
+",
+        ));
+
+        self::assertCount(1, $converted->card()->properties('VERSION'));
+        self::assertSame('3.0', $converted->card()->property('VERSION')?->value());
+    }
+
+    /**
+     * **A type value written first keeps its place when a `MEDIATYPE` or a
+     * `PREF` adds to the list.** Both of those become type values on the way
+     * down, and they are added to what is there rather than put in its place.
+     */
+    public function testATypeValueWrittenFirstKeepsItsPlace(): void
+    {
+        $media = Converter::toTwoOne(self::card('4.0', [
+            'PHOTO;TYPE=work;MEDIATYPE=image/jpeg:http://example.com/p.jpg',
+        ]));
+        $written = $media->card()->property('PHOTO');
+
+        self::assertSame([], $written?->parameter('WORK')?->values());
+        self::assertSame([], $written->parameter('JPEG')?->values());
+
+        $preference = Converter::toThreeZero(self::card('4.0', ['TEL;TYPE=work;PREF=1:+1-555-0100']));
+
+        self::assertSame(
+            ['work', 'pref'],
+            $preference->card()->property('TEL')?->parameter('TYPE')?->values(),
+        );
+    }
+
+    /**
+     * **A parameter name is written in capitals**, which is how both memos
+     * write their own and how 2.1 cards in the field read. The names are
+     * case-insensitive either way, so this is a decision about what to write
+     * rather than about what to accept — and a test is where such a decision
+     * can be found.
+     */
+    public function testAParameterNameIsWrittenInCapitals(): void
+    {
+        $converted = Converter::toTwoOne(self::card('3.0', ['TEL;type=work,voice:+1-555-0100']));
+        $written = $converted->card()->property('TEL');
+
+        self::assertSame([], $written?->parameter('WORK')?->values());
+        self::assertSame([], $written->parameter('VOICE')?->values());
+    }
+
+    /**
      * A card of that version carrying those lines.
      *
      * @param list<string> $lines
