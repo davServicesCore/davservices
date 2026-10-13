@@ -416,6 +416,98 @@ END:VCARD
     }
 
     /**
+     * **A name is a name however it is written, on this edge too.** RFC 6350
+     * §3.3 makes names case-insensitive and RFC 2425 §5.1 said it first, and
+     * a 2.1 card in the field is as likely to be lower case as not.
+     */
+    public function testANameIsANameHoweverItIsWrittenOnThisEdge(): void
+    {
+        $up = Converter::toThreeZero(self::card('2.1', [
+            'tel;work;voice:+1-555-0100',
+            'note;charset=iso-8859-1;encoding=quoted-printable:Gr=C3=BC=C3=9Fe',
+            'photo;encoding=base64;type=jpeg:aGVsbG8=',
+        ]));
+        $card = $up->card();
+
+        self::assertSame(['WORK', 'VOICE'], $card->property('tel')?->parameter('TYPE')?->values());
+        self::assertSame('Grüße', $card->property('note')?->value());
+        self::assertSame('b', $card->property('photo')?->parameter('ENCODING')?->value());
+        self::assertSame(['NOTE'], self::whereOf($up->losses()));
+
+        $down = Converter::toTwoOne(self::card('3.0', [
+            'tel;type=work:+1-555-0100',
+            'nickname:Frank',
+        ]));
+        $back = $down->card();
+
+        self::assertSame([], $back->property('tel')?->parameter('WORK')?->values());
+        self::assertNull($back->property('nickname'));
+        self::assertSame(['NICKNAME'], self::whereOf($down->losses()));
+    }
+
+    /**
+     * **A parameter that needs work does not swallow the ones behind it**, on
+     * this edge either: the `CHARSET` that goes, the `ENCODING` that is read,
+     * and a nameless type are each written **in front of** something that has
+     * to survive them.
+     */
+    public function testAParameterThatNeedsWorkDoesNotSwallowTheOnesBehindIt(): void
+    {
+        $converted = Converter::toThreeZero(self::card('2.1', [
+            'NOTE;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE;WORK;LANGUAGE=de:Gr=C3=BC=C3=9Fe',
+        ]));
+        $note = $converted->card()->property('NOTE');
+
+        self::assertSame('Grüße', $note?->value());
+        self::assertSame('de', $note->parameter('LANGUAGE')?->value());
+        self::assertSame(['WORK'], $note->parameter('TYPE')?->values());
+        self::assertNull($note->parameter('CHARSET'));
+        self::assertNull($note->parameter('ENCODING'));
+        self::assertSame(['NOTE'], self::whereOf($converted->losses()));
+    }
+
+    /**
+     * **Every type value arrives, whichever way it was written.** 2.1 allowed
+     * both spellings at once — §5 calls the prefix optional there — so a line
+     * can carry a `TYPE=` list and nameless values beside it, and all of them
+     * are the property's types.
+     *
+     * **In the order the line wrote them**, which is the only order there is:
+     * a `TYPE` is a list and its values carry no ranking.
+     */
+    public function testEveryTypeValueArrivesHoweverItWasWritten(): void
+    {
+        $converted = Converter::toThreeZero(self::card('2.1', [
+            'TEL;HOME;TYPE=WORK,VOICE;FAX:+1-555-0100',
+        ]));
+
+        self::assertSame(
+            ['HOME', 'WORK', 'VOICE', 'FAX'],
+            $converted->card()->property('TEL')?->parameter('TYPE')?->values(),
+        );
+    }
+
+    /**
+     * **And a property left behind on the way to 2.1 does not take its
+     * neighbours**, the five §5 names being written in front of properties
+     * that must come through.
+     */
+    public function testAPropertyLeftBehindOnTheWayToTwoOneDoesNotTakeItsNeighbours(): void
+    {
+        $converted = Converter::toTwoOne(self::card('3.0', [
+            'NICKNAME:Frank',
+            'TEL;TYPE=WORK:+1-555-0100',
+            'CATEGORIES:TRAVEL',
+            'URL:http://example.com/frank',
+        ]));
+        $card = $converted->card();
+
+        self::assertSame('+1-555-0100', $card->property('TEL')?->value());
+        self::assertSame('http://example.com/frank', $card->property('URL')?->value());
+        self::assertSame(['NICKNAME', 'CATEGORIES'], self::whereOf($converted->losses()));
+    }
+
+    /**
      * A card of that version carrying those lines.
      *
      * @param list<string> $lines
