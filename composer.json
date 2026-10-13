@@ -49,6 +49,7 @@
         "psr-4": {
             "DavServices\\Tests\\Unit\\": "tests/unit/",
             "DavServices\\Tests\\Integration\\": "tests/integration/",
+            "DavServices\\Tests\\Fuzz\\": "tests/fuzz/",
             "DavServices\\Tests\\": "tests/"
         }
     },
@@ -76,6 +77,10 @@
         "check:metadata": "composer validate --strict --no-check-lock",
         "check:autoload": "php tests/integration/standalone-autoloader.php",
         "check:coverage": "php bin/check-coverage.php build/logs/clover.xml 100",
+        "check:fuzz": [
+            "@putenv XDEBUG_MODE=off",
+            "@php tests/fuzz/fuzz.php"
+        ],
         "check": [
             "@check:deps",
             "@check:namespace",
@@ -85,6 +90,7 @@
             "@check:metadata",
             "@style",
             "@analyse",
+            "@check:fuzz",
             "@test:coverage",
             "@check:autoload"
         ],
@@ -117,6 +123,7 @@
         "check:metadata": "Fails if composer.json is not strictly valid.",
         "check:autoload": "Loads every class through the bundled autoloader, without Composer.",
         "check:coverage": "Enforces the coverage floor against an existing Clover report.",
+        "check:fuzz": "Fuzzes the iCalendar and vCard parsers with mutated forms of the objects the RFCs publish. Runs with Xdebug off, because it also measures time.",
         "test": "Runs the PHPUnit test suite.",
         "test:coverage": "Runs PHPUnit with line and branch coverage in shards, merges the reports and enforces the floor.",
         "mutation": "Runs Infection mutation testing and enforces the configured mutation score thresholds."

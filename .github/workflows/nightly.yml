@@ -62,6 +62,35 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------
+  # The long fuzz run (R-QS-19).
+  #
+  # The gate in ci.yml spends a hundred seeds per combination, which has to
+  # fit inside a pull request. This one spends five thousand and starts
+  # where the gate stops, so the seeds it tries are the ones nobody has
+  # paid for yet — and since the run is deterministic, a finding here comes
+  # back under `--seeds=` on any machine.
+  #
+  # `coverage: none` is a requirement rather than a saving: the run measures
+  # time, and under Xdebug every input would look like an endless loop.
+  # ---------------------------------------------------------------------
+  fuzz:
+    name: Fuzzing, at length
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Fuzz the parsers past the gate's budget
+        run: php tests/fuzz/fuzz.php --seeds=5000 --from=101
+
+  # ---------------------------------------------------------------------
   # Planned: protocol conformance against the reference test suites.
   #
   # This block remains documented here until the example server implements

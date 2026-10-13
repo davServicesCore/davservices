@@ -217,6 +217,37 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------
+  # R-QS-19: fuzzing the iCalendar and vCard parsers.
+  #
+  # The run takes mutated forms of objects the RFCs publish and asks for
+  # three things of every one of them: no endless loop, no memory error,
+  # and only the exceptions the library defines. It is deterministic — a
+  # seed makes an input and the same seed makes it again — so a red run
+  # here names an input anybody can see for themselves.
+  #
+  # `coverage: none` is not a saving here but a requirement. Under Xdebug
+  # everything takes fifty times as long, and the run measures time: every
+  # input would be reported as an endless loop.
+  # ---------------------------------------------------------------------
+  fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-latest
+    needs: gates
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Fuzz the parsers
+        run: composer check:fuzz
+
+  # ---------------------------------------------------------------------
   # R-ENV-03: the library must work without intl. This job proves it rather
   # than trusting the fallback code paths.
   #

@@ -186,6 +186,7 @@ composer test             # PHPUnit unit-test suite from tests/unit/
 composer analyse          # PHPStan
 composer style            # Check coding standard
 composer test:coverage    # Create Clover and HTML coverage reports
+composer check:fuzz       # Fuzz the iCalendar and vCard parsers
 composer mutation         # Run Infection mutation testing
 ```
 
