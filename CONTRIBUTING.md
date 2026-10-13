@@ -81,9 +81,13 @@ That runs the same gates as CI:
 | `check:namespace` | A namespace in `src/` that is not `DavServices\`, or a PSR-4 mismatch |
 | `check:terms` | Application-layer vocabulary (`Space`, `Role`, `Session`, …) |
 | `check:layers` | A dependency pointing from a lower layer to a higher one |
+| `check:docblocks` | A shipped class or public method with no DocBlock, or one without prose |
+| `check:metadata` | A `composer.json` that is not strictly valid |
 | `style` | Deviations from PSR-12 plus the project rules |
 | `analyse` | PHPStan level 9 findings |
+| `check:fuzz` | A parser that hangs, runs out of memory, warns, or throws something it has not defined |
 | `test` | Failing tests, and coverage below 100% |
+| `check:autoload` | A class that cannot be loaded without Composer |
 
 None of these are advisory. A pull request that fails any of them cannot be merged.
 
@@ -115,6 +119,28 @@ You do not have to do anything for this. A new test file is picked up and placed
 - Name test files `*Test.php` and keep them below `tests/unit/`. Only those are split into shards, and a test outside them is missing from the coverage run.
 - Do not add a coverage run that bypasses the shards. `composer test:coverage` and every workflow go through `bin/coverage-shard.php` and `bin/merge-coverage.php`.
 - If one shard becomes noticeably slower than the others, lower `TestShards::BYTES_PER_SHARD` rather than accepting a slow job.
+
+## The fuzz run
+
+`check:fuzz` takes the objects the RFCs publish, breaks them in named ways, and asks three things of every parser it feeds them to: no endless loop, no memory error, and no exception the library has not defined. A refusal is not a finding — the parsers refuse malformed input by design — but a `TypeError`, a warning, a run past its time limit or a process that dies is.
+
+It is **deterministic**: a seed makes an input and the same seed makes it again. A finding therefore names the three things you need to see it for yourself, and the first thing to do with one is to make the input again:
+
+```php
+Mutations::apply('a flipped byte', Mutations::seeds()['a card'], 2417);
+```
+
+The gate spends a hundred seeds per combination, which fits inside a pull request; the nightly spends five thousand, starting where the gate stops. To go further yourself:
+
+```bash
+php tests/fuzz/fuzz.php --seeds=20000 --from=5101   # a long hunt
+php tests/fuzz/fuzz.php --memory=64                 # under a tighter ceiling
+```
+
+Two things to know before changing it:
+
+- **Run it with Xdebug off.** The run measures time, and under a coverage driver everything takes fifty times as long — every input would look like an endless loop. `composer check:fuzz` switches the driver off itself; a bare `php tests/fuzz/fuzz.php` does not.
+- **A new target or mutation is added in one place.** `Targets::names()` and `Mutations::names()` are crossed with everything else, so a name added there is swept against every object, and the test lists under `tests/unit/Fuzz/` hold it to the same promises as the rest.
 
 ## Recognition
 
