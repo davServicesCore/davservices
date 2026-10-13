@@ -46,6 +46,8 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Event\CurrentPrincipalRequested` | The one question about who is asking, and the one place to answer it |
 | `Event\ListingMembers` | Raised with the paths about to be named at once — a listing, or the hrefs a report would expand; a listener may conceal some |
 | `Locks\LockInfo` | One write lock: what it reaches, and when it ends |
+| `Cards\AddressBookInfo` | One address book collection: its name, display name and description |
+| `Cards\CardInfo` | One address object resource **without its body**, which is what a `PROPFIND Depth: 1` is answered from |
 | `Locks\LockScope` | Whether anybody else may hold one at the same time |
 | `Locks\LockToken` | The name a lock is held by, made of cryptographic random |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
