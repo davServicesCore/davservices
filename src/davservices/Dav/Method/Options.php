@@ -39,6 +39,15 @@ use DavServices\Http\Response;
  */
 final class Options
 {
+    /**
+     * The method whose registration is itself a compliance class.
+     *
+     * {@see MkCol} reads an extended body whenever one arrives, so a server
+     * that has the handler supports RFC 5689 and one that has not does not.
+     * There is nothing else to ask.
+     */
+    private const EXTENDED = 'MKCOL';
+
     public function __construct(private readonly Server $server)
     {
     }
@@ -59,6 +68,17 @@ final class Options
         // else's to claim.
         $event->allowMethod('OPTIONS', ...$this->server->methods());
         $event->addCompliance('1');
+
+        // **Except this one, which belongs to the method rather than to a
+        // plugin.** RFC 5689 §3.1 makes the token owed "on any URI that
+        // supports use of the extended MKCOL method", and the `MKCOL` this
+        // library ships is the extended one — so what makes the promise true
+        // is that a handler is registered at all. Without it a client never
+        // offers to create an address book or a calendar; with it on a server
+        // that answers `501` it would send a body nothing reads.
+        if (in_array(self::EXTENDED, $this->server->methods(), true)) {
+            $event->addCompliance('extended-mkcol');
+        }
 
         $answered = $this->server->events()->emit($event);
 

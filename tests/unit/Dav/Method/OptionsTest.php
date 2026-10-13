@@ -187,6 +187,43 @@ final class OptionsTest extends TestCase
     }
 
     /**
+     * **A server with `MKCOL` registered says `extended-mkcol`**, because the
+     * `MKCOL` this library ships is the extended one. RFC 5689 §3.1: "A server
+     * supporting the features described in this document MUST include
+     * 'extended-mkcol' as a field in the DAV response header from an OPTIONS
+     * request on any URI that supports use of the extended MKCOL method."
+     *
+     * Without it a client never offers to create an address book or a
+     * calendar: RFC 6352 §6.1.1's own example answer carries both tokens, and
+     * the one that promises the method is this one.
+     */
+    public function testSaysItTakesAnExtendedMkCol(): void
+    {
+        $server = $this->server();
+        $server->onMethod('MKCOL', static fn (): Response => new Response(201));
+
+        self::assertSame('1, extended-mkcol', $this->answer($server)->headers()->first('DAV'));
+
+        // Asked directly as well as through the server, because the two are
+        // not the same path to Xdebug: a method registered as a first-class
+        // callable is measured as its own compiled variant, and a branch
+        // exercised only one way leaves the other half unmeasured.
+        $direct = (new Options($server))(new Request('OPTIONS', '/'));
+
+        self::assertSame('1, extended-mkcol', $direct->headers()->first('DAV'));
+    }
+
+    /**
+     * **And a server without it does not.** The token is a promise about a
+     * method, so a server that answers `501` to `MKCOL` must not make it —
+     * a client that believed it would send a body no handler reads.
+     */
+    public function testSaysNothingAboutMkColWhereThereIsNone(): void
+    {
+        self::assertSame('1', $this->answer()->headers()->first('DAV'));
+    }
+
+    /**
      * A server whose methods are all answered by plugins has no handler of its
      * own, and `OPTIONS` still has to say what it does: itself, and whatever
      * the plugins name.

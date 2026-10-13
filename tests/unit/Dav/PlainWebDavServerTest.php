@@ -42,7 +42,10 @@ use PHPUnit\Framework\TestCase;
  *
  * **It says `DAV: 1`, not `1, 2`.** A client reads that header to decide
  * whether to try locking at all, and one that claimed class 2 without
- * answering `LOCK` would have clients wait for holds nobody can grant.
+ * answering `LOCK` would have clients wait for holds nobody can grant. It
+ * does say `extended-mkcol`, which is no plugin's claim: RFC 5689 §3.1 owes
+ * that token wherever the method is available, and `MKCOL` here reads an
+ * extended body.
  *
  * **`LOCK` and `UNLOCK` are `501`.** Not `405`: the method is one this
  * protocol has and this server does not implement, which is what `501` means.
@@ -64,12 +67,24 @@ use PHPUnit\Framework\TestCase;
 final class PlainWebDavServerTest extends TestCase
 {
     /**
-     * R-LOCK-06: `DAV: 1` and nothing more, because the compliance classes
-     * come from the plugins and there are none.
+     * R-LOCK-06: **no class 2**, because the compliance classes come from the
+     * plugins and there are none.
+     *
+     * It says `extended-mkcol` all the same, and that is not a plugin's claim
+     * to make: RFC 5689 §3.1 owes the token "on any URI that supports use of
+     * the extended MKCOL method", and a plain WebDAV server built from this
+     * library has `MKCOL` and reads an extended body. What is asserted here is
+     * therefore the absence of the class nothing implements, rather than the
+     * whole header — a server that promised class 2 would have clients waiting
+     * for holds nobody can grant, which is the thing this list is about.
      */
-    public function testSaysItIsOfClassOneOnly(): void
+    public function testSaysItIsOfClassOneAndClaimsNoLocking(): void
     {
-        self::assertSame('1', $this->handle(new Request('OPTIONS', '/'))->headers()->first('DAV'));
+        $classes = explode(', ', $this->handle(new Request('OPTIONS', '/'))->headers()->first('DAV') ?? '');
+
+        self::assertContains('1', $classes);
+        self::assertNotContains('2', $classes);
+        self::assertSame(['1', 'extended-mkcol'], $classes);
     }
 
     /**

@@ -449,7 +449,7 @@ final class PrincipalPropertySearchTest extends TestCase
     }
 
     /**
-     * RFC 4918 §8.3: a collection that matched is named with a trailing
+     * RFC 4918 §5.2: a collection that matched is named with a trailing
      * slash, the same as anywhere else. A client appends to it.
      */
     public function testACollectionThatMatchedIsNamedWithASlash(): void

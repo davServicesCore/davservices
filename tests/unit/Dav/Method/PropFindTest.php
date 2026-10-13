@@ -110,7 +110,7 @@ final class PropFindTest extends TestCase
     }
 
     /**
-     * RFC 4918 §8.3: a collection is named with a trailing slash. Clients
+     * RFC 4918 §5.2: a collection is named with a trailing slash. Clients
      * build the addresses of its members by appending to it, and one that was
      * handed `/calendars` would go looking for `/calendarswork.ics`.
      */

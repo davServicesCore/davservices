@@ -479,7 +479,7 @@ final class Acl
 
         $tree = $this->server->tree();
 
-        // RFC 4918 §8.3: a collection is named with a trailing slash, and a
+        // RFC 4918 §5.2: a collection is named with a trailing slash, and a
         // client is about to compare this href with one it already holds. The
         // node is asked for only where there is one — a request for something
         // that is not there can be refused for want of a privilege before
