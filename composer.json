@@ -94,7 +94,17 @@
             "@php bin/say-what-only-ci-can-try.php commit"
         ],
         "gates:push": [
-            "@check",
+            "@check:deps",
+            "@check:namespace",
+            "@check:terms",
+            "@check:layers",
+            "@check:docblocks",
+            "@check:metadata",
+            "@style",
+            "@analyse",
+            "@test",
+            "@check:fuzz",
+            "@check:autoload",
             "@php bin/say-what-only-ci-can-try.php push"
         ],
         "check": [
@@ -141,7 +151,7 @@
         "check:coverage": "Enforces the coverage floor against an existing Clover report.",
         "hooks": "Points git at .githooks, so that a commit runs the quick gates and a push runs every gate CI runs.",
         "gates:commit": "Every gate that costs seconds. What the pre-commit hook runs.",
-        "gates:push": "Every gate CI runs, coverage floor and fuzz sweep included. What the pre-push hook runs.",
+        "gates:push": "Every gate that answers inside a minute: the quick ones, the suite, the fuzz sweep and the Composer-free autoloader. What the pre-push hook runs. The coverage floor is left to `check`, because git holds the connection to the remote open while a hook runs and five minutes of coverage shards outlast it.",
         "check:fuzz": "Fuzzes the iCalendar and vCard parsers with mutated forms of the objects the RFCs publish. Runs with Xdebug off, because it also measures time.",
         "test": "Runs the PHPUnit test suite.",
         "test:coverage": "Runs PHPUnit with line and branch coverage in shards, merges the reports and enforces the floor.",

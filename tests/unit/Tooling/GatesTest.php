@@ -47,17 +47,65 @@ require_once __DIR__ . '/../../../bin/lib/Gates.php';
 final class GatesTest extends TestCase
 {
     /**
-     * **A push runs the whole of `composer check`, and runs it by name.**
+     * **A push runs the gates that fit inside the push.**
      *
-     * That is the one decision here that keeps the promise honest: CI runs
-     * `check`, so a push that ran a list of its own would be a second list to
-     * keep in step — and the day somebody adds a gate to `check` and forgets
-     * the hook is the day the hook starts lying.
+     * The first version of this ran the whole of `composer check`, and a
+     * measurement killed it: git opens the connection to the remote *before*
+     * the `pre-push` hook, because it has to tell the hook what would be
+     * pushed. Five minutes of coverage shards later the server had given up —
+     * "Connection to github.com closed by remote host" — and the push failed
+     * **after** every gate passed.
+     *
+     * **A hook that can make a good push fail is worse than a hook that
+     * checks less.** So the push stage holds what answers in about a minute,
+     * and the full `check` stays what CI runs and what a developer runs by
+     * hand.
      */
-    public function testAPushRunsTheWholeOfComposerCheck(): void
+    public function testAPushRunsTheGatesThatFitInsideThePush(): void
     {
-        self::assertContains('check', Gates::before('push', self::manifest()));
+        $gates = Gates::before('push', self::manifest());
+
         self::assertSame('gates:push', Gates::scriptFor('push'));
+        self::assertContains('test', $gates);
+        self::assertContains('check:fuzz', $gates);
+        self::assertContains('check:autoload', $gates);
+    }
+
+    /**
+     * **And it does not run the coverage shards**, for the reason above: they
+     * take minutes, and the minutes are spent on a connection that is already
+     * open and waiting.
+     */
+    public function testAPushDoesNotRunTheCoverageShards(): void
+    {
+        $gates = Gates::before('push', self::manifest());
+
+        self::assertNotContains('test:coverage', $gates);
+        self::assertNotContains('check', $gates);
+        self::assertNotContains('mutation', $gates);
+    }
+
+    /**
+     * **A push checks everything a commit checks, and more.** A commit may
+     * have been made with `--no-verify`, so the push cannot assume the quick
+     * gates have run.
+     */
+    public function testAPushChecksEverythingACommitChecksAndMore(): void
+    {
+        $commit = Gates::before('commit', self::manifest());
+        $push = Gates::before('push', self::manifest());
+
+        foreach ($commit as $gate) {
+            // The closing notice names its own stage, so it is the one step
+            // that differs on purpose.
+            if (str_starts_with($gate, 'php ')) {
+                continue;
+            }
+
+            self::assertContains($gate, $push, $gate);
+        }
+
+        self::assertGreaterThan(count($commit), count($push));
     }
 
     /**
@@ -73,11 +121,16 @@ final class GatesTest extends TestCase
     }
 
     /**
-     * **Every gate a commit runs is one `composer check` runs too.** A local
-     * check that enforced something CI does not would refuse work that is
-     * perfectly good; one that enforced less would be a false green.
+     * **Every gate either stage runs is one `composer check` runs too.** A
+     * local check that enforced something CI does not would refuse work that
+     * is perfectly good; one that enforced less would be a false green. This
+     * is what keeps the two stages honest now that neither of them is simply
+     * `check` itself.
+     *
+     * @param non-empty-string $stage
      */
-    public function testEveryGateACommitRunsIsOneTheWholeCheckRunsToo(): void
+    #[DataProvider('everyStage')]
+    public function testEveryGateAStageRunsIsOneTheWholeCheckRunsToo(string $stage): void
     {
         $check = self::scripts()['check'] ?? null;
 
@@ -91,14 +144,29 @@ final class GatesTest extends TestCase
             $inCheck[] = ltrim($entry, '@');
         }
 
-        foreach (Gates::before('commit', self::manifest()) as $gate) {
+        foreach (Gates::before($stage, self::manifest()) as $gate) {
             if (str_starts_with($gate, 'php ')) {
                 continue;
             }
 
-            self::assertContains($gate, $inCheck, $gate);
+            self::assertContains(self::AS_CHECK_HAS_IT[$gate] ?? $gate, $inCheck, $gate);
         }
     }
+
+    /**
+     * The one gate a stage runs under a different name than `check` does, and
+     * it is named here rather than waved through.
+     *
+     * `check` runs the suite **with** coverage, because the 100% floor is one
+     * of the things R-QS-30 makes break the build. A push runs the same suite
+     * without it, which is the same tests and a tenth of the time: the floor
+     * is what cannot be had in a minute, not the tests. Anything else that
+     * stopped matching would fail the test above, which is the point of
+     * spelling this out instead of loosening the comparison.
+     *
+     * @var array<string, string>
+     */
+    private const AS_CHECK_HAS_IT = ['test' => 'test:coverage'];
 
     /**
      * **And every gate named is a script that exists.** A typo would make the

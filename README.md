@@ -182,10 +182,11 @@ composer hooks
 
 The last line is optional and worth the second it takes: it points git at
 `.githooks/`, so a commit is refused unless the gates that answer in seconds
-pass, and a push is refused unless the whole of `composer check` does. The
-split is deliberate — a hook that costs minutes on every commit is a hook
-people bypass. `CONTRIBUTING.md` says what a green local run still cannot
-promise.
+pass (about 7 s), and a push is refused unless the suite, the fuzz sweep and
+the Composer-free autoloader pass as well (about 75 s). The coverage floor
+stays with `composer check`, because git holds the connection to the remote
+open while a hook runs and a five-minute hook loses it.
+`CONTRIBUTING.md` says what a green local run still cannot promise.
 
 Useful focused commands:
 
@@ -196,7 +197,7 @@ composer style            # Check coding standard
 composer test:coverage    # Create Clover and HTML coverage reports
 composer check:fuzz       # Fuzz the iCalendar and vCard parsers
 composer gates:commit     # Every gate that costs seconds — what pre-commit runs
-composer gates:push       # Every gate CI runs — what pre-push runs
+composer gates:push       # Those, plus the suite and the fuzz sweep — what pre-push runs
 composer mutation         # Run Infection mutation testing
 ```
 
