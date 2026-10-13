@@ -39,14 +39,22 @@ they do not. Lowest first:
 
 | Layer | Holds | Depends on |
 |---|---|---|
+| `VObject` | Reading, writing, repairing and converting iCalendar and vCard | nothing |
 | `Event` | The emitter plugins take part through | nothing |
 | `Uri` | Paths: decoding, normalising, refusing | nothing |
 | `Http` | Request, response, headers, body, ranges, conditions, the WebDAV `If` header | `Uri` |
 | `Xml` | Reading and writing the documents a request is made of | `Http` |
 | `Dav` | The node interfaces and the tree | may use any of the above |
 | `Backend` | Where a server's own data is kept, and the interfaces an application swaps out | may use any of the above |
-| `Acl`, `CalDav`, `CardDav` | *planned* | may use any of the above |
+| `Acl` | Principals as resources, privileges, and the two reports that search them | may use any of the above |
+| `CalDav` | *planned* | may use any of the above |
+| `CardDav` | Address books: a collection said to be one, and what RFC 6352 §5.2 allows inside | may use any of the above |
 | `Plugin` | What the server can do beyond plain WebDAV: listeners, nothing a method has to know about | may use any of the above |
+
+`VObject` lies at the very bottom because it is a reader and writer for two
+data formats and knows nothing else: not the transport, not the tree, not a
+request. Putting it there is what says so — it may use nothing above it, and
+everything above may use it, which `CardDav` does and `CalDav` will.
 
 `Exception` sits outside the order on purpose: a failure belongs to no layer,
 and every layer raises one.

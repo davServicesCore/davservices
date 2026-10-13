@@ -148,7 +148,7 @@ final class PrincipalMatchTest extends TestCase
     /**
      * **A collection is a member like any other.** §9.3 says members, not
      * files, and a client asking what it owns wants the folder it owns as
-     * much as the pages in it. The trailing slash is RFC 4918 §8.3.
+     * much as the pages in it. The trailing slash is RFC 4918 §5.2.
      */
     public function testACollectionIsAMemberToo(): void
     {

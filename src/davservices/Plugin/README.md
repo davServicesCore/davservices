@@ -15,6 +15,7 @@ events, a backend — and nothing below may use a plugin.
 | `Locks` | `LOCK` and `UNLOCK`, and what a client is told about a hold |
 | `Principals` | Where the people are, who you are, and what a principal's own URL is |
 | `Acl` | What a client is told about access control: the privilege tree, what the asker may do, and who holds what |
+| `CardDav` | What a client is told about address books, and the one rule RFC 6352 §5.2 cannot leave to a node |
 | `Browser` | Shows what is in a collection, for development only — off unless it is switched on |
 
 ## Using it
@@ -195,6 +196,57 @@ application with only that plugin writes nothing extra. A plugin that
 authenticates answers the same event instead. Two listeners naming **different**
 principals is a mistake in the wiring and is said out loud rather than settled
 by whichever was registered first.
+
+## One line makes it a CardDAV server
+
+```php
+(new CardDav($server, 'addressbooks'))->register();
+```
+
+RFC 6352 §6.1 makes the `DAV` response header the promise, and the word means
+everything: "A value of 'addressbook' in the DAV response header MUST indicate
+that the server supports all MUST level requirements and REQUIRED features
+specified in this document." Without the line the server is plain WebDAV and a
+client never looks for an address book at all.
+
+**Four properties, and a plugin answers them for two different reasons.** Two
+are limits the *server* sets rather than data a store holds —
+`CARDDAV:supported-address-data` (§6.2.2) and `CARDDAV:max-resource-size`
+(§6.2.3), both "MUST be protected as it indicates the level of support provided
+by the server" in the memo's own words. Two are about **where** something is —
+`CARDDAV:addressbook-home-set` (§7.1.1) and `CARDDAV:principal-address`
+(§7.1.2) hang on a principal, and a node knows its name and nothing about where
+it hangs.
+
+Both limits are the application's to set, because R-CAL-08 asks that of every
+one of them:
+
+```php
+(new CardDav($server, 'addressbooks', maxResourceSize: 1_048_576))->register();
+```
+
+§6.2.2 is worth reading before shortening the list of versions: "In the absence
+of this property, the server MUST only accept data with the media type
+'text/vcard' and vCard version 3.0." Saying nothing is not the permissive
+option.
+
+**Two properties it deliberately does not answer.**
+`CARDDAV:addressbook-description` "SHOULD NOT be protected so that users can
+specify a description" (§6.2.1), so a plugin answering it would make it
+unwritable; it is stored by the backend or by `DeadProperties`, which also
+carries it across `COPY` and `MOVE` as §6.2.1 asks. And
+`CARDDAV:supported-collation-set` is owed "on any resource that supports
+reports that use collations" (§8.3) — no report here uses one yet, and
+advertising three collations would be a promise §8.3 then obliges the server to
+keep.
+
+**It also keeps the rule no node can.** §5.2 forbids an address book below an
+address book at any depth, which is a question about the tree; the plugin
+refuses it on the seam that creates a collection, and on `COPY` and `MOVE` with
+the precondition §6.3.2.1 defines for exactly that —
+`CARDDAV:addressbook-collection-location-ok`. Without the second half the rule
+would be a formality: a client would create the address book beside and move it
+in.
 
 ## The browser is not a web interface
 

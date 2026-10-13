@@ -222,9 +222,11 @@ final class Server
     /**
      * The same, named the way the resource at that path is addressed.
      *
-     * **RFC 4918 §8.3: a collection is named with a trailing slash.** Clients
-     * build the addresses of its members by appending to it, and one handed
-     * `/calendars` would go looking for `/calendarswork.ics`.
+     * **A collection is named with a trailing slash.** RFC 4918 §5.2:
+     * "Wherever a server produces a URL referring to a collection, the server
+     * SHOULD include the trailing slash." Clients build the addresses of its
+     * members by appending to it, and one handed `/calendars` would go looking
+     * for `/calendarswork.ics`.
      *
      * The rule lives here rather than in whichever method happens to be
      * writing hrefs, because `PROPFIND` is no longer the only one that lists

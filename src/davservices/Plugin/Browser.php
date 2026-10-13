@@ -200,7 +200,7 @@ final class Browser
     }
 
     /**
-     * RFC 4918 §8.3: a collection is named with its trailing slash, and the
+     * RFC 4918 §5.2: a collection is named with its trailing slash, and the
      * root already has the only one it needs.
      */
     private static function asACollection(string $href): string
