@@ -16,6 +16,7 @@ namespace DavServices\Tests\Unit\VObject\VCard;
 use DavServices\VObject\Component;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Reader;
+use DavServices\VObject\Serializer;
 use DavServices\VObject\VCard\Conversion;
 use DavServices\VObject\VCard\Converter;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -515,17 +516,52 @@ END:VCARD
      */
     public function testEvenTheVersionIsANameThatMayBeWrittenSmall(): void
     {
-        $converted = Converter::toThreeZero(self::read(
-            "BEGIN:VCARD
-version:2.1
-FN:Frank Dawson
-N:Dawson;Frank;;;
-END:VCARD
-",
-        ));
+        // **Asked of a card that is already 3.0**, so that no step runs and
+        // the version is the only thing written. A step of its own drops the
+        // old property on the way, and then this would prove nothing.
+        $same = Converter::toThreeZero(self::lines(['version:3.0', 'FN:Frank Dawson', 'N:Dawson;Frank;;;']));
+
+        self::assertCount(1, $same->card()->properties('VERSION'));
+        self::assertSame('3.0', $same->card()->property('VERSION')?->value());
+
+        $converted = Converter::toThreeZero(self::lines(['version:2.1', 'FN:Frank Dawson', 'N:Dawson;Frank;;;']));
 
         self::assertCount(1, $converted->card()->properties('VERSION'));
         self::assertSame('3.0', $converted->card()->property('VERSION')?->value());
+    }
+
+    /**
+     * **A parameter that adds no type value does not shorten the ones already
+     * there.** Two of them add nothing: a `SORT-AS` is lifted out into a
+     * property of its own, and a `MEDIATYPE` whose media type has no format
+     * name here is named as a loss. Both are written **after** two type values
+     * that have to survive them untouched.
+     */
+    public function testAParameterThatAddsNoTypeValueDoesNotShortenTheList(): void
+    {
+        // On the ORG rather than the N, §5.9 allowing either — and every card
+        // here carries an N already. Asked of the step to 3.0, because that
+        // is where a SORT-AS turns into a property; 2.1 has no SORT-STRING at
+        // all, and §5 names it as one of the five added in 3.0.
+        $sorted = Converter::toThreeZero(self::card('4.0', [
+            'ORG;TYPE=work;PREF=1;SORT-AS=ABC:ABC Inc.',
+        ]));
+
+        self::assertSame(
+            ['work', 'pref'],
+            $sorted->card()->property('ORG')?->parameter('TYPE')?->values(),
+        );
+        self::assertSame('ABC', $sorted->card()->property('SORT-STRING')?->value());
+
+        $nameless = Converter::toThreeZero(self::card('4.0', [
+            'PHOTO;TYPE=work;PREF=1;MEDIATYPE=image/avif:http://example.com/p.avif',
+        ]));
+
+        self::assertSame(
+            ['work', 'pref'],
+            $nameless->card()->property('PHOTO')?->parameter('TYPE')?->values(),
+        );
+        self::assertSame(['PHOTO'], self::whereOf($nameless->losses()));
     }
 
     /**
@@ -561,10 +597,15 @@ END:VCARD
     public function testAParameterNameIsWrittenInCapitals(): void
     {
         $converted = Converter::toTwoOne(self::card('3.0', ['TEL;type=work,voice:+1-555-0100']));
-        $written = $converted->card()->property('TEL');
 
-        self::assertSame([], $written?->parameter('WORK')?->values());
-        self::assertSame([], $written->parameter('VOICE')?->values());
+        // **Asked of the written text, not of the component.** Looking a
+        // parameter up by name finds it in whichever case it carries — that
+        // was measured — so an assertion on `parameter('WORK')` would pass
+        // for `;work` just as well and prove nothing about what was written.
+        self::assertStringContainsString(
+            'TEL;WORK;VOICE:+1-555-0100',
+            (new Serializer())->write($converted->card()),
+        );
     }
 
     /**
@@ -577,6 +618,22 @@ END:VCARD
         return self::read("BEGIN:VCARD\r\nVERSION:" . $version . "\r\nFN:Frank Dawson\r\nN:Dawson;Frank;;;\r\n"
             . ($lines === [] ? '' : implode("\r\n", $lines) . "\r\n")
             . "END:VCARD\r\n");
+    }
+
+    /**
+     * A card of those content lines, folded as the grammar asks: "Lines of
+     * text SHOULD NOT be longer than 75 octets … a long line can be split
+     * between any two characters by inserting a CRLF" (RFC 6350 §3.2), so a
+     * card is CRLF-separated and a test that used bare newlines would be
+     * testing something the memo does not describe.
+     *
+     * @param list<string> $lines
+     */
+    private static function lines(array $lines): Component
+    {
+        return self::read(
+            "BEGIN:VCARD\r\n" . implode("\r\n", $lines) . "\r\nEND:VCARD\r\n",
+        );
     }
 
     private static function read(string $text): Component
