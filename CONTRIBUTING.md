@@ -73,6 +73,35 @@ Run everything locally before pushing:
 composer check
 ```
 
+### Let git run them for you
+
+```bash
+composer hooks
+```
+
+One line, once per clone. It points `core.hooksPath` at the tracked `.githooks/` directory, and from then on git answers before GitHub does:
+
+| hook | runs | measured |
+|---|---|---|
+| `pre-commit` | `composer gates:commit` — every gate that answers in seconds | about 7 s warm |
+| `pre-push` | `composer gates:push` — those, plus the suite, the fuzz sweep and the Composer-free autoloader | about 75 s |
+
+**The split is the point.** `git commit --no-verify` is one flag away, and a hook that costs minutes teaches people to reach for it; a check that gets switched off protects nothing. The requirements already draw that line for the slowest gate there is, R-QS-26: the mutation run "ist zu langsam für jeden Commit".
+
+**And a hook has a second budget that is easy to miss.** Git opens the connection to the remote *before* running `pre-push`, because it has to tell the hook what would be pushed — so the hook's run time is time an idle connection is sitting there. The first version of this ran the whole of `composer check`, and five minutes of coverage shards later the server had given up: "Connection to github.com closed by remote host", and the push failed **after** every gate had passed. A hook that can make a good push fail is worse than a hook that checks less.
+
+So the push stage holds what answers inside about a minute, and the coverage floor stays with `composer check` — where CI always runs it, and where you run it yourself while you work. **A coverage regression is therefore something CI still tells you about**, and that is the one thing these hooks do not catch.
+
+The first `pre-commit` after a fresh clone is slower, because PHPStan has no cache yet. After that the cache is per file and only what you changed is re-analysed.
+
+**Neither stage is a list beside `check`.** `tests/unit/Tooling/GatesTest.php` reads `composer.json` and holds both to it: every gate either stage runs is one `check` runs too, a push checks everything a commit checks and more, and the slow gates are absent on purpose rather than by accident. The one gate that appears under a different name — the suite without coverage against `check`'s suite with it — is named in that test rather than waved through.
+
+**A green run here is not a green CI run, and it says so.** Three jobs are out of reach of any one machine, and the last lines of every gate run name them: the suite on PHP 8.3 and 8.4, the library on whichever side of `intl` your machine is not on (R-ENV-03 asks that it work without it, and CI proves both sides), and Litmus against `examples/minimal-webdav`. A hook that implied it had answered CI would be the most expensive kind of wrong.
+
+To take the hooks off again: `git config --unset core.hooksPath`.
+
+### What CI enforces
+
 That runs the same gates as CI:
 
 | Gate | What it rejects |

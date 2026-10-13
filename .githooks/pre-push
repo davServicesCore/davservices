@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# This file is part of davServices.
+#
+# (c) Felix Böck <https://dav.services>
+#
+# Licensed under the Apache License, Version 2.0.
+# For the full copyright and license information, see the LICENSE file.
+#
+# Refuses a push that would not pass the gates that answer inside a minute:
+# the quick ones, the suite, the fuzz sweep, and the Composer-free autoloader.
+#
+# The coverage floor is deliberately not here. Git opens the connection to the
+# remote BEFORE running this hook, because it has to tell the hook what would
+# be pushed — so everything this takes is time an idle connection waits. The
+# first version ran the whole of `composer check`, and five minutes of
+# coverage shards later the server had given up: "Connection to github.com
+# closed by remote host", and the push failed after every gate had passed. A
+# hook that can make a good push fail is worse than one that checks less.
+#
+# So `composer check` keeps the floor, CI always runs it, and a coverage
+# regression is the one thing these hooks leave to CI.
+#
+# Three things no single machine can try, and the run says so when it passes:
+# the suite on the other PHP versions, the library on whichever side of `intl`
+# this machine is not on, and Litmus against the example server.
+#
+# Installed with `composer hooks`. Bypassed with `git push --no-verify`.
+
+exec composer gates:push
