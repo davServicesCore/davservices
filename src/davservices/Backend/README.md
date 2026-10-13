@@ -23,6 +23,8 @@ plugin is using it.
 | `IPrincipalBackend` | Where the people of RFC 3744 come from — a directory, a database, whatever the application already has |
 | `File\PrincipalBackend` | Those people in a directory, one file per principal, written by a person |
 | `Pdo\PrincipalBackend` | Those people in a table, for a deployment that already keeps its users in one |
+| `ICardBackend` | Where the address books and cards of RFC 6352 come from, in batches a `PROPFIND Depth: 1` and a multiget can use |
+| `File\CardBackend` | Those cards in directories: one per principal, one per address book, one file per card |
 
 ## Using it
 
@@ -75,6 +77,39 @@ that rather than switched over: it belongs to the application, and every other
 query made on it would change with the setting. PHP 8 hands out connections in
 that mode already, so this is a wrong setting being named at construction
 rather than a step anybody has to take.
+
+and somewhere for the address books, if the server is to serve cards:
+
+```php
+$cards = new CardBackend('/var/lib/davservices/cards');
+```
+
+**`ICardBackend` is shaped by R-BE-02 rather than by convenience.** The
+requirement asks that the cuts make N+1 queries avoidable and names the two
+cases: `PROPFIND Depth: 1` and multiget. So there are two pairs instead of two
+methods — `cards()` answers the metadata of a whole address book in one call
+and `card()` answers one; `bodies()` answers many cards in one call and
+`body()` answers one. The metadata carries **no card body**
+(`Dav\Cards\CardInfo`), and that absence is the point: a client listing two
+hundred cards wants their sizes and entity tags, and a store that read two
+hundred files to answer would have made the cheap question as dear as the
+expensive one.
+
+`File\CardBackend` keeps that promise from the directory entry alone — the
+size is `filesize()`, the time is `filemtime()`, and the entity tag is made of
+those two, so a listing opens nothing. The price is named rather than hidden:
+two writes inside one second that leave the length unchanged are one entity
+tag, and the `UID` is answered as **unknown** because the only way to learn it
+is to read the card. A store with a column for the `UID` answers
+`CARDDAV:no-uid-conflict` (R-CARD-07) for a whole address book at once; this
+one makes the server read.
+
+**Every implementation is held to one contract** (R-BE-04).
+`tests/unit/Backend/CardBackendContract.php` is written once and run against
+both the file store and the in-memory one, because a backend that is
+exchangeable is only exchangeable if they all behave the same. Two
+implementations are the minimum that makes such a suite mean anything — with
+one, it only says what that class happens to do.
 
 **These are reference backends (R-BE-05) and are not to be run in production.**
 They know nothing of two requests writing to one path at the same moment, of
