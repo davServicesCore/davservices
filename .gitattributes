@@ -36,6 +36,7 @@
 # would otherwise download.
 # ---------------------------------------------------------------------------
 /.github                export-ignore
+/.githooks              export-ignore
 /assets                 export-ignore
 /bin                    export-ignore
 /docs                   export-ignore

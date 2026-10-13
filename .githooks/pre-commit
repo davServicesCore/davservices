@@ -1,0 +1,18 @@
+#!/bin/sh
+#
+# This file is part of davServices.
+#
+# (c) Felix Böck <https://dav.services>
+#
+# Licensed under the Apache License, Version 2.0.
+# For the full copyright and license information, see the LICENSE file.
+#
+# Refuses a commit that would not pass the gates CI runs — the ones that cost
+# seconds. The sharded coverage run and the fuzz sweep wait for the push, for
+# the reason R-QS-26 already gives about the mutation run: a check nobody
+# waits for is a check somebody turns off.
+#
+# Installed with `composer hooks`. Bypassed, if it must be, with
+# `git commit --no-verify` — and then CI is the one that finds out.
+
+exec composer gates:commit

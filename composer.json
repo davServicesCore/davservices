@@ -81,6 +81,22 @@
             "@putenv XDEBUG_MODE=off",
             "@php tests/fuzz/fuzz.php"
         ],
+        "hooks": "git config core.hooksPath .githooks",
+        "gates:commit": [
+            "@check:deps",
+            "@check:namespace",
+            "@check:terms",
+            "@check:layers",
+            "@check:docblocks",
+            "@check:metadata",
+            "@style",
+            "@analyse",
+            "@php bin/say-what-only-ci-can-try.php commit"
+        ],
+        "gates:push": [
+            "@check",
+            "@php bin/say-what-only-ci-can-try.php push"
+        ],
         "check": [
             "@check:deps",
             "@check:namespace",
@@ -123,6 +139,9 @@
         "check:metadata": "Fails if composer.json is not strictly valid.",
         "check:autoload": "Loads every class through the bundled autoloader, without Composer.",
         "check:coverage": "Enforces the coverage floor against an existing Clover report.",
+        "hooks": "Points git at .githooks, so that a commit runs the quick gates and a push runs every gate CI runs.",
+        "gates:commit": "Every gate that costs seconds. What the pre-commit hook runs.",
+        "gates:push": "Every gate CI runs, coverage floor and fuzz sweep included. What the pre-push hook runs.",
         "check:fuzz": "Fuzzes the iCalendar and vCard parsers with mutated forms of the objects the RFCs publish. Runs with Xdebug off, because it also measures time.",
         "test": "Runs the PHPUnit test suite.",
         "test:coverage": "Runs PHPUnit with line and branch coverage in shards, merges the reports and enforces the floor.",

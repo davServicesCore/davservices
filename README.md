@@ -177,7 +177,15 @@ git clone https://github.com/davServicesCore/davservices.git
 cd davservices
 composer install
 composer check
+composer hooks
 ```
+
+The last line is optional and worth the second it takes: it points git at
+`.githooks/`, so a commit is refused unless the gates that answer in seconds
+pass, and a push is refused unless the whole of `composer check` does. The
+split is deliberate — a hook that costs minutes on every commit is a hook
+people bypass. `CONTRIBUTING.md` says what a green local run still cannot
+promise.
 
 Useful focused commands:
 
@@ -187,6 +195,8 @@ composer analyse          # PHPStan
 composer style            # Check coding standard
 composer test:coverage    # Create Clover and HTML coverage reports
 composer check:fuzz       # Fuzz the iCalendar and vCard parsers
+composer gates:commit     # Every gate that costs seconds — what pre-commit runs
+composer gates:push       # Every gate CI runs — what pre-push runs
 composer mutation         # Run Infection mutation testing
 ```
 

@@ -73,6 +73,31 @@ Run everything locally before pushing:
 composer check
 ```
 
+### Let git run them for you
+
+```bash
+composer hooks
+```
+
+One line, once per clone. It points `core.hooksPath` at the tracked `.githooks/` directory, and from then on git answers before GitHub does:
+
+| hook | runs | costs |
+|---|---|---|
+| `pre-commit` | `composer gates:commit` — every gate that costs seconds | about 7 s warm |
+| `pre-push` | `composer gates:push`, which is `composer check` itself | minutes |
+
+**The split is the point.** `git commit --no-verify` is one flag away, and a hook that costs minutes teaches people to reach for it; a check that gets switched off protects nothing. So a commit is held to the gates that answer in seconds, and a push — which is a claim rather than a save point — is held to the whole of `composer check`, coverage floor and fuzz sweep included. The requirements already draw that line for the slowest gate there is, R-QS-26: the mutation run "ist zu langsam für jeden Commit".
+
+The first `pre-commit` after a fresh clone is slower, because PHPStan has no cache yet. After that the cache is per file and only what you changed is re-analysed.
+
+**`gates:push` runs `check` by name rather than a list of its own**, so there is nothing to keep in step: add a gate to `check` and the hook runs it too. `tests/unit/Tooling/GatesTest.php` holds that to three promises — a commit runs only gates `check` also runs, a push runs the whole of `check`, and the slow gates are left out of a commit on purpose rather than by accident.
+
+**A green run here is not a green CI run, and it says so.** Three jobs are out of reach of any one machine, and the last lines of every gate run name them: the suite on PHP 8.3 and 8.4, the library on whichever side of `intl` your machine is not on (R-ENV-03 asks that it work without it, and CI proves both sides), and Litmus against `examples/minimal-webdav`. A hook that implied it had answered CI would be the most expensive kind of wrong.
+
+To take the hooks off again: `git config --unset core.hooksPath`.
+
+### What CI enforces
+
 That runs the same gates as CI:
 
 | Gate | What it rejects |
