@@ -30,6 +30,7 @@ use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
@@ -53,7 +54,7 @@ use PHPUnit\Framework\TestCase;
  *
  * Switched on in one line, like every other plugin here:
  *
- *     (new CardDav($server, 'addressbooks'))->register();
+ *     (new CardDav($server, 'addressbooks'))->register($report);
  *
  * **What it answers are the questions a node cannot.** Two of them are about
  * limits the server sets rather than data it holds, and two are about *where*
@@ -92,7 +93,7 @@ final class CardDavTest extends TestCase
     public function testItSaysTheServerSpeaksCardDav(): void
     {
         $server = $this->server();
-        (new CardDav($server))->register();
+        (new CardDav($server))->register(new Report($server));
 
         $options = new Options($server);
         $server->onMethod('OPTIONS', $options(...));
@@ -213,7 +214,7 @@ final class CardDavTest extends TestCase
         $events = new EventEmitter();
         $server = new Server(new Tree($this->tree()), $events);
 
-        (new CardDav($server))->register();
+        (new CardDav($server))->register(new Report($server));
         (new DeadProperties(new MemoryPropertyStorage()))->registerOn($events);
 
         $propPatch = new PropPatch($server);
@@ -432,6 +433,38 @@ final class CardDavTest extends TestCase
     }
 
     /**
+     * **§8.6: "Support for the CARDDAV:addressbook-query REPORT is
+     * REQUIRED."** So the plugin asks for the `REPORT` method and wires the
+     * query itself, the way {@see \DavServices\Plugin\Acl} wires the four of
+     * RFC 3744 — a CardDAV server that did not answer it would not be one, and
+     * an application left to remember the line would sooner or later ship
+     * without it.
+     *
+     * What the report answers is tested where it lives, under
+     * `CardDav\Report`. What is proved here is that it is reachable at all:
+     * without the wiring, `Report` refuses the name with `403` and
+     * `DAV:supported-report`.
+     */
+    public function testRegisterAnswersTheQueryReportTheMemoRequires(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CardDav($server))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/addressbooks/simon/work',
+            headers: new Headers(['Depth' => '1']),
+            body: new Body('<C:addressbook-query xmlns:C="' . self::NS . '"><C:filter/></C:addressbook-query>'),
+        ));
+
+        self::assertSame(207, $response->status());
+        self::assertStringContainsString('<d:multistatus', (string) $response->body());
+    }
+
+    /**
      * **`register()` wires every guard, and this is what proves it.**
      *
      * Each rule below has a test of its own that calls the listener directly,
@@ -444,7 +477,7 @@ final class CardDavTest extends TestCase
     {
         $server = new Server(new Tree($this->tree()));
 
-        (new CardDav($server))->register();
+        (new CardDav($server))->register(new Report($server));
 
         $mkCol = new MkCol($server);
         $move = new Move($server);

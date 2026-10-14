@@ -16,6 +16,7 @@ namespace DavServices\Plugin;
 use Closure;
 use DavServices\Acl\Principal;
 use DavServices\CardDav\AddressBook;
+use DavServices\CardDav\Report\AddressBookQuery;
 use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeCreateCollection;
@@ -24,6 +25,7 @@ use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
 use DavServices\Exception\Forbidden;
@@ -37,7 +39,7 @@ use DavServices\Xml\Element;
  *
  * Switched on in one line, like everything else here:
  *
- *     (new CardDav($server, 'addressbooks'))->register();
+ *     (new CardDav($server, 'addressbooks'))->register($report);
  *
  * That line is the difference between a WebDAV server with some collections in
  * it and a CardDAV server. §6.1 makes the `DAV` header the promise: "A server
@@ -97,6 +99,8 @@ final class CardDav
     public const COMPLIANCE = 'addressbook';
 
     private const NS = 'urn:ietf:params:xml:ns:carddav';
+
+    private const QUERY = '{' . self::NS . '}addressbook-query';
 
     private const SUPPORTED_ADDRESS_DATA = '{' . self::NS . '}supported-address-data';
 
@@ -169,8 +173,13 @@ final class CardDav
      * §6.1: "A value of 'addressbook' in the DAV response header MUST indicate
      * that the server supports all MUST level requirements and REQUIRED
      * features specified in this document."
+     *
+     * @param Report $report The `REPORT` method, which this plugin owes an
+     *                       `addressbook-query` (§8.6). It is asked for
+     *                       rather than optional for the reason the sentence
+     *                       above gives
      */
-    public function register(): void
+    public function register(Report $report): void
     {
         $events = $this->server->events();
 
@@ -179,6 +188,25 @@ final class CardDav
         $events->on(BeforeCreateCollection::class, $this->refuseNesting(...));
         $events->on(BeforeCopy::class, $this->refuseABadDestination(...));
         $events->on(BeforeMove::class, $this->refuseABadDestination(...));
+
+        $this->answerTheReportItOwes($report);
+    }
+
+    /**
+     * The reports §8.6 makes REQUIRED.
+     *
+     * **This is why `register()` asks for the `REPORT` method** rather than
+     * leaving the line to an application: §8.6 says "Support for the
+     * CARDDAV:addressbook-query REPORT is REQUIRED", and the compliance class
+     * announced above promises every REQUIRED feature of the memo. A server
+     * that announced `addressbook` and then refused the query with
+     * `DAV:supported-report` would have told the client something untrue —
+     * and an application left to remember one more line would sooner or later
+     * ship without it.
+     */
+    private function answerTheReportItOwes(Report $report): void
+    {
+        $report->on(self::QUERY, (new AddressBookQuery($this->server))(...));
     }
 
     /**
