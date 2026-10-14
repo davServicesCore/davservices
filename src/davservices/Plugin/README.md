@@ -200,7 +200,7 @@ by whichever was registered first.
 ## One line makes it a CardDAV server
 
 ```php
-(new CardDav($server, 'addressbooks'))->register();
+(new CardDav($server, 'addressbooks'))->register($report);
 ```
 
 RFC 6352 §6.1 makes the `DAV` response header the promise, and the word means
@@ -222,7 +222,7 @@ Both limits are the application's to set, because R-CAL-08 asks that of every
 one of them:
 
 ```php
-(new CardDav($server, 'addressbooks', maxResourceSize: 1_048_576))->register();
+(new CardDav($server, 'addressbooks', maxResourceSize: 1_048_576))->register($report);
 ```
 
 §6.2.2 is worth reading before shortening the list of versions: "In the absence

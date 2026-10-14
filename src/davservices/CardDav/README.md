@@ -27,7 +27,7 @@ that are already WebDAV resources, which is why so little is needed here.
 ```php
 $home->add(AddressBook::of($yourCollection));
 
-(new CardDav($server, 'addressbooks'))->register();
+(new CardDav($server, 'addressbooks'))->register($report);
 ```
 
 **The cards stay where they already are.** `AddressBook` wraps a collection

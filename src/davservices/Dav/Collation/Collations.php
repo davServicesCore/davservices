@@ -43,7 +43,8 @@ namespace DavServices\Dav\Collation;
  * server MUST respond with a CARDDAV:supported-collation precondition error
  * response." That element is CardDAV's, and this is the `Dav` layer, which may
  * not reach up into it — so {@see UnknownCollation} carries the identifier and
- * the report that caught it writes the precondition. The same arrangement as
+ * the CardDAV filter that caught it writes the precondition — which is
+ * `CardDav\Filter\TextMatch`, where the attribute is read. The same arrangement as
  * `VObject\Recur\TooManyIterations`, for the same reason.
  *
  * **Wildcards are not matching, either.** §8.3: "Wildcards (as defined in
