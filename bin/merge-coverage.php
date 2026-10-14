@@ -18,13 +18,12 @@
  * shards: a shard whose report went missing would otherwise drop out without
  * a word, and the floor would be measured on part of the suite.
  *
- * The merged report can count a few more branches than a single process
- * would. PHP compiles a function slightly differently depending on which
- * classes are already loaded — WeekdayNumber::decode() came out with one
- * opcode more in some shards on 05.10.2026, which shifts its branch ids by
- * one — and the merge keeps both versions. Each has to be covered on its own,
- * so this can only make the floor stricter, never looser. The split and the
- * order are fixed, so it does not come and go between runs either.
+ * **The branch ids are opcodes, and a shard that only loaded a class records
+ * a numbering of its own.** PHP compiles a function differently depending on
+ * what is already in memory, so merging every report would union numberings
+ * rather than branches, and the ids of a process that ran no test of that file
+ * would arrive with nothing able to hit them. {@see ShardedCoverage} holds the
+ * rule that settles it, and the measurement it came from.
  *
  * Usage: php bin/merge-coverage.php build/coverage build/logs/clover.xml [build/coverage-html]
  *
@@ -38,6 +37,7 @@ use SebastianBergmann\CodeCoverage\Report\Clover;
 use SebastianBergmann\CodeCoverage\Report\Html\Facade as Html;
 
 require __DIR__ . '/../vendor/autoload.php';
+require __DIR__ . '/lib/ShardedCoverage.php';
 require __DIR__ . '/lib/TestShards.php';
 
 $directory = $argv[1] ?? '';
@@ -61,7 +61,7 @@ if (count($reports) !== $expected) {
     exit(1);
 }
 
-$merged = null;
+$shards = [];
 
 foreach ($reports as $report) {
     $coverage = include $report;
@@ -71,8 +71,53 @@ foreach ($reports as $report) {
         exit(1);
     }
 
+    $shards[] = $coverage;
+}
+
+// **A shard that measured nothing in a file says nothing about its branches.**
+// The ids are opcodes, and a process that merely loaded a class recorded a
+// numbering of its own that no test of its own could hit. See ShardedCoverage
+// for the measurement this comes from.
+//
+// The data is taken **raw**. CodeCoverage::getData() without that flag
+// re-analyses the source filter and adds uncovered files as this process
+// sees them, which is not what the shards measured: on 14.10.2026 that
+// alone put Prepared::prepare() — an abstract method, with no body to run —
+// into the report as an uncovered statement. Each shard already applied
+// includeUncoveredFiles at its own end, so there is nothing to add here.
+$layouts = ShardedCoverage::layoutsWorthKeeping(array_map(
+    /**
+     * @return array{
+     *     lines: array<string, array<int, list<string>|null>>,
+     *     functions: array<string, array<string, mixed>>
+     * }
+     */
+    static fn (CodeCoverage $coverage): array => [
+        'lines' => $coverage->getData(true)->lineCoverage(),
+        'functions' => $coverage->getData(true)->functionCoverage(),
+    ],
+    $shards,
+));
+
+$merged = null;
+
+foreach ($shards as $at => $coverage) {
+    $layout = $layouts[$at] ?? null;
+
+    // One layout per shard comes back, in the order they went in. Saying so
+    // out loud rather than reaching for an empty array: a shard whose
+    // functions had quietly become none would report every branch of every
+    // class it measured as missing, and the floor would be a mystery.
+    if ($layout === null) {
+        fwrite(STDERR, sprintf("  FAIL coverage — nothing came back for shard %d\n", $at + 1));
+        exit(1);
+    }
+
+    $coverage->getData(true)->setFunctionCoverage($layout);
+
     if ($merged === null) {
         $merged = $coverage;
+
         continue;
     }
 
