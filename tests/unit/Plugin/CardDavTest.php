@@ -16,6 +16,8 @@ namespace DavServices\Tests\Unit\Plugin;
 use DavServices\Acl\Principal;
 use DavServices\CardDav\AddressBook;
 use DavServices\Dav\Acl\PrincipalInfo;
+use DavServices\Dav\Collation\Collations;
+use DavServices\Dav\Collation\UnknownCollation;
 use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeCreateCollection;
 use DavServices\Dav\Event\BeforeMove;
@@ -67,16 +69,16 @@ use PHPUnit\Framework\TestCase;
  * `Plugin\DeadProperties`, which also preserves it across `COPY` and `MOVE`
  * as §6.2.1 asks.
  *
- * **`CARDDAV:supported-collation-set` is not here either.** §8.3: "Servers
- * MUST advertise the set of collations that they support via the
- * CARDDAV:supported-collation-set property defined on any resource that
- * supports reports that use collations." No report here uses one yet — the
- * address book reports are P5-03 and P5-04 — so the property is not owed, and
- * advertising three collations the library cannot yet apply would be a promise
- * §8.3 then obliges it to keep: a client choosing one it offered would be owed
- * a match, not a precondition error.
+ * **`CARDDAV:supported-collation-set` is answered since P5-05**, and the
+ * reason it was not before is worth keeping: §8.3 makes the property a promise
+ * with teeth — "If the client chooses a collation not supported by the server,
+ * the server MUST respond with a CARDDAV:supported-collation precondition error
+ * response" — so advertising a collation the library could not apply would owe
+ * a client a match it could not give. Now that `Dav\Collation` has all three,
+ * the list is true, and it is read from there rather than written out twice.
  */
 #[CoversClass(CardDav::class)]
+#[CoversClass(Collations::class)]
 final class CardDavTest extends TestCase
 {
     private const NS = 'urn:ietf:params:xml:ns:carddav';
@@ -269,9 +271,98 @@ final class CardDavTest extends TestCase
      * "on any resource that supports reports that use collations", and this
      * chunk brings no such report.
      */
-    public function testTheCollationSetIsLeftUntilAReportNeedsOne(): void
+    public function testTheCollationSetIsNowAnswered(): void
     {
-        self::assertNull($this->answerFor('{' . self::NS . '}supported-collation-set'));
+        $property = $this->answerFor('{' . self::NS . '}supported-collation-set');
+
+        self::assertInstanceOf(Element::class, $property);
+
+        $names = [];
+
+        foreach ($property->children() as $child) {
+            self::assertSame('{' . self::NS . '}supported-collation', $child->name());
+
+            $names[] = $child->text();
+        }
+
+        // R-CARD-09 names all three, and §8.3.1's DTD comment says two of them
+        // outright: "Both 'i;ascii-casemap' and 'i;unicode-casemap' will be
+        // present."
+        self::assertSame(['i;ascii-casemap', 'i;octet', 'i;unicode-casemap'], $names);
+    }
+
+    /**
+     * **And it is the same list the server will actually accept.**
+     *
+     * §8.3 makes the property a promise with teeth: "If the client chooses a
+     * collation not supported by the server, the server MUST respond with a
+     * CARDDAV:supported-collation precondition error response." A property that
+     * advertised a fourth name would owe a client a match it cannot give, so
+     * the list comes from `Dav\Collation\Collations` rather than from a
+     * literal written twice.
+     */
+    public function testTheCollationSetIsTheListTheServerCanActuallyUse(): void
+    {
+        $property = $this->answerFor('{' . self::NS . '}supported-collation-set');
+
+        self::assertInstanceOf(Element::class, $property);
+
+        // Every advertised name must resolve to a working collation, which is
+        // the other side of §8.3's precondition: a client choosing one it was
+        // offered is owed a match rather than an error.
+        foreach ($property->children() as $child) {
+            self::assertSame($child->text(), Collations::named($child->text())->identifier());
+        }
+    }
+
+    /**
+     * **And a name it did not advertise is refused**, which is the other half
+     * of the same promise. §8.3: "If the client chooses a collation not
+     * supported by the server, the server MUST respond with a
+     * CARDDAV:supported-collation precondition error response."
+     *
+     * The refusal is raised by `Dav\Collation` and carries the name, so that
+     * the report which catches it can write that precondition — the element is
+     * CardDAV's and the registry is a layer below. Asserting both halves here,
+     * beside the property, is what keeps the advertised list and the accepted
+     * list one list.
+     */
+    public function testANameItDidNotAdvertiseIsRefused(): void
+    {
+        $property = $this->answerFor('{' . self::NS . '}supported-collation-set');
+
+        self::assertInstanceOf(Element::class, $property);
+
+        $advertised = array_map(
+            static fn (Element $child): string => $child->text(),
+            $property->children(),
+        );
+
+        self::assertNotContains('i;basic', $advertised);
+
+        $refusal = null;
+
+        try {
+            Collations::named('i;basic');
+        } catch (UnknownCollation $thrown) {
+            $refusal = $thrown;
+        }
+
+        self::assertNotNull($refusal);
+        self::assertSame('i;basic', $refusal->identifier());
+    }
+
+    /**
+     * **§8.3.1 wants at least two**, and says so in its definition: "The
+     * CARDDAV:supported-collation-set property contains two or more
+     * CARDDAV:supported-collation elements."
+     */
+    public function testTheCollationSetHasAtLeastTwoEntries(): void
+    {
+        $property = $this->answerFor('{' . self::NS . '}supported-collation-set');
+
+        self::assertInstanceOf(Element::class, $property);
+        self::assertGreaterThanOrEqual(2, count($property->children()));
     }
 
     /**

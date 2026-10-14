@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\VObject\VCard;
 
 use DavServices\VObject\Component;
+use DavServices\VObject\Lexer;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Reader;
 use DavServices\VObject\Serializer;
@@ -59,6 +60,11 @@ use PHPUnit\Framework\TestCase;
  */
 #[CoversClass(Converter::class)]
 #[CoversClass(Conversion::class)]
+// Named because this list parses its vCards with the reader, and a shard
+// that executes a class without naming it records the work and throws the
+// attribution away — which shows up as a branch nothing covers.
+#[CoversClass(Reader::class)]
+#[CoversClass(Lexer::class)]
 final class ConverterTest extends TestCase
 {
     /**

@@ -48,6 +48,12 @@ may ask of a node; the `Tree` is the only thing that turns a path into one.
 | `Locks\LockInfo` | One write lock: what it reaches, and when it ends |
 | `Cards\AddressBookInfo` | One address book collection: its name, display name and description |
 | `Cards\CardInfo` | One address object resource **without its body**, which is what a `PROPFIND Depth: 1` is answered from |
+| `Collation\Collation` | One way of deciding whether two strings match (RFC 4790) |
+| `Collation\Collations` | The three this server has, by the identifier a client sends; `default` is `i;unicode-casemap` |
+| `Collation\Octet` | `i;octet`: the octets as they are |
+| `Collation\AsciiCasemap` | `i;ascii-casemap`: twenty-six letters folded, nothing else |
+| `Collation\UnicodeCasemap` | `i;unicode-casemap`: titlecased, decomposed, then compared as octets (RFC 5051) |
+| `Collation\Decompositions` | The Unicode table the last of those needs — **generated** by `bin/build-unicode-decompositions.php` |
 | `Locks\LockScope` | Whether anybody else may hold one at the same time |
 | `Locks\LockToken` | The name a lock is held by, made of cryptographic random |
 | `Event\ExceptionRaised` | Raised when something went wrong, so it can be logged or answered better |
@@ -144,6 +150,29 @@ inside `alice`.
 R-TREE-03). A file of any size then costs the same: reading a recording into a
 string to hand it over would spend as much memory as the recording is long.
 Callers must cope with both, and the server streams whichever it is given.
+
+## Collations are definitions, not settings
+
+A `text-match` means nothing until it is said *how* text is compared, and
+RFC 6352 §8.3 makes the collation identifier what says it. Three are here,
+because the memos name three: §8.3 makes `i;ascii-casemap` and
+`i;unicode-casemap` REQUIRED for CardDAV, and R-CARD-09 adds `i;octet`.
+
+**One collation, one code path.** RFC 4790 §4.2: "Collations must be
+deterministic, i.e., given a collation with a specific identifier, and any two
+fixed input strings, the result MUST be the same for the same operation." So
+`i;unicode-casemap` carries its own Unicode decomposition table rather than
+calling `ext-intl` where it happens to be installed — two paths would be two
+answers under one name, and a search result that depended on how PHP was
+compiled is not one anybody can reproduce. That is also why `ext-intl` is no
+longer suggested anywhere: nothing in this library calls it.
+
+**The comparing lives in one place.** Each collation supplies only what it does
+to a string first, which is how all three memos describe themselves - "as for
+i;octet, except that at first...". RFC 4790 §4.2.3 then defines substring
+through *equality*, and `i;unicode-casemap` changes the length of what it
+prepares, so searching the input for a prepared needle would answer a different
+question. The abstract `Collation\Prepared` is where that cannot go wrong.
 
 ## Boundaries
 
