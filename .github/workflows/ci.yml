@@ -74,11 +74,15 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          # The base list mirrors "require" in composer.json. intl and pdo are
-          # added on top: PHPStan can only type-check the optional
-          # i;unicode-casemap code path, and the PDO lock backend, when the
-          # extensions they call into are actually loaded.
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, intl, pdo_sqlite
+          # The base list mirrors "require" in composer.json. pdo is added on
+          # top: PHPStan can only type-check the PDO lock backend when the
+          # extension it calls into is actually loaded.
+          #
+          # intl used to be here for the collations, and is not any more:
+          # i;unicode-casemap carries its own Unicode table, because RFC 4790
+          # §4.2 wants one identifier to mean one result and two code paths
+          # would have meant two.
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite
           coverage: none
 
       - uses: ramsey/composer-install@v4

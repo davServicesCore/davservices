@@ -53,7 +53,6 @@ For the implementation status of each protocol section, see
 
 The following extensions are optional:
 
-- `intl` improves Unicode collation performance; results are the same without it.
 - `openssl` is required only for the bundled TLS-capable transports.
 - `pdo` is required only for bundled PDO reference backends.
 

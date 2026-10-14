@@ -16,6 +16,7 @@ namespace DavServices\Plugin;
 use Closure;
 use DavServices\Acl\Principal;
 use DavServices\CardDav\AddressBook;
+use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeCreateCollection;
 use DavServices\Dav\Event\BeforeMove;
@@ -68,11 +69,16 @@ use DavServices\Xml\Element;
  * the backend through `IProperties`, or by {@see DeadProperties}, which also
  * carries it across `COPY` and `MOVE` as §6.2.1 asks.
  *
- * **`CARDDAV:supported-collation-set`.** §8.3 owes it "on any resource that
- * supports reports that use collations", and no report here uses one yet.
- * Advertising three collations would be a promise §8.3 then obliges the server
- * to keep: a client choosing one it was offered is owed a match, not a
- * `CARDDAV:supported-collation` precondition error.
+ * ## And one it answers since the collations exist
+ *
+ * **`CARDDAV:supported-collation-set`** was deliberately absent until P5-05,
+ * and the reason is worth keeping: §8.3 makes it a promise with teeth — "If
+ * the client chooses a collation not supported by the server, the server MUST
+ * respond with a CARDDAV:supported-collation precondition error response" — so
+ * a server advertising a collation it could not apply would owe a client a
+ * match it could not give. {@see \DavServices\Dav\Collation\Collations} now
+ * has all three R-CARD-09 names, so the list is true, and it is read from
+ * there rather than written out a second time.
  *
  * ## The rule a node cannot keep
  *
@@ -97,6 +103,10 @@ final class CardDav
     private const ADDRESS_DATA_TYPE = '{' . self::NS . '}address-data-type';
 
     private const MAX_RESOURCE_SIZE = '{' . self::NS . '}max-resource-size';
+
+    private const SUPPORTED_COLLATION_SET = '{' . self::NS . '}supported-collation-set';
+
+    private const SUPPORTED_COLLATION = '{' . self::NS . '}supported-collation';
 
     private const HOME_SET = '{' . self::NS . '}addressbook-home-set';
 
@@ -261,6 +271,34 @@ final class CardDav
         if ($result->wants(self::MAX_RESOURCE_SIZE)) {
             $result->set(self::MAX_RESOURCE_SIZE, (string) $this->maxResourceSize);
         }
+
+        if ($result->wants(self::SUPPORTED_COLLATION_SET)) {
+            $result->set(self::SUPPORTED_COLLATION_SET, $this->theCollationsItHas());
+        }
+    }
+
+    /**
+     * §8.3.1's element: one `supported-collation` per identifier.
+     *
+     * **The list is read rather than written out**, because §8.3 makes it a
+     * promise with teeth: "If the client chooses a collation not supported by
+     * the server, the server MUST respond with a CARDDAV:supported-collation
+     * precondition error response." A property naming a fourth collation would
+     * owe a client a match the server cannot give, and a literal written twice
+     * is how that happens.
+     */
+    private function theCollationsItHas(): Element
+    {
+        $property = new Element(self::SUPPORTED_COLLATION_SET);
+
+        foreach (Collations::names() as $identifier) {
+            $collation = new Element(self::SUPPORTED_COLLATION);
+
+            $collation->appendText($identifier);
+            $property->append($collation);
+        }
+
+        return $property;
     }
 
     /**

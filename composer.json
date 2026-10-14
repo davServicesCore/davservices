@@ -29,7 +29,6 @@
         "ext-hash": "*"
     },
     "suggest": {
-        "ext-intl": "Speeds up i;unicode-casemap collation. Results are identical without it.",
         "ext-openssl": "Required only if you use the bundled TLS-capable transports.",
         "ext-pdo": "Required only for the bundled PDO reference backends."
     },

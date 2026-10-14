@@ -92,7 +92,19 @@
             "ignore": ["DavServices\\Backend\\File\\CardBackend::put"]
         },
         "IncrementInteger": {
-            "ignore": ["DavServices\\Backend\\File\\CardBackend::put"]
+            "ignore": [
+                "DavServices\\Backend\\File\\CardBackend::put",
+                // RFC 5051 step (2)(a) speaks of "the codepoints in the
+                // titlecase property", plural, so the preparation loops over
+                // whatever titlecasing handed back rather than assuming one
+                // character. UnicodeData's titlecase field holds a single
+                // codepoint in every case, and that is what makes the chunk
+                // size of the inner split unobservable: one or two, the loop
+                // sees the same single character. The loop stays because the
+                // memo's wording does, and no input can tell the mutant from
+                // the original.
+                "DavServices\\Dav\\Collation\\UnicodeCasemap::prepare",
+            ]
         },
         // A variadic parameter is a list already, so dropping array_values()
         // there changes nothing a test could observe. The call is what lets
