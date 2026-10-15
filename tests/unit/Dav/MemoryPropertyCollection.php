@@ -11,19 +11,22 @@
 
 declare(strict_types=1);
 
-namespace DavServices\Tests\Unit\CardDav;
+namespace DavServices\Tests\Unit\Dav;
 
 use DavServices\Dav\IProperties;
-use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Xml\Element;
 
 /**
  * A collection that keeps a property of its own.
  *
- * `CARDDAV:addressbook-description` is why this double exists: RFC 6352
- * §6.2.1 says it "SHOULD NOT be protected so that users can specify a
- * description", so it is stored rather than computed — and a wrapper around a
- * store has to pass whatever that store keeps straight through.
+ * Two properties are why this double exists, and both are stored rather than
+ * computed: `CARDDAV:addressbook-description`, of which RFC 6352 §6.2.1 says it
+ * "SHOULD NOT be protected so that users can specify a description", and
+ * `CALDAV:calendar-description`, which RFC 4791 §5.2.1 has carry "a description
+ * of the calendar collection that is suitable for presentation to a user". A
+ * wrapper around a store has to pass whatever that store keeps straight
+ * through, and these are what it would take away by claiming `IProperties`
+ * where there is nothing behind it.
  */
 final class MemoryPropertyCollection extends MemoryCollection implements IProperties
 {

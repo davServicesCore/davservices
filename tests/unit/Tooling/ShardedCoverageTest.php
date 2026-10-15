@@ -190,6 +190,159 @@ final class ShardedCoverageTest extends TestCase
         self::assertSame([], self::filesIn($kept, 0));
     }
     /**
+     * **A method reached two ways is recorded twice**, and the second record
+     * carries no class name. Measured on 15.10.2026 on
+     * `Plugin\CalDav::refuseNesting`, which an event reaches through
+     * `$this->refuseNesting(...)` and a test reaches as a method:
+     *
+     *     DavServices\Plugin\CalDav->refuseNesting   0* 11* 13  21  23
+     *     refuseNesting                              0* 11  13* 21* 23*
+     *
+     * The branch ids are **the same**, because it is the same compiled
+     * function; only the hits differ, and between them they cover all five.
+     * Unioned, the function is fully covered — which is the truth about the
+     * source. Left as two, a floor of 100 % would demand that every case of
+     * every listener be written twice, once through the event and once as a
+     * direct call.
+     */
+    public function testAFunctionRecordedTwiceIsOneFunction(): void
+    {
+        $folded = ShardedCoverage::oneRecordPerFunction([
+            'DavServices\Plugin\CalDav->refuseNesting' => self::record([0 => true, 11 => true, 13 => false]),
+            'refuseNesting' => self::record([0 => true, 11 => false, 13 => true]),
+        ]);
+
+        self::assertSame(['DavServices\Plugin\CalDav->refuseNesting'], array_keys($folded));
+        self::assertSame([true, true, true], self::hitsIn($folded['DavServices\Plugin\CalDav->refuseNesting'] ?? []));
+    }
+
+    /**
+     * **Same ids is not enough, and this is the case that says why.** Two
+     * trivial methods in one file can both compile to one branch at id 0, and
+     * folding those together would union the hits of two different functions —
+     * hiding a gap rather than measuring one. The line span is what tells them
+     * apart, so it is part of the question.
+     */
+    public function testTwoFunctionsThatMerelyLookAlikeAreLeftAlone(): void
+    {
+        $folded = ShardedCoverage::oneRecordPerFunction([
+            'first' => self::record([0 => true], 10),
+            'second' => self::record([0 => false], 20),
+        ]);
+
+        self::assertCount(2, $folded);
+        self::assertSame([false], self::hitsIn($folded['second'] ?? []));
+    }
+
+    /**
+     * Where neither name is the qualified one, the first stands — there is
+     * nothing to choose between them, and keeping the first keeps the order
+     * the report was written in.
+     */
+    public function testWhereNeitherNameIsQualifiedTheFirstStands(): void
+    {
+        $folded = ShardedCoverage::oneRecordPerFunction([
+            'closure' => self::record([0 => true]),
+            'closure again' => self::record([0 => false]),
+        ]);
+
+        self::assertSame(['closure'], array_keys($folded));
+    }
+
+    /**
+     * One record is one record: nothing to fold, and nothing changed.
+     */
+    public function testASingleRecordIsLeftAsItIs(): void
+    {
+        $folded = ShardedCoverage::oneRecordPerFunction(['only' => self::record([0 => false])]);
+
+        self::assertSame(['only'], array_keys($folded));
+        self::assertSame([false], self::hitsIn($folded['only'] ?? []));
+    }
+
+    /**
+     * A record that is no function record — anything but the two keys
+     * php-code-coverage writes — is passed through rather than read: this
+     * walks data from another library, and what it cannot recognise it leaves
+     * alone.
+     */
+    public function testSomethingThatIsNoFunctionRecordIsPassedThrough(): void
+    {
+        $folded = ShardedCoverage::oneRecordPerFunction(['odd' => 'not a record', 'other' => ['branches' => 'odd']]);
+
+        self::assertSame(['odd', 'other'], array_keys($folded));
+    }
+
+    /**
+     * The paths that go with a function travel with it, so that the merge
+     * hands on a whole record rather than half of one.
+     */
+    public function testThePathsTravelWithTheBranches(): void
+    {
+        $folded = ShardedCoverage::oneRecordPerFunction([
+            'Thing->doIt' => ['branches' => self::branches([0 => true]), 'paths' => [['hit' => ['a test']]]],
+            'doIt' => ['branches' => self::branches([0 => false]), 'paths' => [['hit' => []]]],
+        ]);
+        $kept = $folded['Thing->doIt'] ?? [];
+
+        self::assertIsArray($kept);
+        self::assertSame([['hit' => ['a test']]], $kept['paths'] ?? null);
+    }
+
+    /**
+     * One function record, with a hit or no hit per branch id.
+     *
+     * @param array<int, bool> $hits
+     *
+     * @return array{branches: array<int, array{hit: list<string>, line_start: int, line_end: int}>, paths: list<array{hit: list<string>}>}
+     */
+    private static function record(array $hits, int $from = 90): array
+    {
+        return ['branches' => self::branches($hits, $from), 'paths' => []];
+    }
+
+    /**
+     * @param array<int, bool> $hits
+     *
+     * @return array<int, array{hit: list<string>, line_start: int, line_end: int}>
+     */
+    private static function branches(array $hits, int $from = 90): array
+    {
+        $branches = [];
+
+        foreach ($hits as $id => $hit) {
+            $branches[$id] = ['hit' => $hit ? ['a test'] : [], 'line_start' => $from + $id, 'line_end' => $from + $id];
+        }
+
+        return $branches;
+    }
+
+    /**
+     *
+     * @return list<bool>
+     */
+    private static function hitsIn(mixed $record): array
+    {
+        self::assertIsArray($record);
+        $branches = $record['branches'] ?? null;
+        self::assertIsArray($branches);
+
+        $hits = [];
+
+        foreach ($branches as $branch) {
+            self::assertIsArray($branch);
+
+            $hit = $branch['hit'] ?? null;
+
+            self::assertIsArray($hit);
+
+            $hits[] = $hit !== [];
+        }
+
+        return $hits;
+    }
+
+    /**
      * The files one shard kept a layout for.
      *
      * Indexed through here rather than in each case, because the result is a

@@ -105,6 +105,164 @@ final class ShardedCoverage
     }
 
     /**
+     * One record per function, for the records of one file.
+     *
+     * **A method reached two ways is recorded twice, and the second record
+     * carries no class name.** Measured on 15.10.2026 on
+     * `Plugin\CalDav::refuseNesting`, which an event reaches through
+     * `$this->refuseNesting(...)` and a test reaches as a method:
+     *
+     *     DavServices\Plugin\CalDav->refuseNesting   0* 11* 13  21  23
+     *     refuseNesting                              0* 11  13* 21* 23*
+     *
+     * The branch ids are **the same** — it is the same compiled function — and
+     * only the hits differ. Unioned, the function is fully covered, which is
+     * the truth about the source. Left as two records, a floor of 100 % would
+     * demand that every case of every listener be written twice: once through
+     * the event it is wired to and once as a direct call. That measures the
+     * mechanism rather than the tests.
+     *
+     * **Two records are the same function only where their branch ids *and*
+     * the lines each one spans agree.** Ids alone would not do: two trivial
+     * methods in one file can both compile to a single branch at id 0, and
+     * folding those together would union the hits of two different functions —
+     * hiding a gap instead of measuring one.
+     *
+     * The qualified name is the one kept, because it is the one a reader can
+     * find; where neither is qualified the first stands.
+     *
+     * @param array<array-key, mixed> $functions The function records of one
+     *                                           file
+     *
+     * @return array<array-key, mixed> The same records, folded
+     */
+    public static function oneRecordPerFunction(array $functions): array
+    {
+        $folded = [];
+        $seen = [];
+
+        foreach ($functions as $name => $record) {
+            $signature = self::signatureOf($record);
+
+            if ($signature === null) {
+                $folded[$name] = $record;
+
+                continue;
+            }
+
+            $already = $seen[$signature] ?? null;
+
+            if ($already === null) {
+                $seen[$signature] = $name;
+                $folded[$name] = $record;
+
+                continue;
+            }
+
+            $kept = self::qualified($name) && !self::qualified($already) ? $name : $already;
+            $mine = $folded[$already] ?? null;
+
+            $folded[$kept] = self::withTheHitsOfBoth($mine, $record, $kept === $name);
+
+            if ($kept !== $already) {
+                unset($folded[$already]);
+                $seen[$signature] = $kept;
+            }
+        }
+
+        return $folded;
+    }
+
+    /**
+     * What tells one compiled function from another: the branch ids it has and
+     * the lines each one spans. Null where this is no function record.
+     *
+     */
+    private static function signatureOf(mixed $record): ?string
+    {
+        if (!is_array($record) || !is_array($record['branches'] ?? null)) {
+            return null;
+        }
+
+        $spans = [];
+
+        foreach ($record['branches'] as $id => $branch) {
+            if (!is_array($branch)) {
+                return null;
+            }
+
+            $spans[] = sprintf(
+                '%s:%s-%s',
+                is_int($id) ? $id : 'x',
+                self::numberIn($branch, 'line_start'),
+                self::numberIn($branch, 'line_end'),
+            );
+        }
+
+        return implode(' ', $spans);
+    }
+
+    /**
+     * @param array<array-key, mixed> $branch
+     */
+    private static function numberIn(array $branch, string $key): string
+    {
+        $value = $branch[$key] ?? null;
+
+        return is_int($value) ? (string) $value : 'x';
+    }
+
+    /**
+     * Whether a name says which class the function belongs to.
+     */
+    private static function qualified(string|int $name): bool
+    {
+        return is_string($name) && (str_contains($name, '->') || str_contains($name, '::'));
+    }
+
+    /**
+     * The two records as one, with every branch hit either of them saw.
+     *
+     * The paths travel with whichever record is kept, so that the merge hands
+     * on a whole record rather than half of one.
+     *
+     * @param mixed $kept The record already in hand
+     * @param mixed $arrived The one that turned out to be the same function
+     * @param bool $second Whether the arriving record's name is the one kept
+     *
+     */
+    private static function withTheHitsOfBoth(mixed $kept, mixed $arrived, bool $second): mixed
+    {
+        if (!is_array($kept) || !is_array($arrived)) {
+            return $kept;
+        }
+
+        $branches = $kept['branches'] ?? null;
+        $arriving = $arrived['branches'] ?? null;
+
+        if (!is_array($branches) || !is_array($arriving)) {
+            return $kept;
+        }
+
+        foreach ($arriving as $id => $branch) {
+            $hit = is_array($branch) ? ($branch['hit'] ?? []) : [];
+            $mine = $branches[$id] ?? null;
+
+            if (!is_array($mine) || !is_array($hit) || $hit === []) {
+                continue;
+            }
+
+            $mine['hit'] = [...(is_array($mine['hit'] ?? null) ? $mine['hit'] : []), ...$hit];
+            $branches[$id] = $mine;
+        }
+
+        $whole = $second ? $arrived : $kept;
+        $whole['branches'] = $branches;
+
+        return $whole;
+    }
+
+    /**
      * The files this shard ran any line of.
      *
      * One line is enough: the question is whether the shard ran that code at

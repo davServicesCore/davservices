@@ -113,6 +113,14 @@ foreach ($shards as $at => $coverage) {
         exit(1);
     }
 
+    // **And one record per function.** A method reached both through an
+    // event and as a method call is recorded twice, the second time without
+    // its class name — the same compiled function, with the hits split
+    // between the two. See ShardedCoverage for the measurement.
+    foreach ($layout as $file => $functions) {
+        $layout[$file] = is_array($functions) ? ShardedCoverage::oneRecordPerFunction($functions) : $functions;
+    }
+
     $coverage->getData(true)->setFunctionCoverage($layout);
 
     if ($merged === null) {
