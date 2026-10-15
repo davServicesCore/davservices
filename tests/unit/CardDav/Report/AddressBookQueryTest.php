@@ -275,6 +275,50 @@ final class AddressBookQueryTest extends TestCase
         self::fail('A collation this server has not got was accepted.');
     }
     /**
+     * **§8.6: "Address data is returned in the CARDDAV:address-data XML
+     * element inside the DAV:propstat XML element."** The same element the
+     * multiget answers, written by the same piece — §8.7 says the two reports
+     * answer the same question about a card, and here they do.
+     */
+    public function testTheCardComesBackInTheAddressDataElement(): void
+    {
+        $asked = '<D:prop xmlns:D="DAV:"><D:getetag/>'
+            . '<address-data xmlns="urn:ietf:params:xml:ns:carddav"/></D:prop>';
+        $body = (string) $this->query(self::BY_SURNAME, '1', self::BOOK, $asked)->body();
+
+        self::assertStringContainsString('<d:getetag>', $body);
+        self::assertStringContainsString('FN:Simon Perreault', $body);
+        self::assertStringContainsString('FN:Anna Perreault', $body);
+    }
+
+    /**
+     * §9.1 is the point of the restriction, and it works here as it does in a
+     * multiget: "Since some property data can be large (e.g., PHOTO or SOUND
+     * with in-line content) clients can choose to ignore those by only
+     * requesting the specific items it knows it will use."
+     */
+    public function testTheCardMayComeBackInPart(): void
+    {
+        $asked = '<D:prop xmlns:D="DAV:"><address-data xmlns="urn:ietf:params:xml:ns:carddav">'
+            . '<prop xmlns="urn:ietf:params:xml:ns:carddav" name="FN"/></address-data></D:prop>';
+        $body = (string) $this->query(self::BY_SURNAME, '1', self::BOOK, $asked)->body();
+
+        self::assertStringContainsString('FN:Simon Perreault', $body);
+        self::assertStringNotContainsString('NICKNAME', $body);
+    }
+
+    /**
+     * §10.4's note holds here as well: the element is not a WebDAV property,
+     * so `DAV:allprop` does not bring the card along.
+     */
+    public function testAllpropDoesNotBringTheCardAlong(): void
+    {
+        $body = (string) $this->query(self::BY_SURNAME, '1', self::BOOK, '<D:allprop xmlns:D="DAV:"/>')->body();
+
+        self::assertStringContainsString('<d:getetag>', $body);
+        self::assertStringNotContainsString('BEGIN:VCARD', $body);
+    }
+    /**
      * **§8.6.2's own example, written out as a test.** "If a client-requested
      * limit is being applied, the 507 response for the Request-URI MUST NOT be
      * included in calculating the limit (e.g., if the client requests that only
@@ -579,7 +623,7 @@ final class AddressBookQueryTest extends TestCase
     {
         $server ??= $this->server();
 
-        return $atMost === null ? new AddressBookQuery($server) : new AddressBookQuery($server, $atMost);
+        return $atMost === null ? new AddressBookQuery($server) : new AddressBookQuery($server, atMost: $atMost);
     }
 
     private function request(string $body, ?string $depth, string $path): Request

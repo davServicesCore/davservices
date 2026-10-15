@@ -16,6 +16,7 @@ namespace DavServices\Tests\Unit\VObject\VCard;
 use DavServices\VObject\Component;
 use DavServices\VObject\Lexer;
 use DavServices\VObject\ParseError;
+use DavServices\VObject\Property;
 use DavServices\VObject\Reader;
 use DavServices\VObject\Serializer;
 use DavServices\VObject\VCard\Conversion;
@@ -974,6 +975,63 @@ final class ConverterTest extends TestCase
         $this->expectExceptionMessageMatches('/VCARD/');
 
         Converter::toFourZero(new Component('VEVENT'));
+    }
+
+    /**
+     * **A group prefix survives a conversion**, in both directions and in
+     * every version.
+     *
+     * RFC 6350 §3.3 makes the prefix part of the content line — `group "."
+     * name` — and nothing in any of the three versions drops it; vCard 2.1 §2
+     * has the same construct. Losing it would be losing data the client
+     * stored, silently.
+     *
+     * **It is also what makes a report answerable.** RFC 6352 states the
+     * group-prefix matching rule twice, in §10.5.1 for a filter and in §10.4.2
+     * for the data returned, with the example "a 'name' set to 'X-ABC.TEL'
+     * will match an 'X-ABC.TEL' vCard property only". A conversion that
+     * dropped the prefix would make that half of both sections unanswerable —
+     * which is how this was found, in P5-04, by a `CARDDAV:address-data` test
+     * asking for `X-ABC.TEL` and getting nothing.
+     */
+    #[DataProvider('everyVersion')]
+    public function testAGroupPrefixSurvivesAConversion(string $from, string $to): void
+    {
+        $converted = self::toVersion(self::card($from, ['X-ABC.TEL:+1 555 0100']), $to);
+        $prefixed = $converted->card()->properties('TEL')[0] ?? null;
+
+        self::assertInstanceOf(Property::class, $prefixed);
+        self::assertSame('X-ABC', $prefixed->group());
+        self::assertStringContainsString('X-ABC.TEL:', (new Serializer())->write($converted->card()));
+    }
+
+    /**
+     * Every pair of versions this converter walks between, including the pair
+     * that walks nowhere: a conversion to the version a card already carries
+     * still rebuilds it, and dropped the prefix just as readily.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function everyVersion(): iterable
+    {
+        foreach (['2.1', '3.0', '4.0'] as $from) {
+            foreach (['2.1', '3.0', '4.0'] as $to) {
+                yield $from . ' to ' . $to => [$from, $to];
+            }
+        }
+    }
+
+    private static function toVersion(Component $card, string $version): Conversion
+    {
+        if ($version === '2.1') {
+            return Converter::toTwoOne($card);
+        }
+
+        if ($version === '3.0') {
+            return Converter::toThreeZero($card);
+        }
+
+        return Converter::toFourZero($card);
     }
 
     /**

@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\CardDav\Filter;
 
+use DavServices\CardDav\PropertyName;
 use DavServices\Exception\BadRequest;
 use DavServices\VObject\Component;
 use DavServices\VObject\Property;
@@ -52,34 +53,17 @@ final class PropFilter
 
     private const NOT_DEFINED = '{urn:ietf:params:xml:ns:carddav}is-not-defined';
 
-    /** The group prefix the client named, or null where it named none. */
-    private readonly ?string $group;
-
-    /** The property name, with any group prefix taken off the front. */
-    private readonly string $local;
-
     /**
      * @param list<TextMatch> $matches
      * @param list<ParamFilter> $parameters
      */
     private function __construct(
-        string $name,
+        private readonly PropertyName $named,
         private readonly Test $test,
         private readonly array $matches,
         private readonly array $parameters,
         private readonly bool $mustBeAbsent,
     ) {
-        $at = strpos($name, '.');
-
-        if ($at === false) {
-            $this->group = null;
-            $this->local = $name;
-
-            return;
-        }
-
-        $this->group = substr($name, 0, $at);
-        $this->local = substr($name, $at + 1);
     }
 
     /**
@@ -127,7 +111,13 @@ final class PropFilter
             throw new BadRequest('A CARDDAV:prop-filter asking that a property be absent asks nothing else: RFC 6352 §10.5.1 spells is-not-defined as a choice against the conditions, not beside them.');
         }
 
-        return new self($name, Test::of($element->attribute('test')), $matches, $parameters, $mustBeAbsent);
+        return new self(
+            PropertyName::of($name),
+            Test::of($element->attribute('test')),
+            $matches,
+            $parameters,
+            $mustBeAbsent,
+        );
     }
 
     /**
@@ -165,39 +155,19 @@ final class PropFilter
     /**
      * The properties of the card this filter is about.
      *
-     * **A name without a group prefix matches whatever prefix a property
-     * carries, and a name with one matches that prefix alone.** §10.5.1: "When
-     * the 'name' attribute does not specify a group prefix, it MUST match
-     * properties in the vCard data without a group prefix or with any group
-     * prefix. When the 'name' attribute includes a group prefix, it MUST match
-     * properties that have exactly the same group prefix and name."
-     *
-     * The reader keeps the two apart — the prefix in {@see Property::group()}
-     * and the bare name in {@see Property::name()} — so the first half needs
-     * nothing doing and the second is one comparison. RFC 6350's ABNF settles
-     * its spelling, in the comment under the `group` production: "Group and
-     * name are case-insensitive."
-     *
-     * A name no property could carry falls out of the same rule rather than
-     * needing one of its own: a group is `1*(ALPHA / DIGIT / "-")` and so is a
-     * name, so neither may be empty and neither may hold a full stop.
+     * Which those are is §10.5.1's group-prefix rule, and it lives in
+     * {@see PropertyName} because §10.4.2 states the same rule again for the
+     * data a report returns — two copies would be two chances to disagree
+     * about which properties a client meant.
      *
      * @return list<Property>
      */
     private function propertiesOf(Component $card): array
     {
-        $properties = $card->properties($this->local);
-
-        if ($this->group === null) {
-            return $properties;
-        }
-
         $found = [];
 
-        foreach ($properties as $property) {
-            $group = $property->group();
-
-            if ($group !== null && strcasecmp($group, $this->group) === 0) {
+        foreach ($card->properties() as $property) {
+            if ($this->named->matches($property)) {
                 $found[] = $property;
             }
         }

@@ -357,7 +357,12 @@ final class Converter
                 continue;
             }
 
-            $written->add(new Property($property->name(), $property->value(), $property->parameters()));
+            $written->add(new Property(
+                $property->name(),
+                $property->value(),
+                $property->parameters(),
+                $property->group(),
+            ));
         }
 
         return $written;
@@ -553,7 +558,7 @@ final class Converter
             $parameters[] = new Parameter('TYPE', $types);
         }
 
-        return new Property($name, $value, $parameters);
+        return new Property($name, $value, $parameters, $property->group());
     }
 
     /**
@@ -651,7 +656,7 @@ final class Converter
             $value = self::unescapedForTwoOne($value);
         }
 
-        return new Property($name, $value, $parameters);
+        return new Property($name, $value, $parameters, $property->group());
     }
 
     /**
@@ -771,7 +776,7 @@ final class Converter
             $parameters[] = new Parameter('MEDIATYPE', [$media]);
         }
 
-        return new Property($name, $value, $parameters);
+        return new Property($name, $value, $parameters, $property->group());
     }
 
     /**
@@ -886,7 +891,7 @@ final class Converter
             $parameters[] = new Parameter('TYPE', $types);
         }
 
-        return new Property($name, $value, $parameters);
+        return new Property($name, $value, $parameters, $property->group());
     }
 
     /**

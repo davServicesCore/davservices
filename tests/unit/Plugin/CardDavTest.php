@@ -465,6 +465,66 @@ final class CardDavTest extends TestCase
     }
 
     /**
+     * **§8.7: "Support for the addressbook-multiget REPORT is REQUIRED."** The
+     * second of the two the compliance class promises, wired for the same
+     * reason as the first.
+     *
+     * The body names one card that is there, so a `207` with its href proves
+     * the whole path: the report is reachable, it read the href, and it found
+     * the resource.
+     */
+    public function testRegisterAnswersTheMultigetReportTheMemoRequires(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CardDav($server))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/addressbooks/simon',
+            headers: new Headers(['Depth' => '0']),
+            body: new Body(
+                '<C:addressbook-multiget xmlns:C="' . self::NS . '" xmlns:D="DAV:">'
+                . '<D:href>/addressbooks/simon/loose.vcf</D:href>'
+                . '</C:addressbook-multiget>',
+            ),
+        ));
+
+        self::assertSame(207, $response->status());
+        self::assertStringContainsString('/addressbooks/simon/loose.vcf', (string) $response->body());
+    }
+
+    /**
+     * **What the plugin advertises is what the reports are held to.** §6.2.2
+     * publishes the media types this server keeps and §8.6 and §8.7 make them
+     * a precondition of both reports, so one list has to reach both — a plugin
+     * announcing 4.0 while its reports refused it would be announcing
+     * something untrue.
+     */
+    public function testWhatItAdvertisesIsWhatTheReportsAnswer(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CardDav($server, supportedAddressData: [['text/vcard', '4.0']]))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/addressbooks/simon/work',
+            headers: new Headers(['Depth' => '1']),
+            body: new Body(
+                '<C:addressbook-query xmlns:C="' . self::NS . '" xmlns:D="DAV:"><D:prop>'
+                . '<C:address-data version="3.0"/></D:prop><C:filter/></C:addressbook-query>',
+            ),
+        ));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('supported-address-data', (string) $response->body());
+    }
+    /**
      * **`register()` wires every guard, and this is what proves it.**
      *
      * Each rule below has a test of its own that calls the listener directly,
