@@ -46,6 +46,18 @@ final class AddressObjectTest extends TestCase
     }
 
     /**
+     * **The same question asked of bytes.** §6.3.2.1 asks it of "the resource
+     * submitted in the PUT request", which is a body on its way in and has no
+     * node yet — so the rule is reachable without one.
+     */
+    public function testTheSameQuestionIsAskedOfBytes(): void
+    {
+        self::assertSame('Simon Perreault', AddressObject::in(self::SIMON)?->property('FN')?->value());
+        self::assertNull(AddressObject::in('This is a note, not a card.'));
+        self::assertNull(AddressObject::in(self::SIMON . self::SIMON));
+        self::assertNull(AddressObject::in(''));
+    }
+    /**
      * "a single vCard component **only**" — so two of them is not one of them.
      */
     public function testAFileHoldingTwoOfThemIsNotOne(): void
