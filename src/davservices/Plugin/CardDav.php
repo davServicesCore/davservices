@@ -17,21 +17,27 @@ use Closure;
 use DavServices\Acl\Principal;
 use DavServices\CardDav\AddressBook;
 use DavServices\CardDav\AddressData;
+use DavServices\CardDav\AddressObject;
 use DavServices\CardDav\Report\AddressBookMultiGet;
 use DavServices\CardDav\Report\AddressBookQuery;
 use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeCreateCollection;
+use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeMove;
+use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
+use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\NotFound;
+use DavServices\Exception\PayloadTooLarge;
+use DavServices\Exception\UnsupportedMediaType;
 use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 
@@ -126,6 +132,12 @@ final class CardDav
      */
     private const LOCATION_OK = '{' . self::NS . '}addressbook-collection-location-ok';
 
+    /** §6.3.2.1: the body is valid data for its media type (i.e. valid vCard). */
+    private const VALID_ADDRESS_DATA = '{' . self::NS . '}valid-address-data';
+
+    /** §6.3.2.1: no other card in the address book already holds that `UID`. */
+    private const NO_UID_CONFLICT = '{' . self::NS . '}no-uid-conflict';
+
     /**
      * The limit the requirements fix for a card: 8 MB.
      *
@@ -193,6 +205,8 @@ final class CardDav
         $events->on(BeforeCreateCollection::class, $this->refuseNesting(...));
         $events->on(BeforeCopy::class, $this->refuseABadDestination(...));
         $events->on(BeforeMove::class, $this->refuseABadDestination(...));
+        $events->on(BeforeCreateFile::class, $this->validateTheCard(...));
+        $events->on(BeforeWriteContent::class, $this->validateTheCard(...));
 
         $this->answerTheReportsItOwes($report);
     }
@@ -271,6 +285,8 @@ final class CardDav
      */
     public function refuseABadDestination(BeforeCopy|BeforeMove $event): void
     {
+        $this->checkWhatIsBeingTransferred($event);
+
         $moving = $this->nodeAt($event->from());
 
         if ($moving === null) {
@@ -445,17 +461,7 @@ final class CardDav
      */
     private function isBelowAnAddressBook(string $path): bool
     {
-        [$parent] = Path::split($path);
-
-        while ($parent !== '') {
-            if ($this->nodeAt($parent) instanceof AddressBook) {
-                return true;
-            }
-
-            [$parent] = Path::split($parent);
-        }
-
-        return false;
+        return $this->bookOver($path) !== null;
     }
 
     /**
@@ -483,6 +489,276 @@ final class CardDav
         }
 
         return false;
+    }
+
+    /**
+     * §6.3.2.1's preconditions, for a card on its way into an address book.
+     *
+     * **A file outside an address book is nobody's business here.** The
+     * section applies "when a PUT operation of an address object resource into
+     * an address book collection occurs" — a plain WebDAV collection takes
+     * whatever a client puts in it, and a CardDAV plugin that validated
+     * everything would turn a WebDAV server into a card store.
+     *
+     * @throws Forbidden If the body is no single valid vCard, or its `UID` is
+     *                   already in use in that address book
+     * @throws UnsupportedMediaType If its version is not one this server keeps
+     * @throws PayloadTooLarge If it is larger than the limit
+     */
+    public function validateTheCard(BeforeCreateFile|BeforeWriteContent $event): void
+    {
+        $book = $this->bookOver($event->path());
+
+        if ($book === null) {
+            return;
+        }
+
+        [$where, $collection] = $book;
+
+        $this->mustTake(self::bytesIn($event->content(), $event), $where, $collection, $event->path());
+    }
+
+    /**
+     * The same preconditions for the other two methods §6.3.2.1 names.
+     *
+     * **A collection is not an address object**, and the section applies to
+     * "a COPY or MOVE operation of an address object resource" — so a folder
+     * being moved in is left to §5.2's half above, which is the rule that is
+     * about collections.
+     *
+     * **A `MOVE` does not conflict with itself.** The card at the source is on
+     * its way out, so counting it would make renaming a card impossible — and
+     * §6.3.2 says the name is free: "The URL for each address object resource
+     * is entirely arbitrary". A `COPY` leaves the source where it is, so there
+     * it is a conflict like any other.
+     *
+     * @throws Forbidden If the card is no single valid vCard, or its `UID` is
+     *                   already in use at the destination
+     * @throws UnsupportedMediaType If its version is not one this server keeps
+     * @throws PayloadTooLarge If it is larger than the limit
+     */
+    private function checkWhatIsBeingTransferred(BeforeCopy|BeforeMove $event): void
+    {
+        $book = $this->bookOver($event->to());
+
+        if ($book === null) {
+            return;
+        }
+
+        $source = $this->nodeAt($event->from());
+
+        if (!$source instanceof IFile) {
+            return;
+        }
+
+        [$where, $collection] = $book;
+
+        // The card is read through `get()`, and read once: every store in this
+        // library opens afresh on each call, so the transfer that follows gets
+        // its own handle.
+        $this->mustTake(
+            self::bytesIn($source->get()),
+            $where,
+            $collection,
+            $event->to(),
+            $event instanceof BeforeMove ? $event->from() : null,
+        );
+    }
+
+    /**
+     * Holds a card to §6.3.2.1's four preconditions.
+     *
+     * **The size is asked first**, because it is the one question that needs
+     * no parsing: a body far too large is refused before anything reads it.
+     * The memo puts the preconditions in no order, so this one is chosen.
+     *
+     * @param string $book The path of the address book it is going into
+     * @param string $path Where the card itself will be, which is not a
+     *                     conflict with itself
+     * @param string|null $leaving A path on its way out, which is not a
+     *                             conflict either — a `MOVE`'s source
+     *
+     * @throws Forbidden If the body is no single valid vCard, or its `UID` is
+     *                   already in use in that address book
+     * @throws UnsupportedMediaType If its version is not one this server keeps
+     * @throws PayloadTooLarge If it is larger than the limit
+     */
+    private function mustTake(
+        string $bytes,
+        string $book,
+        AddressBook $collection,
+        string $path,
+        ?string $leaving = null,
+    ): void {
+        if (strlen($bytes) > $this->maxResourceSize) {
+            throw new PayloadTooLarge(
+                sprintf(
+                    'An address object is at most %d octets here: RFC 6352 §6.2.3, and the CARDDAV:max-resource-size precondition of §6.3.2.1.',
+                    $this->maxResourceSize,
+                ),
+                self::MAX_RESOURCE_SIZE,
+            );
+        }
+
+        $card = AddressObject::in($bytes) ?? throw new Forbidden(
+            'An address object holds a single vCard component only: RFC 6352 §5.1, and the CARDDAV:valid-address-data precondition of §6.3.2.1.',
+            self::VALID_ADDRESS_DATA,
+        );
+
+        $version = $card->property('VERSION')?->value();
+        $uid = $card->property('UID')?->value();
+
+        if ($version === null) {
+            // RFC 6350 §6.7.9 makes VERSION mandatory — "This property MUST be
+            // present in the vCard object" — so a card without one is not
+            // valid vCard data, whatever else it holds.
+            throw new Forbidden(
+                'A vCard says which version it is written to: RFC 6350 §6.7.9 makes VERSION mandatory.',
+                self::VALID_ADDRESS_DATA,
+            );
+        }
+
+        if ($uid === null || $uid === '') {
+            // §5.1 asks for more than vCard does: "vCard components in an
+            // address book collection MUST have a UID property value". Without
+            // one the uniqueness rule in the same sentence has nothing to hold.
+            throw new Forbidden(
+                'A card in an address book has a UID: RFC 6352 §5.1 makes it mandatory even where RFC 6350 does not.',
+                self::VALID_ADDRESS_DATA,
+            );
+        }
+
+        $this->mustBeAVersionItKeeps($version);
+
+        $taken = $this->whoAlreadyHas($uid, $book, $collection, $path, $leaving);
+
+        if ($taken !== null) {
+            throw new Forbidden(
+                sprintf('The UID "%s" is already in use in this address book (RFC 6352 §5.1).', $uid),
+                $this->holdingHrefs(self::NO_UID_CONFLICT, [$taken]),
+            );
+        }
+    }
+
+    /**
+     * **The version is part of the media type**, which is why an unadvertised
+     * one is `CARDDAV:supported-address-data` rather than a validity problem:
+     * §6.2.2's `address-data-type` carries a `content-type` **and** a
+     * `version`, and §5.1.1 calls the pair a media type. A `415` says the same
+     * thing in the status line.
+     *
+     * @throws UnsupportedMediaType If this server never advertised it
+     */
+    private function mustBeAVersionItKeeps(string $version): void
+    {
+        foreach ($this->supportedAddressData as [, $kept]) {
+            if ($kept === $version) {
+                return;
+            }
+        }
+
+        throw new UnsupportedMediaType(
+            sprintf(
+                'This server does not keep vCard %s; CARDDAV:supported-address-data says which versions it keeps (RFC 6352 §6.2.2).',
+                $version,
+            ),
+            self::SUPPORTED_ADDRESS_DATA,
+        );
+    }
+
+    /**
+     * The path of the card in that book already holding this `UID`, or null.
+     *
+     * **The scope is the whole address book**, subfolders included: §5.1 asks
+     * for a `UID` "unique in the scope of the address book collection in which
+     * it is contained", and §5.2 lets a book hold "collections that are not
+     * address book collections" — so the walk goes down.
+     *
+     * **It walks the collection rather than what a client may see.** A card
+     * concealed from this client still holds its `UID`; a guard that asked
+     * {@see \DavServices\Dav\VisibleMembers} instead would let two people
+     * create the same `UID` and leave the store with two.
+     */
+    private function whoAlreadyHas(
+        string $uid,
+        string $book,
+        ICollection $collection,
+        string $path,
+        ?string $leaving,
+    ): ?string {
+        foreach ($collection->children() as $child) {
+            $where = Path::join($book, $child->name());
+
+            if ($child instanceof ICollection) {
+                $found = $this->whoAlreadyHas($uid, $where, $child, $path, $leaving);
+
+                if ($found !== null) {
+                    return $found;
+                }
+
+                continue;
+            }
+
+            if ($where === $path || $where === $leaving) {
+                continue;
+            }
+
+            if (AddressObject::of($child)?->property('UID')?->value() === $uid) {
+                return $where;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The address book a path lies in, with its own path, or null where there
+     * is none above it.
+     *
+     * §5.2 forbids an address book inside an address book, so the first one
+     * upwards is the only one there can be.
+     *
+     * @return array{string, AddressBook}|null
+     */
+    private function bookOver(string $path): ?array
+    {
+        [$parent] = Path::split($path);
+
+        while ($parent !== '') {
+            $node = $this->nodeAt($parent);
+
+            if ($node instanceof AddressBook) {
+                return [$parent, $node];
+            }
+
+            [$parent] = Path::split($parent);
+        }
+
+        return null;
+    }
+
+    /**
+     * Content as bytes, whichever of the two shapes it arrived in.
+     *
+     * **A stream that is read has to be put back.** `BeforeCreateFile` says
+     * what a listener owes: "A listener that means to look at it has to put
+     * back something the write can use […] reading the stream without
+     * replacing it is a way to store an empty file." So where an event is
+     * handed in, what was read is written back to it.
+     *
+     * @param resource|string $content
+     */
+    private static function bytesIn(mixed $content, BeforeCreateFile|BeforeWriteContent|null $event = null): string
+    {
+        if (is_string($content)) {
+            return $content;
+        }
+
+        $bytes = (string) stream_get_contents($content);
+
+        $event?->writeInstead($bytes);
+
+        return $bytes;
     }
 
     /**

@@ -20,9 +20,12 @@ use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Collation\UnknownCollation;
 use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeCreateCollection;
+use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeMove;
+use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\Method\Copy;
 use DavServices\Dav\Method\MkCol;
@@ -30,6 +33,7 @@ use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
+use DavServices\Dav\Method\Put;
 use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
@@ -40,11 +44,14 @@ use DavServices\Exception\Forbidden;
 use DavServices\Http\Body;
 use DavServices\Http\Headers;
 use DavServices\Http\Request;
+use DavServices\Http\Response;
 use DavServices\Plugin\CardDav;
 use DavServices\Plugin\DeadProperties;
 use DavServices\Tests\Unit\Backend\MemoryPropertyStorage;
 use DavServices\Tests\Unit\CardDav\MemoryAddressBookHome;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
+use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Dav\StreamFile;
 use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -525,6 +532,454 @@ final class CardDavTest extends TestCase
         self::assertStringContainsString('supported-address-data', (string) $response->body());
     }
     /**
+     * **§6.3.2.1 adds four preconditions to `PUT`, and a card that breaks none
+     * of them is stored.** The happy case first, because everything below is a
+     * refusal and a guard that refused everything would pass each of them.
+     */
+    public function testACardAnAddressBookWillHaveIsStored(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/new.vcf', self::card('fresh'));
+
+        self::assertSame(201, $response->status());
+    }
+
+    /**
+     * **§6.3.2.2 makes this a MUST, and it is the one a validator breaks
+     * first:** "Servers MUST support the use of non-standard properties and
+     * parameters in address object resources stored via the PUT method."
+     */
+    public function testACardWithNonStandardPropertiesIsStored(): void
+    {
+        $card = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:x\r\nFN:Simon\r\n"
+            . "X-ABC-PRIVATE:whatever\r\nTEL;X-ABC-KIND=mobile:+1\r\nX-ABC.TEL:+2\r\nEND:VCARD\r\n";
+
+        self::assertSame(201, $this->putting('/addressbooks/simon/cards/x.vcf', $card)->status());
+    }
+
+    /**
+     * §6.3.2.1: "(CARDDAV:valid-address-data): The resource submitted in the
+     * PUT request […] MUST be valid data for the media type being specified
+     * (i.e., MUST contain valid vCard data)."
+     */
+    public function testRefusesABodyThatIsNoVcard(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', 'This is a note, not a card.');
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-address-data', (string) $response->body());
+    }
+
+    /**
+     * §5.1: "Address object resources contained in address book collections
+     * MUST contain a single vCard component only." Two of them is not one of
+     * them, and it is `valid-address-data` that says so — the data is not
+     * valid *for an address book*, whatever each half of it would be on its
+     * own.
+     */
+    public function testRefusesTwoCardsInOneBody(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', self::card('one') . self::card('two'));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-address-data', (string) $response->body());
+    }
+
+    /**
+     * **§5.1 makes a `UID` mandatory where vCard itself does not.** RFC 6350
+     * §6.7.6 lists `UID` among the properties a vCard may have; RFC 6352 §5.1
+     * turns that into "vCard components in an address book collection MUST
+     * have a UID property value". A card without one cannot be held to the
+     * uniqueness rule in the next sentence, so it is not valid data for an
+     * address book.
+     */
+    public function testRefusesACardWithoutAUid(): void
+    {
+        $card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Nameless\r\nEND:VCARD\r\n";
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', $card);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-address-data', (string) $response->body());
+    }
+
+    /**
+     * §6.3.2.1: "(CARDDAV:supported-address-data): The resource submitted in
+     * the PUT request […] MUST be a supported media type (i.e., vCard) for
+     * address object resources." RFC 6352 counts the version as part of the
+     * media type — §6.2.2's `address-data-type` carries `content-type` **and**
+     * `version`, and §5.1.1 calls the pair a media type — so a 2.1 card is an
+     * unsupported media type for a server that advertises 3.0 and 4.0.
+     *
+     * `415` rather than `403`, because an unsupported media type is the one
+     * precondition here that HTTP already has a status for.
+     */
+    public function testRefusesAVersionItNeverAdvertised(): void
+    {
+        $card = "BEGIN:VCARD\r\nVERSION:2.1\r\nUID:old\r\nFN:Ancient\r\nEND:VCARD\r\n";
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', $card);
+
+        self::assertSame(415, $response->status());
+        self::assertStringContainsString('supported-address-data', (string) $response->body());
+    }
+
+    /**
+     * A deployment that says it keeps 2.1 keeps it: the list the plugin
+     * publishes is the list the guard holds a card to, so the property and the
+     * refusal cannot say different things.
+     */
+    public function testAVersionItDoesAdvertiseIsStored(): void
+    {
+        $card = "BEGIN:VCARD\r\nVERSION:2.1\r\nUID:old\r\nFN:Ancient\r\nEND:VCARD\r\n";
+        $response = $this->putting(
+            '/addressbooks/simon/cards/x.vcf',
+            $card,
+            supported: [['text/vcard', '2.1'], ['text/vcard', '4.0']],
+        );
+
+        self::assertSame(201, $response->status());
+    }
+
+    /**
+     * §6.3.2.1: "(CARDDAV:max-resource-size): The resource submitted in the
+     * PUT request […] MUST have a size in octets less than or equal to the
+     * value of the CARDDAV:max-resource-size property value (Section 6.2.3) on
+     * the address book collection where the resource will be stored."
+     *
+     * "less than or equal to", so the limit itself still fits — and `413`,
+     * which is the status HTTP has for a body that is too large.
+     */
+    public function testRefusesACardLargerThanTheLimit(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', self::card('big'), maxSize: 10);
+
+        self::assertSame(413, $response->status());
+        self::assertStringContainsString('max-resource-size', (string) $response->body());
+    }
+
+    public function testACardOfExactlyTheLimitIsStored(): void
+    {
+        $card = self::card('exact');
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', $card, maxSize: strlen($card));
+
+        self::assertSame(201, $response->status());
+    }
+
+    /**
+     * **§6.3.2.1's third precondition, and the one with a shape of its own:**
+     * "(CARDDAV:no-uid-conflict): The resource submitted in the PUT request
+     * […] MUST NOT specify a vCard UID property value already in use in the
+     * targeted address book collection […] the server SHOULD report the URL of
+     * the resource that is already making use of the same UID property value
+     * in the DAV:href element."
+     *
+     *     <!ELEMENT no-uid-conflict (DAV:href)>
+     *
+     * The href is what makes the refusal useful: a client that stored the card
+     * under another name learns where it is instead of guessing.
+     */
+    public function testRefusesAUidAnotherCardInTheBookAlreadyUses(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/other.vcf', self::card('already-here'));
+        $body = (string) $response->body();
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', $body);
+        self::assertStringContainsString('<d:href>/addressbooks/simon/cards/simon.vcf</d:href>', $body);
+    }
+
+    /**
+     * **Replacing a card with itself is no conflict.** §6.3.2 has a PUT "at a
+     * mapped URI" update what is there, and the card already holding that UID
+     * *is* what is being replaced — a guard that counted it would make every
+     * card in the server unmodifiable.
+     */
+    public function testReplacingACardWithItsOwnUidIsNoConflict(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/simon.vcf', self::card('already-here'));
+
+        self::assertSame(204, $response->status());
+    }
+
+    /**
+     * §5.1: the uniqueness is "in the scope of the address book collection in
+     * which it is contained" — and §5.2 lets an address book hold "collections
+     * that are not address book collections", so the scope reaches into them.
+     */
+    public function testTheScopeReachesIntoAFolderInsideTheBook(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/other.vcf', self::card('buried'));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+    }
+
+    /**
+     * And it reaches no further: "in the scope of the address book collection"
+     * is one book, so the same UID in two books is two cards about the same
+     * person in two places, which is what a client does on purpose.
+     */
+    public function testTheSameUidInAnotherBookIsNoConflict(): void
+    {
+        $response = $this->putting('/addressbooks/simon/work/mine.vcf', self::card('already-here'));
+
+        self::assertSame(201, $response->status());
+    }
+
+    /**
+     * **A file outside an address book is nobody's business here.** §6.3.2.1
+     * applies its preconditions "when a PUT operation of an address object
+     * resource into an address book collection occurs" — a plain WebDAV
+     * collection takes whatever a client puts in it, and a CardDAV plugin that
+     * validated everything would turn a WebDAV server into a card store.
+     */
+    public function testAFileOutsideAnAddressBookIsNotChecked(): void
+    {
+        $response = $this->putting('/addressbooks/simon/spare/anything.txt', 'This is a note, not a card.');
+
+        self::assertSame(201, $response->status());
+    }
+
+    /**
+     * **The body arrives as a stream, and reading it must not empty it.**
+     * `Dav\Method\Put` hands the events `$request->body()->stream()`, and
+     * `BeforeCreateFile` says what a listener owes: "A listener that means to
+     * look at it has to put back something the write can use […] reading the
+     * stream without replacing it is a way to store an empty file."
+     */
+    public function testTheCardIsStillThereAfterBeingRead(): void
+    {
+        $server = $this->serverTaking();
+        $card = self::card('fresh');
+
+        $server->handle(new Request('PUT', '/addressbooks/simon/cards/new.vcf', body: new Body($card)));
+
+        $stored = $server->tree()->node('/addressbooks/simon/cards/new.vcf');
+
+        self::assertInstanceOf(IFile::class, $stored);
+        self::assertSame($card, $stored->get());
+    }
+
+    /**
+     * §6.3.2.1 applies the same preconditions "when a COPY or MOVE operation
+     * of an address object resource into an address book collection occurs" —
+     * so a client cannot reach a conflicting UID into a book sideways.
+     */
+    public function testACopyThatWouldTakeAUidTwiceIsRefused(): void
+    {
+        $response = $this->transferring('COPY', '/addressbooks/simon/cards/simon.vcf', '/addressbooks/simon/work/copy.vcf');
+
+        self::assertSame(201, $response->status(), 'into another book it is free');
+
+        $refused = $this->transferring('COPY', '/addressbooks/simon/cards/simon.vcf', '/addressbooks/simon/cards/again.vcf');
+
+        self::assertSame(403, $refused->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $refused->body());
+    }
+
+    /**
+     * **A `MOVE` inside one book is not a conflict with itself.** The card at
+     * the source is on its way out, so counting it would make a rename
+     * impossible — and renaming a card is the one thing §6.3.2 says the URL is
+     * free for: "The URL for each address object resource is entirely
+     * arbitrary".
+     */
+    public function testAMoveInsideOneBookIsNoConflict(): void
+    {
+        $response = $this->transferring('MOVE', '/addressbooks/simon/cards/simon.vcf', '/addressbooks/simon/cards/renamed.vcf');
+
+        self::assertSame(201, $response->status());
+    }
+
+    /**
+     * And a `MOVE` that lands beside a card already holding the UID is a
+     * conflict like any other.
+     */
+    public function testAMoveThatWouldTakeAUidTwiceIsRefused(): void
+    {
+        $response = $this->transferring('MOVE', '/addressbooks/simon/loose/stray.vcf', '/addressbooks/simon/cards/stray.vcf');
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+    }
+
+    /**
+     * A card of RFC 6352's own example shape, with the UID a case needs.
+     */
+    private static function card(string $uid): string
+    {
+        return sprintf("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:%s\r\nFN:Simon Perreault\r\nEND:VCARD\r\n", $uid);
+    }
+
+    /**
+     * @param list<array{string, string}>|null $supported What the server says
+     *                                                    it keeps, where that
+     *                                                    is the point of the
+     *                                                    case
+     */
+    private function putting(string $path, string $body, ?int $maxSize = null, ?array $supported = null): Response
+    {
+        $server = $this->serverTaking($maxSize, $supported);
+
+        return $server->handle(new Request('PUT', $path, body: new Body($body)));
+    }
+
+    private function transferring(string $method, string $from, string $to): Response
+    {
+        $server = $this->serverTaking();
+
+        return $server->handle(new Request(
+            $method,
+            $from,
+            headers: new Headers(['Destination' => $to]),
+        ));
+    }
+
+    /**
+     * A server with the plugin wired and the three methods §6.3.2.1 names.
+     *
+     * @param list<array{string, string}>|null $supported
+     */
+    private function serverTaking(?int $maxSize = null, ?array $supported = null): Server
+    {
+        $server = new Server(new Tree($this->tree()));
+        $plugin = new CardDav(
+            $server,
+            maxResourceSize: $maxSize ?? 8_388_608,
+            supportedAddressData: $supported ?? [['text/vcard', '3.0'], ['text/vcard', '4.0']],
+        );
+
+        $plugin->register(new Report($server));
+
+        $server->onMethod('PUT', (new Put($server))(...));
+        $server->onMethod('COPY', (new Copy($server))(...));
+        $server->onMethod('MOVE', (new Move($server))(...));
+
+        return $server;
+    }
+
+    /**
+     * **§6.3.2: "A PUT request targeted at a mapped URI updates an existing
+     * address object resource."** That raises a different event than a
+     * creation does, and a guard wired to only one of the two would let a
+     * client replace a good card with anything at all.
+     */
+    public function testReplacingACardWithSomethingThatIsNoCardIsRefused(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/simon.vcf', 'This is a note, not a card.');
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-address-data', (string) $response->body());
+    }
+
+    /**
+     * **RFC 6350 §6.7.9: "This property MUST be present in the vCard
+     * object."** A card without `VERSION` parses — the reader keeps what it is
+     * given — but it is not valid vCard data, and `CARDDAV:valid-address-data`
+     * is the precondition that says so.
+     */
+    public function testRefusesACardWithoutAVersion(): void
+    {
+        $card = "BEGIN:VCARD\r\nUID:x\r\nFN:Nameless\r\nEND:VCARD\r\n";
+        $response = $this->putting('/addressbooks/simon/cards/x.vcf', $card);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-address-data', (string) $response->body());
+    }
+
+    /**
+     * **The whole book is searched, not the first answer that turns up.** A
+     * `UID` held by a card that comes *after* a subfolder in the collection's
+     * own order is still in use — a walk that stopped at the first folder
+     * would let a client take it.
+     */
+    public function testAUidHeldAfterASubfolderIsStillInUse(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/new.vcf', self::card('moved-in'));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+    }
+
+    /**
+     * **And the search carries on past the card being replaced.** Replacing a
+     * card is allowed to change its `UID` (§6.3.2 makes the name arbitrary and
+     * says nothing about the content), but not to a `UID` another card in the
+     * book already holds — so the walk steps over the one it is replacing and
+     * keeps looking.
+     */
+    public function testReplacingACardMayNotTakeAUidAnotherOneHolds(): void
+    {
+        $response = $this->putting('/addressbooks/simon/cards/simon.vcf', self::card('moved-in'));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+    }
+
+    /**
+     * **A store that hands out a stream is read as readily as one that hands
+     * out a string.** `IFile::get()` says "The content, as a stream wherever
+     * the backend can manage one. A string is allowed for what is small and
+     * already in memory. The caller must cope with both" — and a `COPY` has
+     * no event to put a stream back into, which is the case this covers.
+     */
+    public function testACardWhoseStoreStreamsItIsCheckedToo(): void
+    {
+        $refused = $this->transferring('COPY', '/addressbooks/simon/cards/streamed.vcf', '/addressbooks/simon/cards/again.vcf');
+
+        self::assertSame(403, $refused->status(), 'its own UID is in use where it already is');
+        self::assertStringContainsString('no-uid-conflict', (string) $refused->body());
+
+        $allowed = $this->transferring('COPY', '/addressbooks/simon/cards/streamed.vcf', '/addressbooks/simon/work/copy.vcf');
+
+        self::assertSame(201, $allowed->status(), 'and free in another book');
+    }
+    /**
+     * **The guard asked directly**, the way the other two are tested here.
+     *
+     * Each rule above is driven through a real request, which is what proves
+     * the listener is wired at all; this one holds the listener itself to the
+     * two answers it has — nothing to say about a file outside an address
+     * book, and a named refusal for one inside.
+     */
+    public function testTheGuardHasNothingToSayAboutAFileOutsideABook(): void
+    {
+        $server = $this->server();
+
+        (new CardDav($server))->validateTheCard(
+            new BeforeCreateFile('addressbooks/simon/spare/anything.txt', 'This is a note, not a card.'),
+        );
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testTheGuardRefusesANonCardInsideABook(): void
+    {
+        $server = $this->server();
+
+        $this->expectException(Forbidden::class);
+        $this->expectExceptionMessage('single vCard component');
+
+        (new CardDav($server))->validateTheCard(
+            new BeforeCreateFile('addressbooks/simon/cards/x.vcf', 'This is a note, not a card.'),
+        );
+    }
+
+    /**
+     * And the same through `BeforeWriteContent`, which is the event a `PUT`
+     * at a mapped URI raises — §6.3.2: "A PUT request targeted at a mapped URI
+     * updates an existing address object resource."
+     */
+    public function testTheGuardChecksAReplacementToo(): void
+    {
+        $server = $this->server();
+
+        $this->expectException(Forbidden::class);
+        $this->expectExceptionMessage('single vCard component');
+
+        (new CardDav($server))->validateTheCard(
+            new BeforeWriteContent('addressbooks/simon/cards/simon.vcf', 'This is a note, not a card.'),
+        );
+    }
+    /**
      * **`register()` wires every guard, and this is what proves it.**
      *
      * Each rule below has a test of its own that calls the listener directly,
@@ -712,16 +1167,34 @@ final class CardDavTest extends TestCase
     }
 
     /**
-     * **Moving something that is not an address book is not this plugin's
-     * business.** The precondition is scoped by its own first words — "when
-     * the Request-URI is an address book collection" — so a card moved inside
-     * an address book goes through, which is the ordinary case.
+     * **Moving something that is not an address book is not §5.2's
+     * business.** That precondition is scoped by its own first words — "when
+     * the Request-URI is an address book collection" — so a card moved into an
+     * address book goes through it, which is the ordinary case.
+     *
+     * A valid card, because §6.3.2.1's preconditions **are** about cards and
+     * apply to the same `MOVE`: the case below is the one where they bite.
      */
     public function testMovingSomethingThatIsNotAnAddressBookGoesThrough(): void
     {
-        $this->transfer(new BeforeMove('addressbooks/simon/loose.vcf', 'addressbooks/simon/contacts/loose.vcf'));
+        $this->transfer(new BeforeMove('addressbooks/simon/cards/simon.vcf', 'addressbooks/simon/contacts/simon.vcf'));
 
         $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **And §6.3.2.1 is about the card rather than the collection**, so a file
+     * that is no card at all is refused on its way into an address book — the
+     * section applies "when a COPY or MOVE operation of an address object
+     * resource into an address book collection occurs", and the refusal says
+     * which of the two rules it broke.
+     */
+    public function testMovingSomethingThatIsNoCardIntoABookIsRefused(): void
+    {
+        $this->expectException(Forbidden::class);
+        $this->expectExceptionMessage('single vCard component');
+
+        $this->transfer(new BeforeMove('addressbooks/simon/loose.vcf', 'addressbooks/simon/contacts/loose.vcf'));
     }
 
     /**
@@ -761,6 +1234,16 @@ final class CardDavTest extends TestCase
 
         $contacts->add(new MemoryAddressBookHome('photos'));
         $simon->add(AddressBook::of($contacts));
+        $simon->add(AddressBook::of(
+            (new MemoryCollection('cards'))
+                ->add(new MemoryFile('simon.vcf', self::card('already-here')))
+                ->add((new MemoryCollection('inner'))->add(new MemoryFile('buried.vcf', self::card('buried'))))
+                ->add(new MemoryFile('stray.vcf', self::card('moved-in')))
+                ->add(new MemoryFile('note.txt', 'This is a note, not a card.'))
+                ->add(new MemoryFile('nouid.vcf', "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Nameless\r\nEND:VCARD\r\n"))
+                ->add(new StreamFile('streamed.vcf', self::card('streamed'))),
+        ));
+        $simon->add((new MemoryCollection('loose'))->add(new MemoryFile('stray.vcf', self::card('already-here'))));
         $simon->add(AddressBook::of(new MemoryCollection('work')));
         $simon->createFile('loose.vcf', 'BEGIN:VCARD');
         $simon->add((new MemoryCollection('folder'))->add(AddressBook::of(new MemoryCollection('buried'))));

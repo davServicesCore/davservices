@@ -52,10 +52,24 @@ final class AddressObject
             return null;
         }
 
+        return self::in($node->get());
+    }
+
+    /**
+     * The one vCard this text holds, or null where it is not a card.
+     *
+     * The same question asked of bytes rather than of a node, because §6.3.2.1
+     * asks it of "the resource submitted in the PUT request" — which is a body
+     * on its way in and has no node yet.
+     *
+     * @param resource|string $text As {@see Reader} takes it
+     */
+    public static function in(mixed $text): ?Component
+    {
         $card = null;
 
         try {
-            foreach ((new Reader($node->get()))->objects() as $object) {
+            foreach ((new Reader($text))->objects() as $object) {
                 if ($card !== null) {
                     // A second one is read far enough to know that it is there
                     // and no further: whatever else the file holds, §5.1 has
