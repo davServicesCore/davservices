@@ -1,0 +1,107 @@
+<?php
+
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
+declare(strict_types=1);
+
+namespace DavServices\Tests\Unit\CardDav;
+
+use DavServices\CardDav\AddressObject;
+use DavServices\Tests\Unit\Dav\MemoryCollection;
+use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Dav\PlainNode;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * Test list for what an address object is. RFC 6352 §5.1.
+ *
+ * > Address object resources contained in address book collections MUST contain
+ * > a single vCard component only.
+ *
+ * **One sentence, and both reports lean on it.** A `addressbook-query` searches
+ * address objects and a `addressbook-multiget` retrieves them, so each needs
+ * the same answer to "is this one, and what card is in it" — and a second copy
+ * of the answer would be a second chance for the two reports to disagree about
+ * what a client's address book holds.
+ */
+#[CoversClass(AddressObject::class)]
+final class AddressObjectTest extends TestCase
+{
+    private const SIMON = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:simon\r\nFN:Simon Perreault\r\nEND:VCARD\r\n";
+
+    public function testAFileHoldingOneVcardIsOne(): void
+    {
+        $card = AddressObject::of(new MemoryFile('simon.vcf', self::SIMON));
+
+        self::assertNotNull($card);
+        self::assertSame('Simon Perreault', $card->property('FN')?->value());
+    }
+
+    /**
+     * "a single vCard component **only**" — so two of them is not one of them.
+     */
+    public function testAFileHoldingTwoOfThemIsNotOne(): void
+    {
+        self::assertNull(AddressObject::of(new MemoryFile('both.vcf', self::SIMON . self::SIMON)));
+    }
+
+    /**
+     * An empty file reads to no object at all, which is no more an address
+     * object than two of them are.
+     */
+    public function testAFileHoldingNoneIsNotOne(): void
+    {
+        self::assertNull(AddressObject::of(new MemoryFile('empty.vcf')));
+    }
+
+    /**
+     * Text that is no vCard is passed over rather than reported: a report
+     * answers about address objects, and this is not one. Failing a client's
+     * whole request over data it cannot see and could not correct would be the
+     * worse answer.
+     */
+    public function testTextThatIsNoVcardIsNotOne(): void
+    {
+        self::assertNull(AddressObject::of(new MemoryFile('note.txt', 'This is a note, not a card.')));
+    }
+
+    /**
+     * **A component of another kind is not one either.** §5.1 says "vCard", and
+     * this library advertises `text/vcard` and nothing else through
+     * `CARDDAV:supported-address-data` — a calendar that wandered into an
+     * address book is not address data because it is in the wrong place.
+     */
+    public function testACalendarIsNotOne(): void
+    {
+        $calendar = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//y//EN\r\nEND:VCALENDAR\r\n";
+
+        self::assertNull(AddressObject::of(new MemoryFile('calendar.ics', $calendar)));
+    }
+
+    /**
+     * A collection holds address objects; it is not one.
+     */
+    public function testACollectionIsNotOne(): void
+    {
+        self::assertNull(AddressObject::of(new MemoryCollection('photos')));
+    }
+
+    /**
+     * **And a member that is no file at all has nothing to read.** `INode` is
+     * the base of the tree and a collection may hold one — a principal mounted
+     * inside one is the usual case — so a walk that took every non-collection
+     * for a card would fail on a tree that is perfectly legal.
+     */
+    public function testSomethingThatIsNoFileIsNotOne(): void
+    {
+        self::assertNull(AddressObject::of(new PlainNode('a-principal')));
+    }
+}

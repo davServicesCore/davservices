@@ -16,6 +16,8 @@ namespace DavServices\Plugin;
 use Closure;
 use DavServices\Acl\Principal;
 use DavServices\CardDav\AddressBook;
+use DavServices\CardDav\AddressData;
+use DavServices\CardDav\Report\AddressBookMultiGet;
 use DavServices\CardDav\Report\AddressBookQuery;
 use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Event\BeforeCopy;
@@ -102,6 +104,8 @@ final class CardDav
 
     private const QUERY = '{' . self::NS . '}addressbook-query';
 
+    private const MULTIGET = '{' . self::NS . '}addressbook-multiget';
+
     private const SUPPORTED_ADDRESS_DATA = '{' . self::NS . '}supported-address-data';
 
     private const ADDRESS_DATA_TYPE = '{' . self::NS . '}address-data-type';
@@ -158,7 +162,7 @@ final class CardDav
         private readonly Server $server,
         private readonly string $addressBooksAt = 'addressbooks',
         private readonly int $maxResourceSize = self::MAX_SIZE,
-        private readonly array $supportedAddressData = [['text/vcard', '3.0'], ['text/vcard', '4.0']],
+        private readonly array $supportedAddressData = AddressData::KEPT,
         ?callable $principalAddress = null,
     ) {
         $this->principalAddress = $principalAddress === null
@@ -175,7 +179,8 @@ final class CardDav
      * features specified in this document."
      *
      * @param Report $report The `REPORT` method, which this plugin owes an
-     *                       `addressbook-query` (§8.6). It is asked for
+     *                       `addressbook-query` (§8.6) and an
+     *                       `addressbook-multiget` (§8.7). It is asked for
      *                       rather than optional for the reason the sentence
      *                       above gives
      */
@@ -189,24 +194,30 @@ final class CardDav
         $events->on(BeforeCopy::class, $this->refuseABadDestination(...));
         $events->on(BeforeMove::class, $this->refuseABadDestination(...));
 
-        $this->answerTheReportItOwes($report);
+        $this->answerTheReportsItOwes($report);
     }
 
     /**
-     * The reports §8.6 makes REQUIRED.
+     * The two reports §8.6 and §8.7 make REQUIRED.
      *
      * **This is why `register()` asks for the `REPORT` method** rather than
-     * leaving the line to an application: §8.6 says "Support for the
-     * CARDDAV:addressbook-query REPORT is REQUIRED", and the compliance class
-     * announced above promises every REQUIRED feature of the memo. A server
-     * that announced `addressbook` and then refused the query with
-     * `DAV:supported-report` would have told the client something untrue —
-     * and an application left to remember one more line would sooner or later
-     * ship without it.
+     * leaving the lines to an application: §8.6 says "Support for the
+     * CARDDAV:addressbook-query REPORT is REQUIRED" and §8.7 says the same of
+     * the multiget, and the compliance class announced above promises every
+     * REQUIRED feature of the memo. A server that announced `addressbook` and
+     * then refused one of them with `DAV:supported-report` would have told the
+     * client something untrue — and an application left to remember two more
+     * lines would sooner or later ship without one.
+     *
+     * **Both are handed the list this plugin publishes.** §6.2.2's property
+     * says which media types the server keeps, and §8.6 and §8.7 make that
+     * same list a precondition of both reports — so it travels from here
+     * rather than being written out again where it could drift.
      */
-    private function answerTheReportItOwes(Report $report): void
+    private function answerTheReportsItOwes(Report $report): void
     {
-        $report->on(self::QUERY, (new AddressBookQuery($this->server))(...));
+        $report->on(self::QUERY, (new AddressBookQuery($this->server, $this->supportedAddressData))(...));
+        $report->on(self::MULTIGET, (new AddressBookMultiGet($this->server, $this->supportedAddressData))(...));
     }
 
     /**

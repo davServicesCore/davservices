@@ -13,20 +13,18 @@ declare(strict_types=1);
 
 namespace DavServices\CardDav\Report;
 
+use DavServices\CardDav\AddressData;
+use DavServices\CardDav\AddressObject;
 use DavServices\CardDav\Filter\Filter;
 use DavServices\Dav\ICollection;
-use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
-use DavServices\Dav\PropFindForm;
 use DavServices\Dav\Server;
 use DavServices\Dav\VisibleMembers;
 use DavServices\Exception\BadRequest;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\VObject\Component;
-use DavServices\VObject\ParseError;
-use DavServices\VObject\Reader;
 use DavServices\Xml\Element;
 use DavServices\Xml\MultiStatus;
 use Generator;
@@ -98,14 +96,18 @@ use Generator;
  * it, so every property and every parameter is queryable, and there is no
  * subset to report.
  *
- * **`CARDDAV:supported-address-data`** is about the `content-type` and
- * `version` attributes of `CARDDAV:address-data`, which is not here yet — see
- * below.
+ * **`CARDDAV:supported-address-data`** is answered where the attributes are
+ * read, in {@see \DavServices\CardDav\AddressData}, and like the collation it
+ * is answered before any card is fetched.
+ *
+ * ## What the response carries
+ *
+ * Whatever the property group asked for, written by {@see WhatToReturn} —
+ * which is also what answers `CARDDAV:address-data`, the element §8.6 wants
+ * the card data in. The same piece serves {@see AddressBookMultiGet}, because
+ * §8.7 has that report answer the same question about a card.
  *
  * ## What is not here yet
- *
- * `CARDDAV:address-data` belongs to P5-04, so a client asking for it is told
- * `404` like any other property this server does not have, until it arrives.
  *
  * The filter is handed down to no backend. {@see \DavServices\Dav\IFilter}
  * exists for that and {@see Filter} is already shaped for it, but narrowing a
@@ -125,9 +127,11 @@ final class AddressBookQuery
 
     private const WITHIN_LIMITS = '{DAV:}number-of-matches-within-limits';
 
-    private const VCARD = 'VCARD';
-
     /**
+     * @param list<array{string, string}> $supported What the server says it
+     *                                               keeps (§6.2.2), which a
+     *                                               `CARDDAV:address-data` is
+     *                                               held to
      * @param int $atMost How many matches will be reported before the result
      *                    set is cut short (§8.6.2). An address book of ten
      *                    thousand cards answers a search for "a" with all of
@@ -135,6 +139,7 @@ final class AddressBookQuery
      */
     public function __construct(
         private readonly Server $server,
+        private readonly array $supported = AddressData::KEPT,
         private readonly int $atMost = 250,
     ) {
     }
@@ -150,7 +155,7 @@ final class AddressBookQuery
     {
         $depth = self::depthOf($request);
         $filter = Filter::of($asked->child(Filter::NAME) ?? throw new BadRequest('A CARDDAV:addressbook-query carries a CARDDAV:filter: RFC 6352 §10.3 has it outside the optional group, so there is no query without one.'));
-        [$form, $names] = self::whatWasAskedFor($asked);
+        $returning = WhatToReturn::of($this->server, $asked, $this->supported);
         $ceiling = min($this->atMost, self::limitOf($asked) ?? PHP_INT_MAX);
 
         $path = $this->server->path($request);
@@ -160,14 +165,14 @@ final class AddressBookQuery
         $reported = 0;
         $truncated = false;
 
-        foreach ($this->matchesUnder($path, $node, $depth, $filter) as $where => $card) {
+        foreach ($this->matchesUnder($path, $node, $depth, $filter) as $where => [$found, $card]) {
             if ($reported === $ceiling) {
                 $truncated = true;
 
                 break;
             }
 
-            $this->describe($report, $where, $card, $form, $names);
+            $returning->describe($report, $this->server->hrefOf($where, $found), $where, $found, $card);
             ++$reported;
         }
 
@@ -177,40 +182,6 @@ final class AddressBookQuery
 
         return (new Response(207, body: $this->server->writer()->write($report->toElement())))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');
-    }
-
-    /**
-     * Adds one matching card to the report.
-     *
-     * **A query that asked for no properties gets none.** §8.6 has it that
-     * "the request can include XML elements to request WebDAV properties to be
-     * returned", and §10.3 makes that group optional — so a client that
-     * included none asked for none, and answering as `DAV:allprop` would send
-     * it card data it never asked for. What is left to say is that the
-     * resource matched, and RFC 4918 §14.24 has the shape for it: a
-     * `DAV:response` is an href with either propstats or a status.
-     *
-     * @param list<string> $names
-     */
-    private function describe(
-        MultiStatus $report,
-        string $path,
-        INode $card,
-        ?PropFindForm $form,
-        array $names,
-    ): void {
-        $href = $this->server->hrefOf($path, $card);
-
-        if ($form === null) {
-            $report->addStatus($href, 200);
-
-            return;
-        }
-
-        $report->addProperties(
-            $href,
-            Answers::about($this->server->events(), $path, $card, $form, $names)->byStatus(),
-        );
     }
 
     /**
@@ -250,15 +221,18 @@ final class AddressBookQuery
      * processing a query", and work that is never done is the cheapest kind of
      * limit.
      *
-     * @return Generator<string, INode>
+     * Each one comes with the card that was read to decide it matched, so
+     * that the response does not read the body a second time.
+     *
+     * @return Generator<string, array{INode, Component}>
      */
     private function matchesUnder(string $path, INode $node, int $depth, Filter $filter): Generator
     {
         if (!$node instanceof ICollection) {
-            $card = self::addressObjectOf($node);
+            $card = AddressObject::of($node);
 
             if ($card !== null && $filter->holds($card)) {
-                yield $path => $node;
+                yield $path => [$node, $card];
             }
 
             return;
@@ -274,47 +248,6 @@ final class AddressBookQuery
         foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
             yield from $this->matchesUnder($member, $child, $depth - 1, $filter);
         }
-    }
-
-    /**
-     * The one vCard this node holds, or null where it is not an address
-     * object.
-     *
-     * §5.1 makes that "a single vCard component only", and all three ways of
-     * failing it are answered the same way: something that is not an address
-     * object has nothing to match a filter with.
-     */
-    private static function addressObjectOf(INode $node): ?Component
-    {
-        if (!$node instanceof IFile) {
-            return null;
-        }
-
-        $card = null;
-
-        try {
-            foreach ((new Reader($node->get()))->objects() as $object) {
-                if ($card !== null) {
-                    // A second one is read far enough to know that it is there
-                    // and no further: whatever else the file holds, §5.1 has
-                    // already been broken and nothing in it is an address
-                    // object.
-                    return null;
-                }
-
-                $card = $object;
-            }
-        } catch (ParseError) {
-            return null;
-        }
-
-        // An empty file parses to no object at all, which is no more an
-        // address object than two of them are.
-        if ($card === null || $card->name() !== self::VCARD) {
-            return null;
-        }
-
-        return $card;
     }
 
     /**
@@ -342,41 +275,6 @@ final class AddressBookQuery
         }
 
         throw new BadRequest(sprintf('An addressbook-query goes 0, 1 or infinity deep, not "%s".', $header));
-    }
-
-    /**
-     * Which properties the client asked for, and under which form.
-     *
-     * Null where it asked for none, which §10.3 allows by making the group
-     * optional.
-     *
-     * **An element §10.3 does not name is left where it is rather than
-     * refused**, which is the opposite of what the filter elements do with one.
-     * The difference is what ignoring it would cost: a child of a
-     * `CARDDAV:prop-filter` decides which cards match, so passing one over
-     * would answer a question the client did not ask. A child out here cannot
-     * change which cards match, and this is where the extensions of this
-     * family of protocols arrive.
-     *
-     * @return array{PropFindForm|null, list<string>}
-     */
-    private static function whatWasAskedFor(Element $asked): array
-    {
-        $named = $asked->child('{DAV:}prop');
-
-        if ($named !== null) {
-            return [PropFindForm::Named, $named->childNames()];
-        }
-
-        if ($asked->child('{DAV:}propname') !== null) {
-            return [PropFindForm::NamesOnly, []];
-        }
-
-        if ($asked->child('{DAV:}allprop') !== null) {
-            return [PropFindForm::Everything, []];
-        }
-
-        return [null, []];
     }
 
     /**

@@ -21,6 +21,13 @@ that are already WebDAV resources, which is why so little is needed here.
 |---|---|
 | `AddressBook` | Says of a collection that it is an address book, and keeps §5.2's rule about what may be inside |
 | `AddressBookKeepingItsOwn` | The same, over a store that keeps properties of its own — chosen by `AddressBook::of()`, never constructed by hand |
+| `AddressObject` | Whether a node is a card, and which card — §5.1's "a single vCard component only", asked once for both reports |
+| `AddressData` | Which parts of a card a report returns, and in which version (§10.4) |
+| `PropertyName` | A vCard property as a client names it, group prefix and all — the rule §10.5.1 and §10.4.2 state word for word |
+| `Filter\*` | What a client is searching for: §10.5's `filter` down to §10.5.4's `text-match` |
+| `Report\AddressBookQuery` | `CARDDAV:addressbook-query` (§8.6), including §8.6.2's truncation |
+| `Report\AddressBookMultiGet` | `CARDDAV:addressbook-multiget` (§8.7): these cards, by name |
+| `Report\WhatToReturn` | The `DAV:response` both reports write about one card, read from the same property group |
 
 ## Using it
 

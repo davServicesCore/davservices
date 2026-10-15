@@ -230,15 +230,29 @@ of this property, the server MUST only accept data with the media type
 'text/vcard' and vCard version 3.0." Saying nothing is not the permissive
 option.
 
-**Two properties it deliberately does not answer.**
+**One property it deliberately does not answer.**
 `CARDDAV:addressbook-description` "SHOULD NOT be protected so that users can
 specify a description" (§6.2.1), so a plugin answering it would make it
 unwritable; it is stored by the backend or by `DeadProperties`, which also
-carries it across `COPY` and `MOVE` as §6.2.1 asks. And
-`CARDDAV:supported-collation-set` is owed "on any resource that supports
-reports that use collations" (§8.3) — no report here uses one yet, and
-advertising three collations would be a promise §8.3 then obliges the server to
-keep.
+carries it across `COPY` and `MOVE` as §6.2.1 asks.
+
+**And one it answers since the collations exist.**
+`CARDDAV:supported-collation-set` is owed "on any resource that supports reports
+that use collations" (§8.3). Until P5-05 there were no collations to name and no
+report using one, and advertising three would have been a promise §8.3 then
+obliges the server to keep — "If the client chooses a collation not supported by
+the server, the server MUST respond with a CARDDAV:supported-collation
+precondition error response". Now `Dav\Collation` has all three, a
+`CARDDAV:text-match` resolves through them, and the list is read from there
+rather than written out twice.
+
+**It also wires the two reports §8.6 and §8.7 make REQUIRED**, which is why
+`register()` takes the `REPORT` method: the compliance class it announces
+promises every REQUIRED feature of the memo, and a server that announced
+`addressbook` and then refused `addressbook-query` with `DAV:supported-report`
+would have said something untrue. Both reports are handed the same
+`supported-address-data` list the property publishes, because §8.6 and §8.7 make
+it a precondition of both.
 
 **It also keeps the rule no node can.** §5.2 forbids an address book below an
 address book at any depth, which is a question about the tree; the plugin
