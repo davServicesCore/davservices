@@ -34,7 +34,7 @@ use Throwable;
  * | throws {@see TooManyIterations} | fine: R-RRULE-04's hard limit saying no |
  * | throws anything else | **a finding** — a `TypeError` is a defect, not a refusal |
  * | raises a warning, notice or deprecation | **a finding** |
- * | outlasts its time limit | **a finding**, which is how an endless loop announces itself |
+ * | outlasts its time limit twice over | **a finding**, which is how an endless loop announces itself |
  *
  * The suite runs with `failOnWarning`, so a parser that reads past the end of
  * a string fails a unit test. **The fuzzer holds the same line**, or the
@@ -66,9 +66,50 @@ final class Run
     /**
      * The finding this input produced, or null where it produced none.
      *
+     * **A clock reading over the limit is taken a second time before it
+     * counts**, because the clock is a wall clock and the suite does not own
+     * the machine: the coverage run collects in ten instrumented processes at
+     * once, and a parse measured at five milliseconds on a quiet machine was
+     * measured at 2.3 seconds on that one. Reporting that would have been a
+     * finding about the scheduler, and a fuzzer whose findings are about the
+     * scheduler teaches everybody to ignore findings.
+     *
+     * **A stuck parser cannot be read twice**, because it never comes back
+     * from the first reading. So a second reading inside the limit says the
+     * first was the machine, while a parser that is genuinely slow is slow
+     * both times and stays a finding.
+     *
      * @param callable(string): mixed $parse What to do with the input
      */
     public static function of(string $input, callable $parse, float $limit = self::SECONDS): ?string
+    {
+        $reading = self::reading($input, $parse);
+
+        if (is_float($reading) && $reading > $limit) {
+            $reading = self::reading($input, $parse);
+        }
+
+        if (is_string($reading)) {
+            return $reading;
+        }
+
+        if ($reading > $limit) {
+            return self::finding($input, sprintf('took %.4f s, longer than the %.4f s it may', $reading, $limit));
+        }
+
+        return null;
+    }
+
+    /**
+     * One reading of one input.
+     *
+     * A finding comes back as the finding itself; a run that produced none
+     * comes back as the seconds it took, which is the one thing left to judge
+     * and the one thing a loaded machine can get wrong.
+     *
+     * @param callable(string): mixed $parse What to do with the input
+     */
+    private static function reading(string $input, callable $parse): string|float
     {
         $raised = null;
         $before = hrtime(true);
@@ -105,11 +146,7 @@ final class Run
             return self::finding($input, $raised);
         }
 
-        if ($took > $limit) {
-            return self::finding($input, sprintf('took %.4f s, longer than the %.4f s it may', $took, $limit));
-        }
-
-        return null;
+        return $took;
     }
 
     /**
