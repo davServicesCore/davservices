@@ -93,6 +93,20 @@
         // How long the random part of a temporary name is, and in which order
         // its pieces are joined, are not promises a card store can be held to:
         // eight bytes against seven or nine is the same unique name.
+        // `stream_get_contents()` answers `string|false`, and PHPStan will not
+        // let the `false` through: both guards read a request body that may
+        // have arrived as a stream, and the cast is what turns an unreadable
+        // one into an empty string instead of a TypeError. **No honest input
+        // tells the mutant from the original.** A readable stream answers `''`
+        // rather than `false`, and an unreadable one raises a warning that the
+        // suite turns into a failure either way — so the case the cast is for
+        // is the one case a test cannot arrange.
+        "CastString": {
+            "ignore": [
+                "DavServices\\Plugin\\CalDav::bytesIn",
+                "DavServices\\Plugin\\CardDav::bytesIn",
+            ]
+        },
         "Concat": {
             "ignore": [
                 "DavServices\\Backend\\File\\CardBackend::put",

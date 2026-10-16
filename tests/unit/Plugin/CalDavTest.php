@@ -689,7 +689,10 @@ final class CalDavTest extends TestCase
      */
     public function testAnObjectEveryLimitAdmitsIsStored(): void
     {
-        self::assertSame(201, $this->putting('/calendars/work/new.ics', self::meeting())->status());
+        self::assertSame(
+            201,
+            $this->putting('/calendars/work/new.ics', self::meeting('Another meeting', '5@example.com'))->status(),
+        );
     }
 
     /**
@@ -1023,6 +1026,210 @@ final class CalDavTest extends TestCase
     }
 
     /**
+     * **§4.1's rules reach a real request** (R-CAL-07). The rules themselves
+     * are {@see \DavServices\CalDav\CalendarObject}'s, with cases of their
+     * own; this is the one that shows the guard asks them at all.
+     */
+    public function testAnObjectThatIsNoResourceIsRefusedOnAPut(): void
+    {
+        $twoKinds = str_replace(
+            "END:VCALENDAR\r\n",
+            "BEGIN:VTODO\r\nUID:2@example.com\r\nDTSTAMP:20260101T000000Z\r\nEND:VTODO\r\nEND:VCALENDAR\r\n",
+            self::meeting(),
+        );
+        $response = $this->putting('/calendars/work/two.ics', $twoKinds);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-calendar-object-resource', (string) $response->body());
+    }
+
+    /**
+     * **§4.1: "The UID property value of the calendar components contained in
+     * a calendar object resource MUST be unique in the scope of the calendar
+     * collection in which they are stored."** R-CAL-05 asks for it by the name
+     * §5.3.2.1 gives it.
+     *
+     * **And the answer says where it is taken**, which the same section asks
+     * for: "Servers SHOULD report the URL of the resource that is already
+     * making use of the same UID property value in the DAV:href element."
+     */
+    public function testAUidAlreadyInUseInThatCalendarIsRefused(): void
+    {
+        $response = $this->putting('/calendars/work/again.ics', self::meeting());
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+        self::assertStringContainsString('/calendars/work/meeting.ics', (string) $response->body());
+    }
+
+    /**
+     * **Replacing an object is not a conflict with itself.** §5.3.2 has a
+     * `PUT` at a mapped URI update what is there, so counting the object being
+     * replaced would make a correction impossible.
+     */
+    public function testReplacingAnObjectWithTheSameUidIsAllowed(): void
+    {
+        self::assertSame(
+            204,
+            $this->putting('/calendars/work/meeting.ics', self::meeting('Moved to Tuesday'))->status(),
+        );
+    }
+
+    /**
+     * **The scope is one calendar.** §4.1 says "in the scope of the calendar
+     * collection in which they are stored", so the same `UID` in another
+     * calendar of the same principal is no conflict — and a server that
+     * thought otherwise would stop a client keeping a copy of its own meeting
+     * in a second calendar.
+     */
+    public function testTheSameUidInAnotherCalendarIsNoConflict(): void
+    {
+        self::assertSame(201, $this->putting('/calendars/holiday/same.ics', self::meeting())->status());
+    }
+
+    /**
+     * **And it reaches down.** §4.2 lets a calendar hold "collections that are
+     * not calendar collections", so an object in a folder inside the calendar
+     * is stored in that calendar — and its `UID` is taken.
+     */
+    public function testTheScopeReachesIntoAFolderInsideTheCalendar(): void
+    {
+        $response = $this->putting('/calendars/work/attachments/buried.ics', self::meeting());
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+    }
+
+    /**
+     * **A `UID` taken in a folder inside the calendar is taken**, and the
+     * answer names where: §4.1 scopes uniqueness to "the calendar collection
+     * in which they are stored", and §4.2 lets that collection hold
+     * "collections that are not calendar collections".
+     *
+     * The same walk passes a file that is no calendar object and one the store
+     * kept with an empty `UID` before anything validated it. Neither is a
+     * conflict with anything, and neither may stop the walk — a guard that
+     * choked on what a store already holds would make the calendar unusable.
+     */
+    public function testAUidTakenInAFolderInsideTheCalendarIsFound(): void
+    {
+        $response = $this->putting(
+            '/calendars/work/duplicate.ics',
+            self::meeting('A second copy', '6@example.com'),
+        );
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+        self::assertStringContainsString('/calendars/work/attachments/buried.ics', (string) $response->body());
+    }
+
+    /**
+     * **A resource of nothing but time zones has no `UID` to clash with**, so
+     * a calendar that takes one takes two. A `VTIMEZONE` carries a `TZID`
+     * instead of a `UID` (RFC 5545 §3.6.5), and a guard that asked the
+     * collection about a `UID` there would refuse the second zone a client
+     * stored.
+     */
+    public function testACalendarThatTakesTimeZonesTakesTwoOfThem(): void
+    {
+        self::assertSame(201, $this->putting('/calendars/zones/eastern.ics', self::zone('US-Eastern'))->status());
+        self::assertSame(201, $this->putting('/calendars/zones/berlin.ics', self::zone('Europe/Berlin'))->status());
+    }
+
+    /**
+     * **And a calendar that does not announce them does not take one**, which
+     * is the other half of §5.2.3: the `VTIMEZONE` tag "MUST only be specified
+     * if support for calendar object resources that only contain VTIMEZONE
+     * components is provided or desired". The server's own default does not
+     * name it, so a bare zone belongs nowhere but a calendar that asked for
+     * one.
+     */
+    public function testACalendarThatDoesNotAnnounceThemRefusesABareZone(): void
+    {
+        $response = $this->putting('/calendars/work/eastern.ics', self::zone('US-Eastern'));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('supported-calendar-component', (string) $response->body());
+    }
+
+    /**
+     * **Skipping the resource being written does not end the walk.** §5.3.2
+     * lets a `PUT` replace what is at a mapped URI, so the object there is not
+     * its own conflict — but everything behind it in the calendar still is,
+     * and a guard that stopped at the skip would let a client take a `UID`
+     * that is already in use one folder along.
+     */
+    public function testReplacingAnObjectWithAUidTakenElsewhereIsStillRefused(): void
+    {
+        $response = $this->putting(
+            '/calendars/work/meeting.ics',
+            self::meeting('Renamed onto a taken UID', '6@example.com'),
+        );
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+        self::assertStringContainsString('/calendars/work/attachments/buried.ics', (string) $response->body());
+    }
+
+    /**
+     * **The `UID` behind a time zone is found.** A `VTIMEZONE` comes first in
+     * almost every object a client sends and carries no `UID` of its own
+     * (RFC 5545 §3.6.5), so a guard that gave up there would ask nothing of
+     * the event behind it — and the commonest object of all would walk past
+     * the uniqueness rule.
+     */
+    public function testTheUidBehindATimeZoneIsStillAsked(): void
+    {
+        $withZone = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
+            . "BEGIN:VTIMEZONE\r\nTZID:US-Eastern\r\nBEGIN:STANDARD\r\nDTSTART:19671029T020000\r\n"
+            . "TZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+            . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20260101T000000Z\r\n"
+            . "DTSTART;TZID=US-Eastern:20260105T120000\r\nSUMMARY:A meeting in a zone\r\n"
+            . "END:VEVENT\r\nEND:VCALENDAR\r\n";
+        $response = $this->putting('/calendars/work/zoned.ics', $withZone);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+    }
+
+    /**
+     * **Coming back out of a folder is part of the walk.** §4.2 lets a
+     * calendar hold "collections that are not calendar collections", and a
+     * listing puts them among the objects — so a walk that stopped when a
+     * folder had nothing to say would miss every object after it.
+     */
+    public function testAUidTakenAfterAFolderIsStillFound(): void
+    {
+        $response = $this->putting(
+            '/calendars/work/another.ics',
+            self::meeting('A second copy', '7@example.com'),
+        );
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $response->body());
+        self::assertStringContainsString('/calendars/work/later.ics', (string) $response->body());
+    }
+
+    /**
+     * **A `MOVE` does not conflict with itself**, because the object at the
+     * source is on its way out — counting it would make renaming an object
+     * impossible. A `COPY` leaves the source where it is, so there it is a
+     * conflict like any other.
+     */
+    public function testAMoveWithinACalendarIsNoConflictButACopyIs(): void
+    {
+        self::assertSame(
+            201,
+            $this->transferring('MOVE', '/calendars/work/meeting.ics', '/calendars/work/renamed.ics')->status(),
+        );
+
+        $copied = $this->transferring('COPY', '/calendars/work/meeting.ics', '/calendars/work/twice.ics');
+
+        self::assertSame(403, $copied->status());
+        self::assertStringContainsString('no-uid-conflict', (string) $copied->body());
+    }
+
+    /**
      * **`register()` wires the guards, and this is what proves it.** Each rule
      * above is driven through the listener or a real request; without the
      * wiring, every one of them would pass and the server would keep none of
@@ -1112,11 +1319,23 @@ final class CalDavTest extends TestCase
      * One `VEVENT` within every limit, in a calendar object a client would
      * send.
      */
-    private static function meeting(): string
+    /**
+     * One `VTIMEZONE` and nothing else, which §5.2.3 calls a calendar object
+     * resource of its own kind.
+     */
+    private static function zone(string $tzid): string
     {
         return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
-            . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260105T120000Z\r\n"
-            . "SUMMARY:One-off Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            . 'BEGIN:VTIMEZONE' . "\r\nTZID:" . $tzid . "\r\nBEGIN:STANDARD\r\n"
+            . "DTSTART:19671029T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n"
+            . "END:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n";
+    }
+
+    private static function meeting(string $summary = 'One-off Meeting', string $uid = '1@example.com'): string
+    {
+        return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
+            . 'BEGIN:VEVENT' . "\r\nUID:" . $uid . "\r\nDTSTAMP:20260101T000000Z\r\n"
+            . "DTSTART:20260105T120000Z\r\n" . 'SUMMARY:' . $summary . "\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
     }
 
     /**
@@ -1273,9 +1492,20 @@ final class CalDavTest extends TestCase
         // *only* thing standing between a client and §4.2(b). Aimed straight
         // at a calendar, a request is refused whether the plugin is there or
         // not, because a calendar is deliberately no extended collection.
+        $attachments = new MemoryCalendarHome('attachments');
+
+        $attachments->add(new MemoryFile('buried.ics', self::meeting('Buried', '6@example.com')));
+        $attachments->add(new MemoryFile('readme.txt', 'Not a calendar object at all.'));
+        $attachments->add(new MemoryFile('broken.ics', str_replace(
+            'UID:1@example.com',
+            'UID:',
+            self::meeting('Kept before anything validated it'),
+        )));
+
         $work = (new MemoryCollection('work'))
-            ->add(new MemoryCalendarHome('attachments'))
-            ->add(new MemoryFile('meeting.ics', self::meeting()));
+            ->add(new MemoryFile('meeting.ics', self::meeting()))
+            ->add($attachments)
+            ->add(new MemoryFile('later.ics', self::meeting('After the folder', '7@example.com')));
 
         // A calendar that narrowed its kinds at MKCALENDAR, which §5.2.3
         // licenses — the one shape that shows the guard reading the
@@ -1301,17 +1531,30 @@ final class CalDavTest extends TestCase
 
         $jobs->patchProperties(['{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set' => $quiet]);
 
+        // §5.2.3: "The empty-element tag `<C:comp name="VTIMEZONE"/>` MUST
+        // only be specified if support for calendar object resources that
+        // only contain VTIMEZONE components is provided or desired." This is
+        // the calendar that provides it.
+        $onlyZones = new Element('{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set');
+
+        $onlyZones->append(new Element('{urn:ietf:params:xml:ns:caldav}comp', ['name' => 'VTIMEZONE']));
+
+        $zones = new MemoryPropertyCollection('zones');
+
+        $zones->patchProperties(['{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set' => $onlyZones]);
+
         $calendars->add(Calendar::of($work));
         $calendars->add(Calendar::of($todo));
         $calendars->add(Calendar::of($jobs));
+        $calendars->add(Calendar::of($zones));
         $calendars->add(Calendar::of(new MemoryCollection('holiday')));
         $calendars->add(new MemoryFile('loose.ics', 'BEGIN:VCALENDAR'));
 
         $spare = (new MemoryCollection('spare'))
             ->add(Calendar::of(new MemoryCollection('buried')))
             ->add(new MemoryFile('note.txt', 'This is a note.'))
-            ->add(new MemoryFile('good.ics', self::meeting()))
-            ->add(new StreamFile('streamed.ics', self::meeting()))
+            ->add(new MemoryFile('good.ics', self::meeting('A spare meeting', '3@example.com')))
+            ->add(new StreamFile('streamed.ics', self::meeting('A streamed meeting', '4@example.com')))
             ->add(new MemoryCollection('folder'));
 
         return (new MemoryCollection(''))
