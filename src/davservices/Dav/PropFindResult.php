@@ -99,6 +99,35 @@ final class PropFindResult
     }
 
     /**
+     * Whether this property was asked for **by name**.
+     *
+     * A handful of properties are owed an answer only to a client that names
+     * them. RFC 4791 §5.2.3 to §5.2.9 and §6.2.1, RFC 6638 §2.4.1 and
+     * RFC 6352 §6.2.2 each say the same sentence of theirs: it "SHOULD NOT be
+     * returned by a PROPFIND DAV:allprop request". They are limits and
+     * locations a server publishes, verbose and uninteresting in bulk, and
+     * listing them on every resource of a response is what that sentence
+     * exists to prevent. Everything else asks {@see wants()}.
+     *
+     * **`DAV:include` counts as naming one.** RFC 4918 §9.1 gives a client
+     * that element "to define the properties to be returned in addition to
+     * those defined by DAV:allprop", so one of these can still be had in an
+     * `allprop` request — which is what keeps withholding them from costing a
+     * client a second round trip.
+     *
+     * **A `propname` request is owed every name.** It carries the names a
+     * resource has and no values at all (§9.1), so there is nothing to hold
+     * back: the request is *about* the names.
+     */
+    public function wasNamed(string $name): bool
+    {
+        if (isset($this->answers[$name])) {
+            return false;
+        }
+
+        return $this->form === PropFindForm::NamesOnly || in_array($name, $this->names, true);
+    }
+    /**
      * The named properties nobody has answered yet.
      *
      * This is what a node is asked for, so that a backend does not run a query
