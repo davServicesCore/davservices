@@ -62,6 +62,54 @@ final class PropFindResultTest extends TestCase
         self::assertTrue((new PropFindResult('x', PropFindForm::NamesOnly))->wants('{DAV:}displayname'));
     }
 
+    /**
+     * **Some properties are owed only to a client that names them.** RFC 4791
+     * §5.2.3 to §5.2.9, §6.2.1 and RFC 6352 §6.2.2 each say of their property
+     * that it "SHOULD NOT be returned by a PROPFIND DAV:allprop request", and
+     * a contributor that answered one regardless would put it in every
+     * `allprop` response there is.
+     *
+     * `DAV:include` is how RFC 4918 §9.1 lets a client ask for one anyway:
+     * "DAV:include […] to define the properties to be returned in addition to
+     * those defined by DAV:allprop" — so a name that arrives that way was
+     * named.
+     */
+    public function testKnowsWhatWasNamed(): void
+    {
+        $named = new PropFindResult('x', PropFindForm::Named, ['{DAV:}getetag']);
+
+        self::assertTrue($named->wasNamed('{DAV:}getetag'));
+        self::assertFalse($named->wasNamed('{DAV:}displayname'));
+
+        $everything = new PropFindResult('x', PropFindForm::Everything);
+        $included = new PropFindResult('x', PropFindForm::Everything, ['{DAV:}getetag']);
+
+        self::assertFalse($everything->wasNamed('{DAV:}getetag'), 'An allprop request named nothing.');
+        self::assertTrue($included->wasNamed('{DAV:}getetag'), 'DAV:include names a property.');
+    }
+
+    /**
+     * **`propname` is not an answer**, so nothing is held back from it: it
+     * carries the names of the properties a resource has and no values at all
+     * (RFC 4918 §9.1), which is the one request that is *about* the names.
+     */
+    public function testNamesOnlyIsOwedEveryName(): void
+    {
+        self::assertTrue((new PropFindResult('x', PropFindForm::NamesOnly))->wasNamed('{DAV:}getetag'));
+    }
+
+    /**
+     * And it stops once somebody has answered, like {@see wants()}: the first
+     * contributor owns the property.
+     */
+    public function testStopsSayingItWasNamedOnceItIsAnswered(): void
+    {
+        $result = new PropFindResult('x', PropFindForm::Named, ['{DAV:}getetag']);
+
+        $result->set('{DAV:}getetag', '"abc"');
+
+        self::assertFalse($result->wasNamed('{DAV:}getetag'));
+    }
     public function testStopsWantingOneThatHasBeenAnswered(): void
     {
         $result = new PropFindResult('x', PropFindForm::Everything);

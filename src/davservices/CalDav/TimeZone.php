@@ -76,7 +76,11 @@ final class TimeZone
     {
         $calendar = self::oneObjectIn($text);
 
-        if ($calendar === null || $calendar->name() !== self::VCALENDAR) {
+        // Without regard to case, for the reason {@see CalendarObject::in()}
+        // gives: RFC 5234 §2.3 makes the grammar's own spelling
+        // case-insensitive, and §5.2.10 asks for "a valid iCalendar object"
+        // rather than a loud one.
+        if ($calendar === null || strcasecmp($calendar->name(), self::VCALENDAR) !== 0) {
             return null;
         }
 

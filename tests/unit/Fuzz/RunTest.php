@@ -168,6 +168,35 @@ final class RunTest extends TestCase
     }
 
     /**
+     * **A reading over the limit is taken again before it counts**, and the
+     * clock is why: `hrtime` reads a wall clock, and the suite runs its
+     * coverage in ten instrumented processes at once. A parse that takes five
+     * milliseconds on a quiet machine was measured at 2.3 seconds on that one
+     * — a finding about the scheduler, which is the kind of finding that
+     * teaches everybody to ignore findings.
+     *
+     * **A stuck parser cannot be read twice**, because it never comes back
+     * from the first reading. So a second reading inside the limit is proof
+     * that the first was the machine, while a parse that is genuinely slow is
+     * slow both times and stays a finding
+     * ({@see testARunThatOutlastsItsLimitIsAFinding}).
+     */
+    public function testAReadingTheMachineStretchedIsNotAFinding(): void
+    {
+        $readings = 0;
+
+        $found = Run::of('BEGIN:VCARD', static function () use (&$readings): string {
+            if (++$readings === 1) {
+                usleep(30_000);
+            }
+
+            return 'quick the second time';
+        }, 0.001);
+
+        self::assertNull($found);
+        self::assertSame(2, $readings);
+    }
+    /**
      * **And the input is in the finding**, shortened so that a long one does
      * not bury the report, with its length said so that nothing looks
      * complete when it is not.
