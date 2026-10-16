@@ -84,7 +84,14 @@ final class AddressObject
             return null;
         }
 
-        if ($card === null || $card->name() !== self::VCARD) {
+        // **Compared without regard to case**, because RFC 6350 §6.1.1 says so
+        // of this very value: "The content entity MUST begin with the BEGIN
+        // property with a value of 'VCARD'. The value is case-insensitive."
+        // §6.1.2 says the same of `END` and §3.3 of every name, and
+        // {@see \DavServices\VObject\Component} already looks them up that way —
+        // a reader that answered only to the shouted spelling would refuse a
+        // quiet client's card as no card at all.
+        if ($card === null || strcasecmp($card->name(), self::VCARD) !== 0) {
             return null;
         }
 

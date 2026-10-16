@@ -99,6 +99,33 @@ final class AddressObjectTest extends TestCase
     }
 
     /**
+     * **A card written in lower case is still a card**, and RFC 6350 says so
+     * about this very comparison. §6.1.1: "The content entity MUST begin with
+     * the BEGIN property with a value of 'VCARD'. **The value is
+     * case-insensitive.**" §6.1.2 says the same of `END`, and §3.3 says it of
+     * every name: "Property names and parameter names are case-insensitive
+     * (e.g., the property name 'fn' is the same as 'FN' and 'Fn')."
+     *
+     * {@see \DavServices\VObject\Component} already looks names up that way,
+     * and {@see \DavServices\CardDav\AddressData} already lowers the media
+     * type at the door. Only this comparison was exact — so a quiet client's
+     * card was refused as no card at all, which on a `PUT` is the
+     * `CARDDAV:valid-address-data` precondition of RFC 6352 §6.3.2.1 and the
+     * one refusal a client cannot argue with.
+     *
+     * §3.3 closes with "it is RECOMMENDED that property and parameter names be
+     * upper-case on output" — a recommendation about writing, which says
+     * nothing about what a server may refuse to read.
+     */
+    public function testACardWrittenInLowerCaseIsStillACard(): void
+    {
+        $quiet = "begin:vcard\r\nversion:4.0\r\nuid:simon\r\nfn:Simon Perreault\r\nend:vcard\r\n";
+
+        self::assertSame('Simon Perreault', AddressObject::in($quiet)?->property('FN')?->value());
+        self::assertNotNull(AddressObject::of(new MemoryFile('simon.vcf', $quiet)));
+    }
+
+    /**
      * A collection holds address objects; it is not one.
      */
     public function testACollectionIsNotOne(): void

@@ -86,7 +86,7 @@ final class ContentLine
     ];
 
     /**
-     * @param array<string, list<string>> $parameters
+     * @param array<array-key, list<string>> $parameters
      */
     private function __construct(
         private readonly ?string $group,
@@ -150,7 +150,13 @@ final class ContentLine
     /**
      * Every parameter, by the name it was written under.
      *
-     * @return array<string, list<string>>
+     * **A name of digits alone comes back as an integer key.** `iana-token`
+     * is `1*(ALPHA / DIGIT / "-")` (RFC 6350 §3.3, RFC 5545 §3.1), so `1` is
+     * a legal name — and PHP turns every array key that reads as a decimal
+     * integer into one. The type says so, and a caller wanting the name
+     * casts the key back to the text it was written as.
+     *
+     * @return array<array-key, list<string>>
      */
     public function parameters(): array
     {
@@ -177,7 +183,7 @@ final class ContentLine
         $found = [];
 
         foreach ($this->parameters as $written => $values) {
-            if (strcasecmp($written, $name) === 0) {
+            if (strcasecmp((string) $written, $name) === 0) {
                 $found = [...$found, ...$values];
             }
         }
@@ -242,7 +248,7 @@ final class ContentLine
      * parameters that may appear more than once, and keeping only the last
      * would quietly drop half of what a client sent.
      *
-     * @return array<string, list<string>>
+     * @return array<array-key, list<string>>
      */
     private static function parametersIn(string $text): array
     {
