@@ -1,0 +1,535 @@
+name: Full quality check
+
+# The thorough look that is too slow for a pull request and too broad for a
+# night: every gate of ci.yml with a detailed report, the suite on every PHP
+# version composer.json admits, the coverage report as HTML, mutation testing
+# of the whole library, the API documentation build, and a fuzz run four times
+# the length of the nightly one, on seeds neither of the others spends.
+#
+# A passed check marks the commit it looked at: the tag `quality-checked` and
+# the deployment of the same name point at the last commit that passed, and
+# only at that one. A failed check leaves both where they were.
+#
+# Started by hand (Actions → Full quality check → Run workflow) and every
+# Monday at 02:00 German time.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # The time zone is named rather than worked out into UTC, so that the run
+    # keeps its hour across the change to and from summer time.
+    - cron: '0 2 * * 1'
+      timezone: 'Europe/Berlin'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # The project's own architecture gates, as in ci.yml — plus the shard
+  # matrix the coverage jobs below wait for.
+  # ---------------------------------------------------------------------
+  gates:
+    name: Architecture gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      shards: ${{ steps.shards.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          tools: composer:v2
+
+      - name: No runtime dependencies
+        run: php bin/check-no-runtime-deps.php
+
+      - name: Namespace consistency
+        run: php bin/check-namespace.php
+
+      - name: No application-layer terms
+        run: php bin/check-forbidden-terms.php
+
+      - name: Layer direction
+        run: php bin/check-layers.php
+
+      - name: DocBlocks on the public API
+        run: php bin/check-docblocks.php
+
+      - name: composer.json is valid
+        run: composer validate --strict --no-check-lock
+
+      - name: Split the coverage run into shards
+        id: shards
+        run: echo "matrix=$(php bin/split-tests.php matrix)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------
+  # Static analysis, code style, and the development tools' advisories.
+  #
+  # The audit fails on a known vulnerability only. An abandoned package is
+  # reported, not failed: it is news for the maintainers, not a defect in
+  # what this library ships — which has no dependencies at all.
+  # ---------------------------------------------------------------------
+  static:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: gates
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite
+          coverage: none
+
+      - uses: ramsey/composer-install@v4
+
+      - name: PHPStan
+        run: composer analyse -- --error-format=github
+
+      - name: Coding standard
+        run: composer style
+
+      - name: Advisories for the development tools
+        run: composer audit --abandoned=report
+
+  # ---------------------------------------------------------------------
+  # Every test by name, on every PHP version "^8.2" admits — one further
+  # than ci.yml, so that the newest release is tried before a user does.
+  # The suite fails on a deprecation, so a red 8.5 here is the early word
+  # that something will stop working.
+  # ---------------------------------------------------------------------
+  tests:
+    name: PHP ${{ matrix.php }}, every test by name
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: gates
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4', '8.5']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Unit tests
+        run: |
+          mkdir -p build
+          set -o pipefail
+          status=0
+          vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --no-coverage \
+            --testdox-text build/testdox.txt --log-junit build/junit.xml || status=$?
+          {
+            echo "### PHP ${{ matrix.php }}: every test"
+            echo '```'
+            cat build/testdox.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tests-php-${{ matrix.php }}
+          path: |
+            build/testdox.txt
+            build/junit.xml
+          retention-days: 30
+
+  # ---------------------------------------------------------------------
+  # Coverage in shards, as in ci.yml and for the reasons given there, with
+  # the merged report kept as HTML as well as Clover.
+  # ---------------------------------------------------------------------
+  coverage-shard:
+    name: Coverage ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: gates
+    env:
+      XDEBUG_MODE: coverage
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.gates.outputs.shards) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          # Xdebug pinned for the reason given in ci.yml; bump all copies
+          # together.
+          coverage: xdebug
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite, xdebug-3.5.3
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Unit tests with coverage
+        run: php bin/coverage-shard.php ${{ matrix.shard }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: build/coverage/shard-${{ matrix.shard }}.cov
+          retention-days: 1
+
+  coverage:
+    name: Coverage report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: coverage-shard
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - uses: ramsey/composer-install@v4
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-shard-*
+          path: build/coverage
+          merge-multiple: true
+
+      - name: Merge the shards
+        run: php bin/merge-coverage.php build/coverage build/logs/clover.xml build/coverage-html
+
+      - name: Enforce coverage floor
+        run: |
+          set -o pipefail
+          status=0
+          php bin/check-coverage.php build/logs/clover.xml 100 2>&1 | tee build/coverage.txt || status=$?
+          {
+            echo '### Coverage'
+            echo '```'
+            cat build/coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            build/logs/clover.xml
+            build/coverage-html/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------
+  # Mutation testing of the whole library, as nightly.yml runs it — see
+  # there and bin/mutation-inputs.php for why Infection is not allowed to
+  # time the suite itself.
+  #
+  # The summary goes into the run's page in full, because the figure that
+  # matters is not the MSI but the `Skipped:` and `Not Covered:` lines
+  # beside it: an MSI over the mutants that ran says nothing about the ones
+  # that did not.
+  # ---------------------------------------------------------------------
+  mutation:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: gates
+    env:
+      XDEBUG_MODE: coverage
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: xdebug
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, xdebug-3.5.3
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Infection
+        run: composer mutation
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Mutation testing'
+            echo '```'
+            cat build/test/log/infection-summary.log 2>/dev/null || echo 'Infection wrote no summary.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: infection-report
+          path: build/test/log/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------
+  # The long fuzz run (R-QS-19), shared by four runners.
+  #
+  # The gate in ci.yml spends seeds 1 to 100, the nightly run 101 to 5100,
+  # every night the same. This one starts where the nightly stops and gives
+  # each runner five thousand seeds of its own, so the week adds twenty
+  # thousand seeds nobody had tried. The run is deterministic: a finding
+  # comes back under the same `--seeds=` and `--from=` on any machine.
+  #
+  # `coverage: none` is a requirement, not a saving: the run measures time,
+  # and under Xdebug every input would look like an endless loop.
+  # ---------------------------------------------------------------------
+  fuzz:
+    name: Fuzzing, part ${{ matrix.part }} of 4
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: gates
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Fuzz the parsers past the nightly budget
+        run: php tests/fuzz/fuzz.php --seeds=5000 --from=$(( 5101 + (${{ matrix.part }} - 1) * 5000 ))
+
+  # ---------------------------------------------------------------------
+  # R-ENV-03, as in ci.yml: the library without intl, proved rather than
+  # assumed. See there for why intl is removed with the `:` prefix and why
+  # openssl stays.
+  # ---------------------------------------------------------------------
+  minimal-extensions:
+    name: Without intl
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: gates
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, :intl
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Confirm intl is absent
+        run: |
+          php -r 'if (extension_loaded("intl")) {
+              echo "::error::intl is loaded, but this job must prove the library works without it\n";
+              exit(1);
+          }'
+
+      - name: Unit tests
+        run: vendor/bin/phpunit --configuration=tests/.config/phpunit.xml.dist --no-coverage
+
+  composer-free:
+    name: Composer-free autoloader
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: gates
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - name: Load every class through autoload.php only
+        run: php tests/integration/standalone-autoloader.php
+
+  # ---------------------------------------------------------------------
+  # Litmus against examples/minimal-webdav (R-QS-04), as in ci.yml. The
+  # sets are the ones ci.yml runs; extend both together.
+  # ---------------------------------------------------------------------
+  litmus:
+    name: Litmus
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: gates
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - name: Install litmus
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes litmus
+
+      - name: Run litmus against the example
+        env:
+          TESTS: basic copymove props locks
+        run: |
+          php -S 127.0.0.1:8000 examples/minimal-webdav/public/index.php > server.log 2>&1 &
+          server=$!
+
+          for _ in $(seq 1 40); do
+            curl --fail --silent --output /dev/null http://127.0.0.1:8000/ && break
+            sleep 0.25
+          done
+
+          set +e
+          litmus http://127.0.0.1:8000/ | tee litmus.txt
+          result=${PIPESTATUS[0]}
+          set -e
+
+          kill "$server" 2>/dev/null || true
+
+          {
+            echo '### Litmus'
+            echo '```'
+            cat litmus.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo '--- what the server said ---'
+          cat server.log
+
+          exit $result
+
+  # ---------------------------------------------------------------------
+  # R-REL-03: the API documentation still builds. docs.yml only runs when
+  # src/ changes on main and then publishes at once; this finds a broken
+  # build without publishing anything. Version and checksum are the ones
+  # in docs.yml; bump both together.
+  # ---------------------------------------------------------------------
+  docs:
+    name: API documentation builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: gates
+    env:
+      PHPDOC_VERSION: v3.10.0
+      PHPDOC_SHA256: fe1e7c23ba3329aa6f19ac3c807446159a431a195ec5d9163b0c281a15105207
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
+
+      - name: Fetch phpDocumentor
+        run: |
+          curl -fsSL -o phpDocumentor.phar \
+            "https://github.com/phpDocumentor/phpDocumentor/releases/download/${PHPDOC_VERSION}/phpDocumentor.phar"
+          echo "${PHPDOC_SHA256}  phpDocumentor.phar" | sha256sum --check --strict
+
+      - name: Build the API reference
+        run: php phpDocumentor.phar --config=phpdoc.dist.xml --no-interaction
+
+      - name: Confirm the build is not empty
+        run: |
+          test -f build/api/index.html
+          count=$(find build/api/classes -name '*.html' | wc -l)
+          echo "Documented classes: ${count}"
+          test "${count}" -gt 0
+
+  # ---------------------------------------------------------------------
+  # Passed: the commit that was checked is marked `quality-checked`. Only
+  # the commit of the LAST passed check carries the mark — the tag is moved
+  # and older deployments are removed. A failed check leaves the mark where
+  # it was, so it always names a commit that passed everything above.
+  #
+  # Only a check of main marks anything: a run started by hand on another
+  # branch reports its result, but the mark keeps naming a commit of main.
+  #
+  # The tag does not start release.yml, which only listens to `v*.*.*`, and
+  # a push made with the workflow's own token starts no workflow anyway.
+  # ---------------------------------------------------------------------
+  result:
+    name: Full quality check passed
+    if: always()
+    needs: [gates, static, tests, coverage, mutation, fuzz, minimal-extensions, composer-free, litmus, docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      deployments: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+    steps:
+      # Every job named, so that a red run says which part failed without
+      # opening each one. `skipped` counts as a failure: a job skips when one
+      # it needs has failed, and then it has proved nothing.
+      - name: Check results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::Not every part of the check passed"
+            echo "$failed"
+            { echo '### Failed'; echo '```'; echo "$failed"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo 'Every part of the check passed.' >> "$GITHUB_STEP_SUMMARY"
+
+      # matching-refs answers 200 with an empty list when there is no such
+      # tag, so asking first keeps real errors visible instead of reading
+      # every failure of "move" as "does not exist yet".
+      - name: Tag quality-checked on the checked commit
+        if: github.ref == 'refs/heads/main'
+        run: |
+          exists=$(gh api "repos/$GH_REPO/git/matching-refs/tags/quality-checked" --jq 'map(select(.ref == "refs/tags/quality-checked")) | length')
+          if [ "$exists" -gt 0 ]; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/quality-checked" -f sha="$SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/quality-checked -f sha="$SHA" > /dev/null
+          fi
+          echo "Tag quality-checked → ${SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+
+      # The deployment is what the repository's start page shows. An active
+      # deployment cannot be deleted, so older ones are made inactive first.
+      # `required_contexts: []` because the check above has already decided.
+      - name: Deployment quality-checked
+        if: github.ref == 'refs/heads/main'
+        run: |
+          id=$(jq -n --arg ref "$SHA" '{ref: $ref, environment: "quality-checked", description: "Full quality check passed",
+                 auto_merge: false, required_contexts: []}' | gh api -X POST "repos/$GH_REPO/deployments" --input - --jq .id)
+          gh api -X POST "repos/$GH_REPO/deployments/$id/statuses" -f state=success \
+            -f log_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null
+          for old in $(gh api "repos/$GH_REPO/deployments?environment=quality-checked&per_page=100" --jq ".[] | select(.id != $id) | .id"); do
+            gh api -X POST "repos/$GH_REPO/deployments/$old/statuses" -f state=inactive > /dev/null
+            gh api -X DELETE "repos/$GH_REPO/deployments/$old" > /dev/null
+          done
+          echo "Deployment quality-checked → ${SHA::7}" >> "$GITHUB_STEP_SUMMARY"
