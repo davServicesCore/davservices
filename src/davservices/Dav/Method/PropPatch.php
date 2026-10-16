@@ -81,7 +81,7 @@ final class PropPatch
         }
 
         $report = new MultiStatus();
-        $report->addProperties($this->server->href($path), $result->byStatus());
+        $report->addProperties($this->server->href($path), $result->byStatus(), errors: $result->errors());
 
         return (new Response(207, body: $this->server->writer()->write($report->toElement())))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');

@@ -41,10 +41,17 @@ final class MultiStatus
      *                                                                 by the status they came to, then by name as `{namespace}localname`.
      *                                                                 A value may be text, an element where the property holds XML, or
      *                                                                 null where the property is only being named.
+     * @param array<string, Element|string> $errors The condition a property's
+     *                                              refusal named, by property
+     *                                              name, where it named one
      */
-    public function addProperties(string $href, array $byStatus, ?string $description = null): void
-    {
-        $this->responses[] = self::responseWith($href, $byStatus, $description);
+    public function addProperties(
+        string $href,
+        array $byStatus,
+        ?string $description = null,
+        array $errors = [],
+    ): void {
+        $this->responses[] = self::responseWith($href, $byStatus, $description, $errors);
     }
 
     /**
@@ -60,13 +67,21 @@ final class MultiStatus
      *
      * @param array<int, array<string, Element|string|null>> $byStatus As for
      *                                                                 {@see self::addProperties()}
+     * @param array<string, Element|string> $errors As for
+     *                                              {@see self::addProperties()}
      */
-    public static function responseWith(string $href, array $byStatus, ?string $description = null): Element
-    {
+    public static function responseWith(
+        string $href,
+        array $byStatus,
+        ?string $description = null,
+        array $errors = [],
+    ): Element {
         $response = self::responseFor($href);
 
         foreach ($byStatus as $status => $properties) {
-            $response->append(self::propStat($status, $properties));
+            foreach (self::propStatsFor($status, $properties, $errors) as $propStat) {
+                $response->append($propStat);
+            }
         }
 
         self::describe($response, $description);
@@ -142,9 +157,80 @@ final class MultiStatus
     }
 
     /**
+     * The `propstat` blocks one status needs.
+     *
+     * **One block per condition**, because §14.22 gives a `propstat` a single
+     * `error?` and RFC 4918 §16 puts the condition in "the appropriate
+     * 'propstat'". A `propstat` is the properties that fared identically, so
+     * two reasons are two blocks at the same status — and two properties
+     * refused for the *same* reason are one block, which is what a `propstat`
+     * is for. The properties that named nothing are a block like any other.
+     *
+     * They come out in the order the properties came in, which is the order
+     * the request named them (RFC 4918 §9.2 has the instructions carried out
+     * in that order).
+     *
+     * @param array<string, Element|string|null> $properties
+     * @param array<string, Element|string> $errors
+     *
+     * @return list<Element>
+     */
+    private static function propStatsFor(int $status, array $properties, array $errors): array
+    {
+        /** @var list<array{condition: Element|string|null, properties: array<string, Element|string|null>}> $blocks */
+        $blocks = [];
+
+        foreach ($properties as $name => $value) {
+            $condition = $errors[$name] ?? null;
+            $at = self::blockOf($blocks, $condition);
+
+            $blocks[$at]['condition'] = $condition;
+            $blocks[$at]['properties'][$name] = $value;
+        }
+
+        // **A resource with nothing to say still says so** (RFC 4918 §14.24):
+        // a status that carries no property at all is still one `propstat`.
+        if ($blocks === []) {
+            return [self::propStat($status, [])];
+        }
+
+        $propStats = [];
+
+        foreach ($blocks as $block) {
+            $propStats[] = self::propStat($status, $block['properties'], $block['condition']);
+        }
+
+        return $propStats;
+    }
+
+    /**
+     * Which block this condition belongs in, adding one where it has none yet.
+     *
+     * **`===` is the whole of the rule**, and it says the right thing of each
+     * of the three shapes by itself: two names are the same condition where
+     * they read the same, two elements only where they *are* the same one, and
+     * nothing matches nothing. The identity half matters because §16 lets an
+     * element carry "child elements with specific error information" — two
+     * refusals naming one condition with different detail inside are two
+     * fates.
+     *
+     * @param list<array{condition: Element|string|null, properties: array<string, Element|string|null>}> $blocks
+     */
+    private static function blockOf(array $blocks, Element|string|null $condition): int
+    {
+        foreach ($blocks as $at => $block) {
+            if ($block['condition'] === $condition) {
+                return $at;
+            }
+        }
+
+        return count($blocks);
+    }
+
+    /**
      * @param array<string, Element|string|null> $properties
      */
-    private static function propStat(int $status, array $properties): Element
+    private static function propStat(int $status, array $properties, Element|string|null $error = null): Element
     {
         $propStat = new Element('{DAV:}propstat');
         $prop = new Element('{DAV:}prop');
@@ -155,6 +241,10 @@ final class MultiStatus
 
         $propStat->append($prop);
         $propStat->append(self::status($status));
+
+        if ($error !== null) {
+            $propStat->append(Error::of($error));
+        }
 
         return $propStat;
     }

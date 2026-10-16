@@ -42,6 +42,9 @@ final class PropPatchResult
     /** @var array<string, int> */
     private array $statuses = [];
 
+    /** @var array<string, Element|string> */
+    private array $errors = [];
+
     /**
      * @param array<string, Element|string|null> $mutations What is to become
      *                                                      of each property,
@@ -123,14 +126,45 @@ final class PropPatchResult
 
     /**
      * Settles one property: what became of it, or what is to become of it.
+     *
+     * **A refusal may name the condition it broke**, and RFC 4918 §16 makes
+     * the naming a MUST wherever a memo has given the condition a name: "In a
+     * 207 Multi-Status response, the XML element MUST appear inside an 'error'
+     * element in the appropriate 'propstat' or 'response' element depending on
+     * whether the condition applies to one or more properties or to the
+     * resource as a whole." A property is the first of those two, so the name
+     * is kept here and {@see MultiStatus} puts it in that property's
+     * `propstat`.
+     *
+     * @param Element|string|null $error The condition where the memos have a
+     *                                   name for it: its name where the
+     *                                   element is empty, the element itself
+     *                                   where it carries detail of its own
      */
-    public function set(string $name, int $status): void
+    public function set(string $name, int $status, Element|string|null $error = null): void
     {
         if (isset($this->statuses[$name])) {
             return;
         }
 
         $this->statuses[$name] = $status;
+
+        if ($error !== null) {
+            $this->errors[$name] = $error;
+        }
+    }
+
+    /**
+     * The condition each refusal named, by property name.
+     *
+     * Only the properties that named one are in here: a plain refusal says
+     * nothing rather than saying nothing at length.
+     *
+     * @return array<string, Element|string>
+     */
+    public function errors(): array
+    {
+        return $this->errors;
     }
 
     /**

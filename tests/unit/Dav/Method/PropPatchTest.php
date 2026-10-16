@@ -153,6 +153,36 @@ final class PropPatchTest extends TestCase
     }
 
     /**
+     * **And the condition a listener names reaches the body**, inside the
+     * `propstat` of the property it is about. RFC 4918 §16: "In a 207
+     * Multi-Status response, the XML element MUST appear inside an 'error'
+     * element in the appropriate 'propstat' or 'response' element depending
+     * on whether the condition applies to one or more properties or to the
+     * resource as a whole."
+     */
+    public function testTheConditionAListenerNamesReachesTheBody(): void
+    {
+        $root = $this->tree();
+
+        $this->fileIn($root);
+
+        $events = new EventEmitter();
+        $events->on(PropertiesChanging::class, static function (PropertiesChanging $event): void {
+            $event->result()->set('{DAV:}getetag', 403, '{DAV:}cannot-modify-protected-property');
+        });
+
+        $body = (string) $this->propPatch(
+            $root,
+            '/work.ics',
+            '<D:set><D:prop><D:getetag>"abc"</D:getetag></D:prop></D:set>',
+            $events,
+        )->body();
+
+        self::assertStringContainsString('HTTP/1.1 403 Forbidden', $body);
+        self::assertStringContainsString('cannot-modify-protected-property', $body);
+    }
+
+    /**
      * The event carries the node, or a listener could work out nothing about
      * the resource whose properties it is being asked about — an access-control
      * plugin has to know what it is guarding before it refuses.

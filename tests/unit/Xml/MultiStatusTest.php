@@ -125,6 +125,159 @@ final class MultiStatusTest extends TestCase
     }
 
     /**
+     * **A property that names a condition gets a `propstat` of its own.**
+     * RFC 4918 §16 puts the condition "inside an 'error' element in the
+     * appropriate 'propstat'", and §14.22 gives a `propstat` one `error?` —
+     * so two reasons are two blocks. A `propstat` holds the properties that
+     * fared identically, and a different reason is a different fate even at
+     * the same status.
+     */
+    public function testAPropertyThatNamesAConditionGetsItsOwnBlock(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addProperties(
+            '/calendars/work/',
+            [403 => ['{DAV:}displayname' => null, '{DAV:}getetag' => null]],
+            errors: ['{DAV:}getetag' => '{DAV:}cannot-modify-protected-property'],
+        );
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+        $plain = self::childAt($response, 1);
+        $named = self::childAt($response, 2);
+
+        self::assertSame(
+            ['{DAV:}displayname'],
+            self::childAt($plain, 0)->childNames(),
+            'The two fates were put in one block.',
+        );
+        self::assertSame(['{DAV:}getetag'], self::childAt($named, 0)->childNames());
+        self::assertSame('{DAV:}status', self::childAt($named, 1)->name());
+
+        $error = self::childAt($named, 2);
+
+        self::assertSame('{DAV:}error', $error->name());
+        self::assertSame('{DAV:}cannot-modify-protected-property', self::childAt($error, 0)->name());
+    }
+
+    /**
+     * **A status that carries no property at all is still a block.**
+     * RFC 4918 §14.24 has every `response` hold at least one `propstat`, and
+     * §9.1's `DAV:propname` is where this arises: a resource with nothing to
+     * say says so with an empty `prop`, and a document without the block is
+     * one a strict client is right to refuse.
+     *
+     * {@see \DavServices\Dav\PropFindResult::byStatus()} is what produces the
+     * shape, and until now only its own test knew about it — which left the
+     * writer's half of the rule resting on nothing.
+     */
+    public function testAStatusWithoutAPropertyIsStillABlock(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addProperties('/x', [200 => []]);
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+        $propStat = self::childAt($response, 1);
+
+        self::assertSame('{DAV:}propstat', $propStat->name());
+        self::assertSame([], self::childAt($propStat, 0)->children());
+        self::assertSame('HTTP/1.1 200 OK', self::childAt($propStat, 1)->text());
+    }
+
+    /**
+     * **Two properties refused for the same reason are one block**, which is
+     * what a `propstat` is: RFC 4918 §14.22 reads it as the properties that
+     * fared identically, and two refusals with one condition between them did.
+     */
+    public function testTwoPropertiesWithOneConditionShareABlock(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addProperties(
+            '/x',
+            [403 => ['{DAV:}getetag' => null, '{DAV:}getlastmodified' => null]],
+            errors: [
+                '{DAV:}getetag' => '{DAV:}cannot-modify-protected-property',
+                '{DAV:}getlastmodified' => '{DAV:}cannot-modify-protected-property',
+            ],
+        );
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+
+        self::assertCount(2, $response->children(), 'An href and one propstat make two.');
+        self::assertSame(
+            ['{DAV:}getetag', '{DAV:}getlastmodified'],
+            self::childAt(self::childAt($response, 1), 0)->childNames(),
+        );
+    }
+
+    /**
+     * **Two different conditions are two blocks**, which is the half that
+     * makes the grouping worth anything: a block holds what fared identically,
+     * and two properties refused for different reasons did not.
+     */
+    public function testTwoDifferentConditionsAreTwoBlocks(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addProperties(
+            '/x',
+            [403 => ['{DAV:}getetag' => null, '{DAV:}displayname' => null]],
+            errors: [
+                '{DAV:}getetag' => '{DAV:}cannot-modify-protected-property',
+                '{DAV:}displayname' => '{DAV:}preserved-live-properties',
+            ],
+        );
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+
+        self::assertCount(3, $response->children(), 'The two reasons were put in one block.');
+        self::assertSame(['{DAV:}getetag'], self::childAt(self::childAt($response, 1), 0)->childNames());
+        self::assertSame(['{DAV:}displayname'], self::childAt(self::childAt($response, 2), 0)->childNames());
+    }
+
+    /**
+     * **And a condition that carries detail is told apart by what it is**, not
+     * by its name: §16 lets one hold "child elements with specific error
+     * information", so two elements of the same name may say different things
+     * and belong in blocks of their own.
+     */
+    public function testTwoConditionsThatCarryDetailAreTwoBlocks(): void
+    {
+        $taken = new Element('{DAV:}no-uid-conflict');
+        $other = new Element('{DAV:}no-uid-conflict');
+
+        $taken->append(new Element('{DAV:}href'));
+
+        $multiStatus = new MultiStatus();
+        $multiStatus->addProperties(
+            '/x',
+            [409 => ['{DAV:}getetag' => null, '{DAV:}getlastmodified' => null]],
+            errors: ['{DAV:}getetag' => $taken, '{DAV:}getlastmodified' => $other],
+        );
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+
+        self::assertCount(3, $response->children(), 'The two conditions were put in one block.');
+        self::assertSame($taken, self::childAt(self::childAt($response, 1), 2)->children()[0] ?? null);
+    }
+
+    /**
+     * And properties that name nothing stay in the one block they were in: the
+     * split is paid for only where there is a reason to split.
+     */
+    public function testPropertiesThatNameNoConditionStayInOneBlock(): void
+    {
+        $multiStatus = new MultiStatus();
+        $multiStatus->addProperties('/x', [403 => ['{DAV:}displayname' => null, '{DAV:}getetag' => null]]);
+
+        $response = self::childAt($multiStatus->toElement(), 0);
+
+        self::assertCount(2, $response->children(), 'An href and one propstat make two.');
+        self::assertSame(
+            ['{DAV:}displayname', '{DAV:}getetag'],
+            self::childAt(self::childAt($response, 1), 0)->childNames(),
+        );
+    }
+
+    /**
      * Where the whole resource failed, the response carries the status itself
      * rather than a `propstat` — a `DELETE` that could not remove one member
      * of a collection answers like this (RFC 4918 §9.6.1).

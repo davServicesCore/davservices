@@ -84,6 +84,57 @@ final class PropPatchResultTest extends TestCase
         self::assertSame([403 => ['{DAV:}displayname' => null]], $result->byStatus());
     }
 
+    /**
+     * **A refusal may name the condition it broke**, and RFC 4918 §16 makes
+     * that a MUST rather than a nicety: "In a 207 Multi-Status response, the
+     * XML element MUST appear inside an 'error' element in the appropriate
+     * 'propstat' or 'response' element depending on whether the condition
+     * applies to one or more properties or to the resource as a whole."
+     *
+     * A property refused for a reason the memos have a name for is the first
+     * of those two cases, so the name is kept here beside the status and the
+     * response puts it where §16 says.
+     */
+    public function testARefusalMayNameTheConditionItBroke(): void
+    {
+        $result = new PropPatchResult('x', ['{DAV:}getetag' => 'Work', '{DAV:}displayname' => 'Work']);
+
+        $result->set('{DAV:}getetag', 403, '{DAV:}cannot-modify-protected-property');
+        $result->set('{DAV:}displayname', 403);
+
+        self::assertSame(['{DAV:}getetag' => '{DAV:}cannot-modify-protected-property'], $result->errors());
+    }
+
+    /**
+     * And the first answer's condition stands with its status: whoever
+     * answered first owns the property, reason and all.
+     */
+    public function testTheFirstConditionStandsToo(): void
+    {
+        $result = new PropPatchResult('x', ['{DAV:}getetag' => 'Work']);
+
+        $result->set('{DAV:}getetag', 403, '{DAV:}cannot-modify-protected-property');
+        $result->set('{DAV:}getetag', 409, '{DAV:}preserved-live-properties');
+
+        self::assertSame(['{DAV:}getetag' => '{DAV:}cannot-modify-protected-property'], $result->errors());
+    }
+
+    /**
+     * **A condition that carries detail is kept whole.** RFC 4918 §16: "The
+     * 'error' element MAY contain child elements with specific error
+     * information" — so an element arrives as an element rather than being
+     * flattened into its own name.
+     */
+    public function testAConditionThatCarriesDetailIsKeptWhole(): void
+    {
+        $condition = new Element('{DAV:}no-uid-conflict');
+        $result = new PropPatchResult('x', ['{DAV:}getetag' => 'Work']);
+
+        $result->set('{DAV:}getetag', 409, $condition);
+
+        self::assertSame(['{DAV:}getetag' => $condition], $result->errors());
+    }
+
     public function testNothingHasFailedWhileEverythingIsGoingWell(): void
     {
         $result = new PropPatchResult('x', ['{DAV:}displayname' => 'Work']);
