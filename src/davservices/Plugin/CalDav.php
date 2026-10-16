@@ -37,6 +37,7 @@ use DavServices\Exception\NotFound;
 use DavServices\Exception\PayloadTooLarge;
 use DavServices\Exception\UnsupportedMediaType;
 use DavServices\Uri\Path;
+use DavServices\VObject\Component;
 use DavServices\Xml\Element;
 
 /**
@@ -144,6 +145,12 @@ final class CalDav
      * 'cannot-modify-protected-property' inside the response body."
      */
     private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
+
+    /**
+     * §5.3.2.1, for the rule §4.1 states: a `UID` "MUST be unique in the scope
+     * of the calendar collection in which they are stored".
+     */
+    private const NO_UID_CONFLICT = '{' . self::NS . '}no-uid-conflict';
 
     private const COMPONENT_SET = '{' . self::NS . '}supported-calendar-component-set';
 
@@ -334,7 +341,15 @@ final class CalDav
         }
 
         if ($moving instanceof IFile) {
-            $this->checkTheObjectGoingTo($event->to(), self::bytesIn($moving->get()));
+            // **A `MOVE` does not conflict with itself.** The object at the
+            // source is on its way out, so counting it would make renaming one
+            // impossible. A `COPY` leaves the source where it is, so there it
+            // is a conflict like any other.
+            $this->checkTheObjectGoingTo(
+                $event->to(),
+                self::bytesIn($moving->get()),
+                $event instanceof BeforeMove ? $event->from() : null,
+            );
 
             return;
         }
@@ -381,7 +396,7 @@ final class CalDav
      * @throws UnsupportedMediaType If it is not the version this server keeps
      * @throws PayloadTooLarge If it is larger than the limit
      */
-    private function checkTheObjectGoingTo(string $path, string $bytes): void
+    private function checkTheObjectGoingTo(string $path, string $bytes, ?string $leaving = null): void
     {
         $calendar = $this->calendarOver($path);
 
@@ -389,12 +404,127 @@ final class CalDav
             return;
         }
 
+        [$where, $collection] = $calendar;
+
         $object = CalendarObject::in($bytes) ?? throw new Forbidden(
             'A calendar object holds one iCalendar object: the CALDAV:valid-calendar-data precondition of RFC 4791 §5.3.2.1.',
             self::VALID_CALENDAR_DATA,
         );
 
-        $this->limits->mustTake($bytes, $object, $this->kindsOf($calendar));
+        $this->limits->mustTake($bytes, $object, $this->kindsOf($collection));
+
+        CalendarObject::mustBeOneResource($object);
+
+        $this->mustNotClash($object, $where, $collection, $path, $leaving);
+    }
+
+    /**
+     * §4.1: a `UID` "MUST be unique in the scope of the calendar collection in
+     * which they are stored".
+     *
+     * **One `UID` is all there is to ask about**, because
+     * {@see CalendarObject::mustBeOneResource()} has just said so — and a
+     * resource of nothing but time zones has none, which is why there may be
+     * nothing to ask.
+     *
+     * @throws Forbidden If the `UID` is already in use in that calendar
+     */
+    private function mustNotClash(
+        Component $object,
+        string $where,
+        ICollection $collection,
+        string $path,
+        ?string $leaving,
+    ): void {
+        $uid = self::uidIn($object);
+
+        if ($uid === null) {
+            return;
+        }
+
+        $taken = $this->whoAlreadyHas($uid, $where, $collection, $path, $leaving);
+
+        if ($taken === null) {
+            return;
+        }
+
+        throw new Forbidden(
+            sprintf(
+                'The UID "%s" is already in use in this calendar (RFC 4791 §4.1): the CALDAV:no-uid-conflict precondition of §5.3.2.1.',
+                $uid,
+            ),
+            $this->holdingHrefs(self::NO_UID_CONFLICT, [$this->server->href($taken)]),
+        );
+    }
+
+    /**
+     * The path of the object in that calendar already holding this `UID`, or
+     * null.
+     *
+     * **The scope is the whole calendar**, subfolders included: §4.1 asks for
+     * a `UID` unique "in the scope of the calendar collection in which they
+     * are stored", and §4.2 lets a calendar hold "collections that are not
+     * calendar collections" — so the walk goes down.
+     *
+     * **It walks the collection rather than what a client may see.** An object
+     * concealed from this client still holds its `UID`; a guard that asked
+     * {@see \DavServices\Dav\VisibleMembers} instead would let two people
+     * create the same `UID` and leave the store with two.
+     */
+    private function whoAlreadyHas(
+        string $uid,
+        string $where,
+        ICollection $collection,
+        string $path,
+        ?string $leaving,
+    ): ?string {
+        foreach ($collection->children() as $child) {
+            $at = Path::join($where, $child->name());
+
+            if ($child instanceof ICollection) {
+                $found = $this->whoAlreadyHas($uid, $at, $child, $path, $leaving);
+
+                if ($found !== null) {
+                    return $found;
+                }
+
+                continue;
+            }
+
+            // The resource being written is not its own neighbour, and neither
+            // is the one a `MOVE` is emptying.
+            if ($at === $path || $at === $leaving) {
+                continue;
+            }
+
+            $object = CalendarObject::of($child);
+
+            if ($object !== null && self::uidIn($object) === $uid) {
+                return $at;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The one `UID` an object carries, or null where it carries none.
+     *
+     * Null is the resource of nothing but time zones: a `VTIMEZONE` has a
+     * `TZID` and no `UID` (RFC 5545 §3.6.5), and §5.2.3 licenses such a
+     * resource.
+     */
+    private static function uidIn(Component $object): ?string
+    {
+        foreach ($object->components() as $component) {
+            $uid = $component->property('UID')?->value();
+
+            if ($uid !== null && $uid !== '') {
+                return $uid;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -564,12 +694,15 @@ final class CalDav
     }
 
     /**
-     * The calendar a path lies in, or null where there is none above it.
+     * The calendar a path lies in, with its own path, or null where there is
+     * none above it.
      *
      * §4.2(b) forbids a calendar inside a calendar, so the first one upwards
      * is the only one there can be.
+     *
+     * @return array{string, Calendar}|null
      */
-    private function calendarOver(string $path): ?Calendar
+    private function calendarOver(string $path): ?array
     {
         [$parent] = Path::split($path);
 
@@ -577,7 +710,7 @@ final class CalDav
             $node = $this->nodeAt($parent);
 
             if ($node instanceof Calendar) {
-                return $node;
+                return [$parent, $node];
             }
 
             [$parent] = Path::split($parent);

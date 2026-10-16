@@ -14,9 +14,11 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\CalDav;
 
 use DavServices\CalDav\CalendarObject;
+use DavServices\Exception\Forbidden;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Tests\Unit\Dav\PlainNode;
+use DavServices\VObject\Component;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
@@ -36,6 +38,11 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(CalendarObject::class)]
 final class CalendarObjectTest extends TestCase
 {
+    /** One `VTIMEZONE`, shortened to the one observance it needs. */
+    private const ZONE = "BEGIN:VTIMEZONE\r\nTZID:US-Eastern\r\nBEGIN:STANDARD\r\n"
+        . "DTSTART:19671029T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n"
+        . "END:STANDARD\r\nEND:VTIMEZONE\r\n";
+
     private const MEETING = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
         . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\nDTSTART:20041207T120000Z\r\n"
         . "SUMMARY:One-off Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
@@ -184,6 +191,242 @@ final class CalendarObjectTest extends TestCase
     }
 
     /**
+     * **§4.1's own example, in its own words.** "For instance, a calendar
+     * object resource can contain one VEVENT component and one VTIMEZONE
+     * component, but it cannot contain one VEVENT component and one VTODO
+     * component. Instead, the VEVENT and VTODO components would have to be
+     * stored in separate calendar object resources in the same collection."
+     */
+    public function testTwoKindsOfComponentAreNotOneResource(): void
+    {
+        // One `UID` between them, so that nothing but the rule about kinds can
+        // refuse this object. §4.1 forbids the two kinds whatever their UIDs.
+        $this->expectRefusal('valid-calendar-object-resource', 'holds one type of component, not VEVENT and VTODO');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\nEND:VEVENT\r\n"
+            . "BEGIN:VTODO\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\nEND:VTODO\r\n",
+        ));
+    }
+
+    /**
+     * And the exception the same sentence makes: an event and the zone it
+     * needs are one resource.
+     */
+    public function testAnEventAndItsTimeZoneAreOneResource(): void
+    {
+        CalendarObject::mustBeOneResource($this->objectOf(
+            self::ZONE . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\n"
+            . "DTSTART;TZID=US-Eastern:20041207T120000\r\nEND:VEVENT\r\n",
+        ));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **§4.1: "Calendar object resources contained in calendar collections
+     * MUST NOT specify the iCalendar METHOD property."**
+     *
+     * The property belongs to iTIP (RFC 5546 §1.4), where an object is a
+     * message between calendar users rather than something a collection
+     * keeps. §5.3.2.1 names it as an example of what
+     * `CALDAV:valid-calendar-object-resource` refuses.
+     */
+    public function testAnObjectThatSpecifiesAMethodIsNoResource(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'specifies no METHOD property');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\nEND:VEVENT\r\n",
+            "METHOD:REQUEST\r\n",
+        ));
+    }
+
+    /**
+     * **§4.1: "Calendar components in a calendar collection that have
+     * different UID property values MUST be stored in separate calendar
+     * object resources."**
+     */
+    public function testTwoUidsAreNotOneResource(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'different UIDs belong in separate');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:2@example.com\r\nDTSTAMP:20041210T183904Z\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
+     * **And the other half of the same rule**: "Calendar components with the
+     * same UID property value, in a given calendar collection, MUST be
+     * contained in the same calendar object resource. This ensures that all
+     * components in a recurrence 'set' are contained in the same calendar
+     * object resource."
+     *
+     * This is §4.1's own example, the master and the one overridden instance.
+     */
+    public function testAMasterAndItsOverrideAreOneResource(): void
+    {
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:2@example.com\r\nDTSTAMP:20041210T183838Z\r\n"
+            . "DTSTART:20041206T120000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:2@example.com\r\nRECURRENCE-ID:20041213T120000Z\r\n"
+            . "DTSTAMP:20041210T183838Z\r\nDTSTART:20041213T130000Z\r\nEND:VEVENT\r\n",
+        ));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **An object of overridden instances alone is a resource**, which §4.1
+     * says in as many words: "It is possible for a calendar object resource to
+     * just contain components that represent 'overridden' instances (ones that
+     * modify the behavior of a regular instance, and thus include a
+     * RECURRENCE-ID property) without also including the 'master' recurring
+     * component."
+     */
+    public function testOverriddenInstancesAloneAreOneResource(): void
+    {
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:2@example.com\r\nRECURRENCE-ID:20041213T120000Z\r\n"
+            . "DTSTAMP:20041210T183838Z\r\nDTSTART:20041213T130000Z\r\nEND:VEVENT\r\n",
+        ));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **Exactly one means not none** (R-CAL-07). RFC 5545 §3.6.1 lists `uid`
+     * among the properties of a `VEVENT` that "are REQUIRED, but MUST NOT
+     * occur more than once", and §4.1's rule about which components may share
+     * a resource has nothing to hold on a component that has no `UID` at all.
+     */
+    public function testAComponentWithoutAUidIsNoResource(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'A VEVENT in a calendar carries a UID');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "begin:vevent\r\ndtstamp:20041210T183904Z\r\nsummary:Nameless\r\nend:vevent\r\n",
+        ));
+    }
+
+    /**
+     * **A resource of nothing but time zones needs no `UID`**, because a
+     * `VTIMEZONE` has none: RFC 5545 §3.6.5 gives it a `TZID` instead. §5.2.3
+     * licenses such a resource where a server supports one.
+     */
+    public function testAnObjectOfNothingButTimeZonesIsOneResource(): void
+    {
+        CalendarObject::mustBeOneResource($this->objectOf(self::ZONE));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **§4.1 excepts "VTIMEZONE components, which MUST be specified for each
+     * unique TZID parameter value specified in the iCalendar object"**, and
+     * RFC 5545 §3.2.19 says the same sentence: "An individual 'VTIMEZONE'
+     * calendar component MUST be specified for each unique 'TZID' parameter
+     * value specified in the iCalendar object."
+     *
+     * So a time named in a zone the object does not carry is a time nobody can
+     * place.
+     */
+    public function testATimeZoneNamedButNotCarriedIsNoResource(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'names the time zone "US-Eastern"');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\n"
+            . "DTSTART;TZID=US-Eastern:20041207T120000\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
+     * **A solidus is no exemption.** RFC 5545 §3.2.19 reads "The presence of
+     * the SOLIDUS character as a prefix, indicates that this 'TZID' represents
+     * a unique ID in a globally defined time zone registry (when such registry
+     * is defined)" — and the parenthesis is the point: the memos here define
+     * no such registry. The grammar puts the prefix inside the parameter value
+     * (`tzidparam = "TZID" "=" [tzidprefix] paramtext`), so it is one of the
+     * "unique TZID parameter value[s]" the sentence above asks for a component
+     * for.
+     */
+    public function testATimeZoneFromARegistryIsStillCarried(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'names the time zone "/US-Eastern"');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\n"
+            . "DTSTART;TZID=/US-Eastern:20041207T120000\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
+     * And a floating or UTC time names no zone, so it needs none — §3.2.19
+     * asks for the parameter only "when the value is neither a UTC or a
+     * 'floating' time".
+     */
+    public function testATimeThatNamesNoZoneNeedsNone(): void
+    {
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\n"
+            . "DTSTART:20041207T120000Z\r\nDTEND:20041207T130000\r\nEND:VEVENT\r\n",
+        ));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **Every component is asked, not just the ones before the first zone.**
+     * A `VTIMEZONE` comes first in almost every object a client sends, so a
+     * walk that stopped at it would ask nothing of the event behind it.
+     */
+    public function testAnEventBehindItsTimeZoneIsStillAsked(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'A VEVENT in a calendar carries a UID');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            self::ZONE . "BEGIN:VEVENT\r\nDTSTAMP:20041210T183904Z\r\nSUMMARY:Nameless\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
+     * **A time zone component without a `TZID` carries no zone**, whatever
+     * else it holds. RFC 5545 §3.6.5 makes the property mandatory, so such a
+     * component is invalid iCalendar — and a guard that read it as carrying
+     * something would let an object name a zone nobody can resolve.
+     */
+    public function testAZoneWithoutATzidCarriesNothing(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'names the time zone "US-Eastern"');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            "BEGIN:VTIMEZONE\r\nBEGIN:STANDARD\r\nDTSTART:19671029T020000\r\n"
+            . "TZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+            . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\n"
+            . "DTSTART;TZID=US-Eastern:20041207T120000\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
+     * **Every zone the object names is asked for, not just the first.** §4.1
+     * says "each unique TZID parameter value", so carrying one of two is
+     * carrying neither as far as the second is concerned.
+     */
+    public function testEveryZoneItNamesIsAskedForNotJustTheFirst(): void
+    {
+        $this->expectRefusal('valid-calendar-object-resource', 'names the time zone "Europe/Berlin"');
+
+        CalendarObject::mustBeOneResource($this->objectOf(
+            self::ZONE . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\n"
+            . "DTSTART;TZID=US-Eastern:20041207T120000\r\n"
+            . "DTEND;TZID=Europe/Berlin:20041207T190000\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
      * An object with no component at all holds no kind — which is a thing to
      * say rather than a thing to crash on.
      */
@@ -193,5 +436,33 @@ final class CalendarObjectTest extends TestCase
 
         self::assertNotNull($object);
         self::assertSame([], CalendarObject::kindsIn($object));
+    }
+    /**
+     * One calendar object built around the components a case is about.
+     */
+    private function objectOf(string $components, string $properties = ''): Component
+    {
+        $text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
+            . $properties . $components . "END:VCALENDAR\r\n";
+
+        // `fail()` rather than an assertion, so that a case which expects no
+        // assertions at all is not made to perform one by its own fixture.
+        return CalendarObject::in($text) ?? self::fail('The case built something that is no calendar object.');
+    }
+
+    /**
+     * **A refusal says what is wrong, and then which precondition that broke.**
+     * Asking for the precondition alone would let half a message pass for a
+     * whole one, and the half that explains is the half somebody reads in a
+     * log.
+     *
+     * @param string $because The explanation, which comes first
+     */
+    private function expectRefusal(string $precondition, string $because): void
+    {
+        $this->expectException(Forbidden::class);
+        $this->expectExceptionMessageMatches(
+            '/' . preg_quote($because, '/') . '.*' . preg_quote($precondition, '/') . '/s',
+        );
     }
 }
