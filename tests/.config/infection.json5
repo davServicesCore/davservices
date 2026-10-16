@@ -79,6 +79,14 @@
                 // giving up the durability measure would be trading the data
                 // for the number.
                 "DavServices\\Backend\\File\\CardBackend::put",
+                // And a calendar object, written beside its place and moved
+                // in for the same reason and by the same line. Measured
+                // rather than assumed: the mutant that writes to a relative
+                // name was applied by hand to both stores, and the whole
+                // suite passed either way — on a successful write the move
+                // takes the temporary name away, and on a failed one the
+                // cleanup does.
+                "DavServices\\Backend\\File\\CalendarBackend::put",
             ]
         },
         // The same line of the same method, reached by three more mutators.
@@ -86,14 +94,21 @@
         // its pieces are joined, are not promises a card store can be held to:
         // eight bytes against seven or nine is the same unique name.
         "Concat": {
-            "ignore": ["DavServices\\Backend\\File\\CardBackend::put"]
+            "ignore": [
+                "DavServices\\Backend\\File\\CardBackend::put",
+                "DavServices\\Backend\\File\\CalendarBackend::put",
+            ]
         },
         "DecrementInteger": {
-            "ignore": ["DavServices\\Backend\\File\\CardBackend::put"]
+            "ignore": [
+                "DavServices\\Backend\\File\\CardBackend::put",
+                "DavServices\\Backend\\File\\CalendarBackend::put",
+            ]
         },
         "IncrementInteger": {
             "ignore": [
                 "DavServices\\Backend\\File\\CardBackend::put",
+                "DavServices\\Backend\\File\\CalendarBackend::put",
                 // RFC 5051 step (2)(a) speaks of "the codepoints in the
                 // titlecase property", plural, so the preparation loops over
                 // whatever titlecasing handed back rather than assuming one
