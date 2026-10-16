@@ -314,20 +314,28 @@ final class CardDav
     }
 
     /**
-     * The two properties the server answers for an address book because they
-     * are the server's own limits (§6.2.2, §6.2.3).
+     * The three properties the server answers for an address book because they
+     * are the server's own (§6.2.2, §6.2.3, §8.3.1).
+     *
+     * **Each is answered only to a client that named it.** RFC 6352 gives
+     * every property an `allprop behavior:` of its own, and all three read the
+     * same: "SHOULD NOT be returned by a PROPFIND DAV:allprop request". They
+     * are limits and capabilities, uninteresting in bulk, and listing them on
+     * every address book of a response is what that line exists to prevent —
+     * {@see PropFindResult::wasNamed()} is what keeps it, and counts
+     * `DAV:include` as naming one.
      */
     private function describeTheAddressBook(PropFindResult $result): void
     {
-        if ($result->wants(self::SUPPORTED_ADDRESS_DATA)) {
+        if ($result->wasNamed(self::SUPPORTED_ADDRESS_DATA)) {
             $result->set(self::SUPPORTED_ADDRESS_DATA, $this->theDataItTakes());
         }
 
-        if ($result->wants(self::MAX_RESOURCE_SIZE)) {
+        if ($result->wasNamed(self::MAX_RESOURCE_SIZE)) {
             $result->set(self::MAX_RESOURCE_SIZE, (string) $this->maxResourceSize);
         }
 
-        if ($result->wants(self::SUPPORTED_COLLATION_SET)) {
+        if ($result->wasNamed(self::SUPPORTED_COLLATION_SET)) {
             $result->set(self::SUPPORTED_COLLATION_SET, $this->theCollationsItHas());
         }
     }
@@ -358,10 +366,13 @@ final class CardDav
 
     /**
      * The two §7.1 calls "Additional Principal Properties".
+     *
+     * Named only, like the three above: §7.1.1 and §7.1.2 carry the same
+     * `allprop behavior:` line.
      */
     private function describeThePrincipal(PropFindResult $result, Principal $node): void
     {
-        if ($result->wants(self::HOME_SET)) {
+        if ($result->wasNamed(self::HOME_SET)) {
             $result->set(self::HOME_SET, $this->holdingHrefs(
                 self::HOME_SET,
                 [Path::join($this->addressBooksAt, $node->name())],
@@ -369,7 +380,7 @@ final class CardDav
             ));
         }
 
-        if (!$result->wants(self::PRINCIPAL_ADDRESS)) {
+        if (!$result->wasNamed(self::PRINCIPAL_ADDRESS)) {
             return;
         }
 

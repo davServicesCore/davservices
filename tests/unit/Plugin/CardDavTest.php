@@ -54,6 +54,7 @@ use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Tests\Unit\Dav\StreamFile;
 use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -1260,6 +1261,62 @@ final class CardDavTest extends TestCase
         return new Server(new Tree($this->tree()));
     }
 
+    /**
+     * **Not one of the five turns up in an `allprop` response.** RFC 6352
+     * gives each property an `allprop behavior:` of its own, and all six read
+     * the same: "SHOULD NOT be returned by a PROPFIND DAV:allprop request" —
+     * §6.2.1, §6.2.2, §6.2.3, §7.1.1, §7.1.2 and §8.3.1. Five properties
+     * nobody asked for, on every address book and every principal of a
+     * response, is what that line exists to prevent.
+     *
+     * **And `DAV:include` is how a client asks for one anyway**, which is why
+     * the same case checks both: RFC 4918 §9.1 gives it "to define the
+     * properties to be returned in addition to those defined by DAV:allprop",
+     * so withholding them without that would cost a client a second request.
+     *
+     * @param string $property The property name the case is about
+     * @param bool $principal Whether it hangs on a principal rather than an
+     *                        address book
+     */
+    #[DataProvider('everyPropertyItAnswers')]
+    public function testNothingItAnswersTurnsUpUnderAllprop(string $property, bool $principal): void
+    {
+        $node = $principal ? $this->principal('simon') : AddressBook::of(new MemoryCollection('contacts'));
+
+        // The card is supplied, because `principal-address` is answered only
+        // where somebody knows where one is — and a property nobody answers
+        // would pass the first half of this case for the wrong reason.
+        $plugin = new CardDav(
+            $this->server(),
+            principalAddress: static fn (string $name): string => 'cards/' . $name . '.vcf',
+        );
+
+        self::assertArrayNotHasKey(
+            $property,
+            $this->ask($node, [$property], $plugin, PropFindForm::Everything, []),
+            'An allprop request was answered.',
+        );
+        self::assertArrayHasKey(
+            $property,
+            $this->ask($node, [$property], $plugin, PropFindForm::Everything),
+            'A DAV:include was not answered.',
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function everyPropertyItAnswers(): iterable
+    {
+        $namespace = '{urn:ietf:params:xml:ns:carddav}';
+
+        yield 'supported-address-data' => [$namespace . 'supported-address-data', false];
+        yield 'max-resource-size' => [$namespace . 'max-resource-size', false];
+        yield 'supported-collation-set' => [$namespace . 'supported-collation-set', false];
+        yield 'addressbook-home-set' => [$namespace . 'addressbook-home-set', true];
+        yield 'principal-address' => [$namespace . 'principal-address', true];
+    }
+
     private function principal(string $name): Principal
     {
         return new Principal(new PrincipalInfo($name, $name));
@@ -1277,13 +1334,21 @@ final class CardDavTest extends TestCase
 
     /**
      * @param list<string> $properties
+     * @param list<string> $named What the request named, where that is not
+     *                            the properties being asked about — an
+     *                            `allprop` request names nothing
      *
      * @return array<string, Element|string|null>
      */
-    private function ask(INode $node, array $properties, ?CardDav $plugin = null): array
-    {
+    private function ask(
+        INode $node,
+        array $properties,
+        ?CardDav $plugin = null,
+        PropFindForm $form = PropFindForm::Named,
+        ?array $named = null,
+    ): array {
         $plugin ??= new CardDav($this->server());
-        $result = new PropFindResult('addressbooks/simon/contacts', PropFindForm::Named, $properties);
+        $result = new PropFindResult('addressbooks/simon/contacts', $form, $named ?? $properties);
 
         $plugin->describe(new PropertiesRequested($result, $node));
 
