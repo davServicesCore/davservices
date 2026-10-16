@@ -93,6 +93,24 @@ final class PropertyTest extends TestCase
     }
 
     /**
+     * **A name of digits alone stays a name.** `iana-token = 1*(ALPHA /
+     * DIGIT / "-")` (RFC 6350 §3.3, RFC 5545 §3.1) makes `1` a legal
+     * parameter name, and the parameter carries it as the text it was
+     * written as — found by the fuzz run at seed 5556, where it became an
+     * integer on the way and the reader died of a `TypeError`.
+     */
+    public function testAParameterNamedInDigitsAloneKeepsItsName(): void
+    {
+        $property = Property::from(ContentLine::of('X-M;1=one:v'));
+
+        self::assertSame('one', $property->parameter('1')?->value());
+        self::assertSame(['1'], array_map(
+            static fn (Parameter $parameter): string => $parameter->name(),
+            $property->parameters(),
+        ));
+    }
+
+    /**
      * **RFC 5545 §3.5's own example, word for word:**
      * "`DTSTART;TZID=America/New_York:19980714T120000` is the same as
      * `DtStart;TzID=America/New_York:19980714T120000`."

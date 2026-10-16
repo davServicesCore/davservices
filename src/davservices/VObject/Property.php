@@ -75,7 +75,9 @@ final class Property implements ArrayAccess
         $parameters = [];
 
         foreach ($line->parameters() as $name => $values) {
-            $parameters[] = new Parameter($name, $values);
+            // A name of digits alone arrives as an integer key; see
+            // ContentLine::parameters().
+            $parameters[] = new Parameter((string) $name, $values);
         }
 
         return new self($line->name(), $line->value(), $parameters, $line->group());

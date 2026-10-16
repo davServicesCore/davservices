@@ -484,4 +484,16 @@ final class ContentLineTest extends TestCase
     {
         self::assertSame(['X-A' => ['a"b"']], ContentLine::of('X-M;X-A=a"b":v')->parameters());
     }
+
+    /**
+     * **A name of digits alone is a name.** `param-name` is `iana-token /
+     * x-name` and `iana-token = 1*(ALPHA / DIGIT / "-")` (RFC 6350 §3.3,
+     * RFC 5545 §3.1), so `1` is one. PHP turns such an array key into an
+     * integer, and the lookup must still find it rather than fall over the
+     * type — found by the fuzz run at seed 5556.
+     */
+    public function testAParameterNamedInDigitsAloneIsFoundByItsName(): void
+    {
+        self::assertSame(['one'], ContentLine::of('X-M;1=one:v')->parameter('1'));
+    }
 }
