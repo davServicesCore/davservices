@@ -45,6 +45,29 @@ use PHPUnit\Framework\TestCase;
 final class TargetsTest extends TestCase
 {
     /**
+     * How long these cases give a target, which is **not** the campaign's
+     * budget.
+     *
+     * {@see Run::SECONDS} is two seconds, and that is the right number where
+     * it is measured: the campaign runs one process, with no coverage driver
+     * loaded, and the slowest target there takes five milliseconds.
+     *
+     * **These cases do not run there.** They run inside the sharded coverage
+     * run — eleven instrumented processes over as many cores as the machine
+     * has — and a wall clock in one of them measures the machine as much as
+     * the parser. Measured rather than assumed: the same parse of the same
+     * time zone came out at 5 ms on a quiet machine, 2.3 s in the local
+     * coverage run, and 2.07 s on a CI runner. The first reading of the three
+     * is the parser; the other two are the scheduler.
+     *
+     * So the budget here is one no instrumentation can reach, and the claim
+     * these cases make is the one they are about: every target gets through a
+     * valid object, and answers rubbish with a refusal. **Whether a parser
+     * hangs is the campaign's question**, asked where the clock means
+     * something — `composer check:fuzz`, and the `Fuzzing` job in CI.
+     */
+    private const PATIENCE = 30.0;
+    /**
      * **There is more than reading**, and each step has its own name so that
      * a finding says which one of them broke.
      */
@@ -102,7 +125,7 @@ final class TargetsTest extends TestCase
     public function testEveryTargetGetsThroughAValidObject(string $target): void
     {
         foreach (Mutations::seeds() as $name => $text) {
-            self::assertNull(Run::of($text, Targets::of($target)), $target . ' on ' . $name);
+            self::assertNull(Run::of($text, Targets::of($target), self::PATIENCE), $target . ' on ' . $name);
         }
     }
 
@@ -117,7 +140,7 @@ final class TargetsTest extends TestCase
     public function testEveryTargetAnswersRubbishWithARefusal(string $target): void
     {
         foreach (['', 'rubbish', "\x00\xff", 'BEGIN:', "BEGIN:VCARD\r\n"] as $rubbish) {
-            self::assertNull(Run::of($rubbish, Targets::of($target)), $target);
+            self::assertNull(Run::of($rubbish, Targets::of($target), self::PATIENCE), $target);
         }
     }
 
