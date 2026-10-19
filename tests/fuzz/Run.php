@@ -53,6 +53,11 @@ final class Run
      * Generous on purpose: the slowest thing a parser does here is expand a
      * recurrence to R-RRULE-04's limit, which is bounded work and well under
      * a second. Anything past this is not slow but stuck.
+     *
+     * **It is the campaign's number**, and the campaign is where a wall clock
+     * can be trusted: one process, no coverage driver, the slowest target five
+     * milliseconds. A caller measuring under instrumentation passes its own
+     * `$limit` to {@see of()} instead.
      */
     public const SECONDS = 2.0;
 
@@ -67,17 +72,22 @@ final class Run
      * The finding this input produced, or null where it produced none.
      *
      * **A clock reading over the limit is taken a second time before it
-     * counts**, because the clock is a wall clock and the suite does not own
-     * the machine: the coverage run collects in ten instrumented processes at
-     * once, and a parse measured at five milliseconds on a quiet machine was
-     * measured at 2.3 seconds on that one. Reporting that would have been a
-     * finding about the scheduler, and a fuzzer whose findings are about the
+     * counts.** The clock is a wall clock, so a reading carries whatever else
+     * the machine was doing — and a fuzzer whose findings are about the
      * scheduler teaches everybody to ignore findings.
      *
      * **A stuck parser cannot be read twice**, because it never comes back
      * from the first reading. So a second reading inside the limit says the
-     * first was the machine, while a parser that is genuinely slow is slow
-     * both times and stays a finding.
+     * first was a moment of load, while a parser that is genuinely slow is
+     * slow both times and stays a finding.
+     *
+     * **What the retry cannot mend is a machine that is slow throughout**, and
+     * that is the caller's to settle rather than this method's: `$limit`
+     * exists so that each caller can pick a number its own clock can be
+     * trusted at. The campaign runs one process with no coverage driver and
+     * keeps {@see SECONDS}; the unit tests run inside the sharded coverage run
+     * and pass a budget no instrumentation can reach. Both readings were over
+     * the limit on a CI runner at 2.07 s, which is what settled it.
      *
      * @param callable(string): mixed $parse What to do with the input
      */
