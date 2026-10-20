@@ -776,6 +776,149 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
+     * **§9.6.5 to §9.6.7 want both ends, where §9.9 takes one.** The three
+     * elements that limit what comes back make their attributes `#REQUIRED`:
+     *
+     *     <!ATTLIST limit-recurrence-set start CDATA #REQUIRED
+     *                                    end   CDATA #REQUIRED>
+     *
+     * And that is a different question from §9.9's, which reads a missing
+     * attribute as "any time in the past" or "any time in the future": a
+     * filter open at one end is an ordinary thing to ask, while a limit open
+     * at one end limits nothing.
+     *
+     * @param string|null $from What the `start` attribute says, or nothing
+     * @param string|null $until What the `end` attribute says, or nothing
+     */
+    #[DataProvider('rangesMissingAnEnd')]
+    public function testARangeThatMustHaveBothEndsIsRefusedWithoutOne(?string $from, ?string $until): void
+    {
+        $this->expectException(BadRequest::class);
+        $this->expectExceptionMessage('#REQUIRED');
+
+        TimeRange::ofBothEnds($this->elementOf($from, $until));
+    }
+
+    /**
+     * @return iterable<string, array{?string, ?string}>
+     */
+    public static function rangesMissingAnEnd(): iterable
+    {
+        yield 'no start' => [null, self::END];
+        yield 'no end' => [self::START, null];
+        yield 'neither' => [null, null];
+    }
+
+    /**
+     * And one with both ends is the range it says — the same reading §9.9 gets
+     * of the same two attributes, because §9.6.6 says so itself: "The server
+     * MUST use the same logic as defined for CALDAV:time-range".
+     */
+    public function testARangeWithBothEndsIsReadLikeAnyOther(): void
+    {
+        $range = TimeRange::ofBothEnds($this->elementOf(self::START, self::END));
+
+        self::assertSame('2026-01-05T12:00:00+00:00', $range->from()?->format('c'));
+        self::assertSame('2026-01-05T13:00:00+00:00', $range->until()?->format('c'));
+    }
+
+    /**
+     * **And it is held to the rest of §9.9 too**, which is what "the same
+     * logic" means: a value that is no "date with UTC time", and an end that
+     * is not after the start, are refused here as there.
+     *
+     * @param string $from What the `start` attribute says
+     * @param string $until What the `end` attribute says
+     */
+    #[DataProvider('rangesSection99Refuses')]
+    public function testARangeWithBothEndsIsHeldToTheSameRules(string $from, string $until): void
+    {
+        $this->expectException(BadRequest::class);
+
+        TimeRange::ofBothEnds($this->elementOf($from, $until));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function rangesSection99Refuses(): iterable
+    {
+        yield 'a local time' => ['20260105T120000', self::END];
+        yield 'a date' => ['20260105', self::END];
+        yield 'an end before the start' => [self::END, self::START];
+        yield 'an end at the start' => [self::START, self::START];
+    }
+
+    /**
+     * **One period of a `FREEBUSY` value, against the range** — which is what
+     * §9.6.7 limits by: "the server MUST only return the FREEBUSY property
+     * values of a VFREEBUSY component that intersects a specified time range",
+     * and "The server MUST use the same logic as defined for
+     * CALDAV:time-range".
+     *
+     * That logic is §9.9's row for a component with no `DTSTART`: `(start <
+     * freebusy-period-end) AND (end > freebusy-period-start)` — so a period
+     * that merely touches an end of the range does not intersect it.
+     *
+     * @param string $written The period as a `FREEBUSY` value carries it
+     * @param bool $intersects Whether it intersects the range
+     */
+    #[DataProvider('periodsAgainstTheRange')]
+    public function testItSaysWhetherOnePeriodIntersectsTheRange(string $written, bool $intersects): void
+    {
+        self::assertSame($intersects, $this->range(self::START, self::END)->intersectsThePeriod($written));
+    }
+
+    /**
+     * The range is noon to one. RFC 5545 §3.3.9 gives a period two forms,
+     * "explicit" and "start", and both are asked about.
+     *
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function periodsAgainstTheRange(): iterable
+    {
+        yield 'inside it' => ['20260105T121500Z/20260105T124500Z', true];
+        yield 'across it' => ['20260105T110000Z/20260105T140000Z', true];
+        yield 'over its start' => ['20260105T113000Z/20260105T123000Z', true];
+        yield 'over its end' => ['20260105T123000Z/20260105T133000Z', true];
+        yield 'before it' => ['20260105T100000Z/20260105T110000Z', false];
+        yield 'after it' => ['20260105T140000Z/20260105T150000Z', false];
+
+        // Non-inclusive at the end, inclusive at the start: a period that ends
+        // where the range begins does not intersect it, and one that begins
+        // where the range ends does not either.
+        yield 'ending where it begins' => ['20260105T110000Z/20260105T120000Z', false];
+        yield 'beginning where it ends' => ['20260105T130000Z/20260105T140000Z', false];
+
+        // §3.3.9's second form: a start and a duration.
+        yield 'a duration reaching into it' => ['20260105T113000Z/PT1H', true];
+        yield 'a duration stopping short of it' => ['20260105T100000Z/PT1H', false];
+
+        // A period this library cannot read cannot be shown to intersect, and
+        // §9.6.7 asks the server to return "only" what does.
+        yield 'no period at all' => ['not a period', false];
+        yield 'nothing' => ['', false];
+    }
+
+    /**
+     * One `CALDAV:time-range` element, from what the attributes say.
+     */
+    private function elementOf(?string $from, ?string $until): Element
+    {
+        $attributes = [];
+
+        if ($from !== null) {
+            $attributes['start'] = $from;
+        }
+
+        if ($until !== null) {
+            $attributes['end'] = $until;
+        }
+
+        return new Element(TimeRange::NAME, $attributes);
+    }
+
+    /**
      * **A range moved is how one instance of a series is asked about.** §9.7.1
      * wants to know whether "at least one recurrence instance in the targeted
      * calendar component is scheduled to overlap the specified time range",

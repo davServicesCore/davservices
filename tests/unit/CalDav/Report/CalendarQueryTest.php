@@ -272,6 +272,52 @@ final class CalendarQueryTest extends TestCase
     }
 
     /**
+     * **And as narrowly as it was asked for** (R-CAL-13). §9.6 lets a client
+     * say "which parts of calendar object resources need to be returned in the
+     * response", and §7.8.1's own example is this one: the `DTSTAMP` of the
+     * events is not returned, "and the only property returned in the VCALENDAR
+     * object is VERSION".
+     */
+    public function testTheCalendarDataComesBackAsNarrowlyAsItWasAskedFor(): void
+    {
+        $body = (string) $this->query(
+            self::BY_SUMMARY,
+            properties: '<D:prop xmlns:D="DAV:"><calendar-data>'
+                . '<comp name="VCALENDAR"><prop name="VERSION"/>'
+                . '<comp name="VEVENT"><prop name="SUMMARY"/></comp></comp>'
+                . '</calendar-data></D:prop>',
+        )->body();
+
+        self::assertStringContainsString('VERSION:2.0', $body);
+        self::assertStringContainsString('SUMMARY:A Meeting', $body);
+        self::assertStringNotContainsString('PRODID', $body);
+        self::assertStringNotContainsString('DTSTAMP', $body);
+    }
+
+    /**
+     * **And a limit is measured in the zone the report chose** (§7.3), because
+     * §9.6.6 and §9.6.7 ask for "the same logic as defined for
+     * CALDAV:time-range" — which is a question about moments, and a floating
+     * value is no moment until somebody picks a zone for it.
+     *
+     * The lunch floats at noon. In New York that is five in the afternoon
+     * UTC, so a free/busy limit around five keeps the period that says so and
+     * a limit around noon does not.
+     */
+    public function testALimitIsMeasuredInTheZoneTheReportChose(): void
+    {
+        $body = (string) $this->query(
+            self::EVERYTHING,
+            properties: '<D:prop xmlns:D="DAV:"><calendar-data>'
+                . '<limit-recurrence-set start="20260105T170000Z" end="20260105T180000Z"/>'
+                . '</calendar-data></D:prop>',
+            timezone: $this->timezone('America/New_York'),
+        )->body();
+
+        self::assertStringContainsString('SUMMARY:Lunch', $body);
+    }
+
+    /**
      * **§7.3 names the first of three sources for what floats**: "CalDAV
      * servers MUST rely on the value of the CALDAV:timezone XML element, if
      * specified as part of the request body, to perform the proper conversion
