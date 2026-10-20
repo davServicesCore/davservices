@@ -13,10 +13,13 @@ declare(strict_types=1);
 
 namespace DavServices\CalDav;
 
+use DateTimeZone;
 use DavServices\VObject\Component;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Reader;
+use DavServices\VObject\Recur\Zone;
 use DavServices\VObject\TimeZone\Definition;
+use DavServices\VObject\TimeZone\Resolver;
 
 /**
  * What `CALDAV:calendar-timezone` may hold (RFC 4791 §5.2.2, §5.3.1).
@@ -62,6 +65,18 @@ use DavServices\VObject\TimeZone\Definition;
  */
 final class TimeZone
 {
+    /**
+     * The precondition a time zone nobody can use violates.
+     *
+     * **Named here because this is the class that decides it**, and three
+     * callers ask: §5.3.1 for the property a `MKCALENDAR` sets, §5.3.2.1 for a
+     * `PROPPATCH` that sets it afterwards, and §7.8 for the `CALDAV:timezone`
+     * of a `calendar-query` — "The time zone specified in the REPORT request
+     * MUST be a valid iCalendar object containing a single valid VTIMEZONE
+     * component", which is §5.3.1's sentence again.
+     */
+    public const VALID = '{urn:ietf:params:xml:ns:caldav}valid-calendar-data';
+
     private const VCALENDAR = 'VCALENDAR';
 
     private const VTIMEZONE = 'VTIMEZONE';
@@ -96,7 +111,29 @@ final class TimeZone
             return null;
         }
 
-        return self::resolvable($zone) ? $zone : null;
+        return self::usable($zone) === null ? null : $zone;
+    }
+
+    /**
+     * The zone this text's one `VTIMEZONE` stands for, or null where it stands
+     * for none this server can use.
+     *
+     * **What a caller needs who has a moment to resolve**, rather than the
+     * component it was written as: §7.3 makes a `CALDAV:timezone` the first
+     * source a `calendar-query` reads, and §9.8 has the server "rely on the
+     * specified VTIMEZONE component instead of the CALDAV:calendar-timezone
+     * property of the calendar collection […] to resolve 'date' values and
+     * 'date with local time' values (i.e., floating time) to 'date with UTC
+     * time' values".
+     *
+     * Null for the same texts {@see in()} refuses, so a caller has one thing
+     * to check and the precondition is raised in one place.
+     */
+    public static function zoneIn(string $text): DateTimeZone|Zone|null
+    {
+        $zone = self::in($text);
+
+        return $zone === null ? null : self::usable($zone);
     }
 
     /**
@@ -125,16 +162,33 @@ final class TimeZone
     }
 
     /**
-     * Whether a moment can be resolved with this zone at all.
+     * What a moment can be resolved with here, or null where nothing can.
+     *
+     * **The catalogue first.** A zone the database has carries every rule it
+     * has ever had, where a `VTIMEZONE` carries the observances a client chose
+     * to write out — and §3.2.19 makes the `TZID` a name "specified in the
+     * 'TZID' property of the matching time zone definition", which is the
+     * name this looks up.
+     *
+     * **The observances where nothing names it.** §5.2.2's own example calls
+     * its zone `US-Eastern`, which is in no catalogue, and the component says
+     * what it means regardless — so a reader that insisted on a name would
+     * refuse the memo's own spelling.
      */
-    private static function resolvable(Component $zone): bool
+    private static function usable(Component $zone): DateTimeZone|Zone|null
     {
+        $named = Resolver::resolve($zone);
+
+        if ($named !== null) {
+            return $named;
+        }
+
         try {
-            return Definition::of($zone) !== null;
+            return Definition::of($zone);
         } catch (ParseError) {
             // An observance missing one of §3.6.5's three mandatory
             // properties: nothing to resolve a moment with.
-            return false;
+            return null;
         }
     }
 }

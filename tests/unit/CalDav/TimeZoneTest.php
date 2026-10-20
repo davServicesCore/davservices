@@ -13,7 +13,9 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\CalDav;
 
+use DateTimeZone;
 use DavServices\CalDav\TimeZone;
+use DavServices\VObject\TimeZone\Definition;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
@@ -61,6 +63,53 @@ final class TimeZoneTest extends TestCase
     public function testTextThatIsNoCalendarIsNoTimeZone(): void
     {
         self::assertNull(TimeZone::in('Europe/Berlin'));
+    }
+
+    /**
+     * **And the zone itself, for the caller that has to resolve a moment with
+     * it.** §7.3 makes a `CALDAV:timezone` the first source a `calendar-query`
+     * reads and §9.8 has the server "rely on the specified VTIMEZONE
+     * component" — so a report needs the thing a moment can be read in, not
+     * the component it was written as.
+     *
+     * **A name where there is one**, because a zone out of the catalogue
+     * carries every rule the database has rather than the one or two
+     * observances a client wrote out.
+     */
+    public function testItAnswersTheNamedZoneADefinitionStandsFor(): void
+    {
+        $zone = TimeZone::zoneIn($this->zoneCalled('America/New_York'));
+
+        self::assertInstanceOf(DateTimeZone::class, $zone);
+        self::assertSame('America/New_York', $zone->getName());
+    }
+
+    /**
+     * **And the observances where nothing names it**, which is the case
+     * §5.2.2's own example is: `US-Eastern` is no name in the IANA database,
+     * and the component says what it means anyway.
+     */
+    public function testItAnswersTheObservancesWhereNothingNamesTheZone(): void
+    {
+        self::assertInstanceOf(Definition::class, TimeZone::zoneIn(self::US_EASTERN));
+    }
+
+    /**
+     * And text that is no time zone names none: the same answer `in()` gives,
+     * so a caller has one thing to check.
+     */
+    public function testTextThatIsNoTimeZoneNamesNoZone(): void
+    {
+        self::assertNull(TimeZone::zoneIn('Europe/Berlin'));
+    }
+
+    /**
+     * The memo's example with another `TZID`, for the half of the answer that
+     * depends on the name alone.
+     */
+    private function zoneCalled(string $tzid): string
+    {
+        return str_replace('TZID:US-Eastern', 'TZID:' . $tzid, self::US_EASTERN);
     }
 
     /**
