@@ -117,9 +117,9 @@ use Generator;
  *
  * ## The preconditions of §7.8, each where it is read
  *
- * **`CALDAV:supported-calendar-data`** and the narrowing this server cannot
- * yet do are answered in {@see \DavServices\CalDav\CalendarData}, while the
- * body is read.
+ * **`CALDAV:supported-calendar-data`** is answered in
+ * {@see \DavServices\CalDav\CalendarData}, while the body is read — as is the
+ * one thing in §9.6 this server cannot yet do, `CALDAV:expand` (R-CAL-14).
  *
  * **`CALDAV:valid-filter`** is raised where a filter is parsed — a component
  * nested where iCalendar has none ({@see \DavServices\CalDav\Filter\CompFilter})
@@ -237,7 +237,7 @@ final class CalendarQuery
             $given !== null,
         );
 
-        foreach ($found as $where => [$member, $object]) {
+        foreach ($found as $where => [$member, $object, $moments]) {
             if ($reported === $this->atMost) {
                 throw new Forbidden(
                     sprintf(
@@ -248,7 +248,14 @@ final class CalendarQuery
                 );
             }
 
-            $returning->describe($report, $this->server->hrefOf($where, $member), $where, $member, $object);
+            $returning->describe(
+                $report,
+                $this->server->hrefOf($where, $member),
+                $where,
+                $member,
+                $object,
+                $moments,
+            );
             ++$reported;
         }
 
@@ -263,15 +270,16 @@ final class CalendarQuery
      * postcondition is about a search too wide to answer, and a search refused
      * at the limit is one that has not read the rest of the calendar.
      *
-     * Each one comes with the object that was read to decide it matched, so
-     * that the response does not read the body a second time.
+     * Each one comes with the object that was read to decide it matched, and
+     * with the moments that object's properties name, so that the response
+     * neither reads the body a second time nor works out the zone again.
      *
      * @param DateTimeZone|Zone $floating The zone what floats is read in here
      * @param bool $fixed Whether the request chose that zone, in which case
      *                    §9.8 has it stand "instead of" every collection's
      *                    own property
      *
-     * @return Generator<string, array{INode, Component}>
+     * @return Generator<string, array{INode, Component, Moments}>
      */
     private function matchesUnder(
         string $path,
@@ -284,8 +292,14 @@ final class CalendarQuery
         if (!$node instanceof ICollection) {
             $object = CalendarObject::of($node);
 
-            if ($object !== null && $filter->holds($object, new Moments($object, $floating))) {
-                yield $path => [$node, $object];
+            if ($object === null) {
+                return;
+            }
+
+            $moments = new Moments($object, $floating);
+
+            if ($filter->holds($object, $moments)) {
+                yield $path => [$node, $object, $moments];
             }
 
             return;

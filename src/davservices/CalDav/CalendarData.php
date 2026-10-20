@@ -17,6 +17,7 @@ use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\NotImplemented;
 use DavServices\VObject\Component;
+use DavServices\VObject\Property;
 use DavServices\VObject\Serializer;
 use DavServices\Xml\Element;
 
@@ -59,26 +60,35 @@ use DavServices\Xml\Element;
  * {@see Limits} rather than written out again, so the property that publishes
  * the list and the report held to it cannot come apart.
  *
- * ## Narrowing is refused rather than ignored
+ * ## Three ways to ask for less, and one still to come
  *
- * The three elements §9.6's request shape allows — `CALDAV:comp` with its
- * `prop` and `allcomp` (§9.6.1 to §9.6.4), `CALDAV:expand` (§9.6.5) and the
- * two `limit-…` elements (§9.6.6, §9.6.7) — are R-CAL-13 and R-CAL-14, and
- * they arrive with the chunk that is about them.
+ * **Which parts of which components** is {@see CalendarDataFilter} (§9.6.1 to
+ * §9.6.4).
  *
- * **Until then the answer is `501` rather than the whole object.** §9.6
- * returns an object "in their entirety" for a request that asked for nothing
- * narrower, so sending everything to a client that asked for `VERSION` alone
- * would answer a question it did not ask and look like an answer. RFC 9110
- * §15.6.2 has the status for the other way round: "the server does not support
- * the functionality required to fulfill the request".
+ * **Which overridden components** is §9.6.6's `limit-recurrence-set`, and
+ * **which free/busy periods** is §9.6.7's `limit-freebusy-set`. Both are
+ * answered here, with §9.9's own logic, which both sections ask for in the
+ * same words: "The server MUST use the same logic as defined for
+ * CALDAV:time-range".
+ *
+ * **`CALDAV:expand` (§9.6.5) is `501` until R-CAL-14.** It asks for "calendar
+ * components that define exactly one recurrence instance", with every
+ * recurrence property gone and every local time converted to UTC — and a
+ * client that asked for instances and was sent a master with an `RRULE` would
+ * have to do the work it asked the server for. RFC 9110 §15.6.2 is the status
+ * for a request a server cannot fulfil.
+ *
+ * ## The limits come before the narrowing
+ *
+ * §9.6's DTD writes them the other way round, but that is the order of a
+ * document rather than of the work: a narrowing can take away the very
+ * property a limit is judged by — `RECURRENCE-ID` is what says which instance
+ * an override replaces — so a client that asked only for summaries would
+ * otherwise leave the server unable to tell a master from an override.
  */
-final class CalendarData
+final readonly class CalendarData
 {
     public const NAME = '{urn:ietf:params:xml:ns:caldav}calendar-data';
-
-    /** §9.6.1, and what narrowing an answer begins with. */
-    private const COMP = '{urn:ietf:params:xml:ns:caldav}comp';
 
     /** §9.6.5: recurrences written out as instances. */
     private const EXPAND = '{urn:ietf:params:xml:ns:caldav}expand';
@@ -89,41 +99,77 @@ final class CalendarData
     /** §9.6.7: the free/busy periods inside a range. */
     private const LIMIT_FREEBUSY = '{urn:ietf:params:xml:ns:caldav}limit-freebusy-set';
 
-    /**
-     * The four a client may narrow with, in the order §9.6's DTD writes them.
-     *
-     * @var list<string>
-     */
-    private const NARROWING = [self::COMP, self::EXPAND, self::LIMIT_RECURRENCE, self::LIMIT_FREEBUSY];
+    private const RECURRENCE_ID = 'RECURRENCE-ID';
+
+    private const FREEBUSY = 'FREEBUSY';
+
+    private const VFREEBUSY = 'VFREEBUSY';
 
     /**
-     * Holds the element a client sent to what this server can answer with.
+     * @param CalendarDataFilter|null $parts Which parts of which components
+     *                                       come back, or null for all of them
+     * @param TimeRange|null $recurrences The range §9.6.6 limits the
+     *                                    overridden components to
+     * @param TimeRange|null $freeBusy The range §9.6.7 limits the `FREEBUSY`
+     *                                 values to
+     */
+    private function __construct(
+        private ?CalendarDataFilter $parts,
+        private ?TimeRange $recurrences,
+        private ?TimeRange $freeBusy,
+    ) {
+    }
+
+    /**
+     * Reads the element as a request.
      *
-     * Asked before any object is read, because a precondition is a reason not
-     * to run the report at all.
+     * Asked before any object is fetched, because a precondition is a reason
+     * not to run the report at all.
      *
      * @throws Forbidden If the attributes name calendar data this server does
      *                   not keep (§7.8's `CALDAV:supported-calendar-data`)
-     * @throws NotImplemented If it asks for parts of an object (R-CAL-13)
-     * @throws BadRequest If it carries a child §9.6's DTD does not name
+     * @throws NotImplemented If it asks for an expansion (R-CAL-14)
+     * @throws BadRequest If the children are not what §9.6's DTD admits in the
+     *                    order it writes them
      */
-    public static function mustBeOneItAnswers(Element $element): void
+    public static function of(Element $element): self
     {
         self::mustBeTheDataItKeeps($element);
 
-        foreach ($element->children() as $child) {
-            if (in_array($child->name(), self::NARROWING, true)) {
-                throw new NotImplemented(sprintf(
-                    'This server answers a calendar object whole, so %s of RFC 4791 §9.6 is not one it can narrow by yet.',
-                    $child->name(),
-                ));
-            }
+        $parts = null;
+        $recurrences = null;
+        $freeBusy = null;
+        $expands = false;
 
-            throw new BadRequest(sprintf(
-                '%s has no place in a CALDAV:calendar-data of RFC 4791 §9.6.',
-                $child->name(),
-            ));
+        foreach ($element->children() as $child) {
+            match ($child->name()) {
+                CalendarDataFilter::NAME => $parts = self::theOnlyRestriction($parts, $child, $recurrences, $freeBusy),
+                self::EXPAND => $expands = self::theOnlyExpansion($expands, $recurrences, $freeBusy),
+                self::LIMIT_RECURRENCE => $recurrences = self::theOnlyRecurrenceLimit(
+                    $recurrences,
+                    $child,
+                    $freeBusy,
+                    $expands,
+                ),
+                self::LIMIT_FREEBUSY => $freeBusy = self::theOnlyFreeBusyLimit($freeBusy, $child),
+                default => throw new BadRequest(sprintf(
+                    '%s has no place in a CALDAV:calendar-data of RFC 4791 §9.6.',
+                    $child->name(),
+                )),
+            };
         }
+
+        // **The whole shape is read before the one part of it this server
+        // cannot answer is refused**, because a body that does not fit §9.6's
+        // DTD is a request that cannot be read at all, where an expansion is
+        // one that can be read and not answered.
+        if ($expands) {
+            throw new NotImplemented(
+                'This server answers a recurring component as it is stored, so CALDAV:expand of RFC 4791 §9.6.5 is not one it can do yet.',
+            );
+        }
+
+        return new self($parts, $recurrences, $freeBusy);
     }
 
     /**
@@ -142,17 +188,358 @@ final class CalendarData
      * licenses the difference that makes: "Given that XML parsers normalize the
      * two-character sequence CRLF […] to a single LF character […], the CR
      * character […] MAY be omitted in calendar object resources specified in
-     * the CALDAV:calendar-data XML element." What a client gets back is
-     * therefore the object as this library writes one, and the chunk that
-     * narrows it (R-CAL-13) has a component to narrow rather than text to cut.
+     * the CALDAV:calendar-data XML element."
+     *
+     * @param Moments $moments What moment each of the object's properties
+     *                         names, which is what the two limits are measured
+     *                         with (§7.3 settles the zone)
      */
-    public static function elementFor(Component $object): Element
+    public function elementFor(Component $object, Moments $moments): Element
     {
         $element = new Element(self::NAME);
 
-        $element->appendText((new Serializer())->write($object));
+        $element->appendText((new Serializer())->write($this->asked($object, $moments)));
 
         return $element;
+    }
+
+    /**
+     * The object as the client asked for it.
+     */
+    private function asked(Component $object, Moments $moments): Component
+    {
+        if ($this->recurrences !== null) {
+            $object = $this->withinTheRecurrences($object, $this->recurrences, $moments);
+        }
+
+        if ($this->freeBusy !== null) {
+            $object = self::withinTheFreeBusy($object, $this->freeBusy);
+        }
+
+        if ($this->parts === null) {
+            return $object;
+        }
+
+        // A restriction about another kind of component names no part of this
+        // object (§9.6.1), and then what comes back is the object's own
+        // beginning and end with nothing between — which §9.6 licenses, having
+        // said the answer "MAY be invalid per their media type specification".
+        return $this->parts->appliedTo($object) ?? new Component($object->name());
+    }
+
+    /**
+     * The object with only the overridden components that impact the range.
+     *
+     * §9.6.6: "the server MUST return, in addition to the 'master component',
+     * only the 'overridden components' that impact a specified time range. An
+     * overridden component impacts a time range if its current start and end
+     * times overlap the time range, or if the original start and end times --
+     * the ones that would have been used if the instance were not overridden
+     * -- overlap the time range."
+     *
+     * **An overridden component is one that carries a `RECURRENCE-ID`**
+     * (RFC 5545 §3.8.4.4), and everything else — the master, a `VTIMEZONE`, an
+     * event of another series — is not what that sentence is about.
+     */
+    private function withinTheRecurrences(Component $object, TimeRange $range, Moments $moments): Component
+    {
+        $kept = new Component($object->name());
+
+        foreach ($object->properties() as $property) {
+            $kept->add($property);
+        }
+
+        foreach ($object->components() as $component) {
+            $identifier = $component->property(self::RECURRENCE_ID);
+
+            if ($identifier === null || self::impacts($range, $component, $identifier, $object, $moments)) {
+                $kept->add($component);
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Whether one overridden component impacts the range.
+     */
+    private static function impacts(
+        TimeRange $range,
+        Component $override,
+        Property $identifier,
+        Component $object,
+        Moments $moments,
+    ): bool {
+        // "if its current start and end times overlap the time range"
+        if ($range->overlaps($override, $moments)) {
+            return true;
+        }
+
+        // "Overridden components that have a RANGE parameter on their
+        // RECURRENCE-ID property may specify one or more instances in the
+        // recurrence set, and some of those instances may fall within the
+        // specified time range […] If that is the case, the overridden
+        // component MUST be included in the results."
+        if (self::speaksForWhatFollows($identifier) && self::reaches($range, $identifier, $moments)) {
+            return true;
+        }
+
+        // "or if the original start and end times -- the ones that would have
+        // been used if the instance were not overridden -- overlap the time
+        // range"
+        return self::originallyOverlapped($range, $override, $identifier, $object, $moments);
+    }
+
+    /**
+     * Whether the instance the series would have made overlaps the range.
+     *
+     * **The original start is the `RECURRENCE-ID` itself** — RFC 5545 §3.8.4.4:
+     * "The property value is the original value of the 'DTSTART' property of
+     * the recurrence instance" — and the original end is that start plus the
+     * master's own length. So the question is the master's own table, asked
+     * with the range moved by the gap between where the master begins and
+     * where that instance would have: the same arithmetic
+     * {@see Filter\CompFilter} uses to ask about an instance without writing
+     * it out.
+     *
+     * **An override without a master has no original time at all.** RFC 4791
+     * §4.1 lets an object "just contain components that represent 'overridden'
+     * instances", so this is a resource a store may hold, and what is left is
+     * the override's own times.
+     */
+    private static function originallyOverlapped(
+        TimeRange $range,
+        Component $override,
+        Property $identifier,
+        Component $object,
+        Moments $moments,
+    ): bool {
+        $master = self::theMasterOf($override, $object);
+
+        if ($master === null) {
+            return false;
+        }
+
+        $begins = $moments->of($master->property('DTSTART'));
+        $at = $moments->of($identifier);
+
+        if ($begins === null || $at === null) {
+            return false;
+        }
+
+        return $range->moved($begins->getTimestamp() - $at->getTimestamp())->overlaps($master, $moments);
+    }
+
+    /**
+     * The component of the same series that defines it, or null where the
+     * object carries none.
+     */
+    private static function theMasterOf(Component $override, Component $object): ?Component
+    {
+        $uid = $override->property('UID')?->value();
+
+        foreach ($object->components() as $candidate) {
+            if ($candidate->property(self::RECURRENCE_ID) !== null) {
+                continue;
+            }
+
+            if ($candidate->property('UID')?->value() === $uid) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether this `RECURRENCE-ID` speaks for the instances after it as well.
+     *
+     * RFC 5545 §3.2.13: `rangeparam = "RANGE" "=" "THISANDFUTURE"`, and §3.1
+     * makes "property parameter values" case-insensitive.
+     */
+    private static function speaksForWhatFollows(Property $identifier): bool
+    {
+        $range = $identifier->parameter('RANGE')?->value();
+
+        return $range !== null && strcasecmp($range, 'THISANDFUTURE') === 0;
+    }
+
+    /**
+     * Whether the range reaches the instances such an override speaks for.
+     *
+     * Those are the ones at or after its own identifier, so a range that ends
+     * before it holds none of them. **The memo's own test is "may fall"**, not
+     * "does fall": deciding it exactly would mean expanding the series to see
+     * whether it still runs that far, which §9.6.6 does not ask for — and the
+     * sentence exists to keep such an override in rather than out.
+     */
+    private static function reaches(TimeRange $range, Property $identifier, Moments $moments): bool
+    {
+        $at = $moments->of($identifier);
+        $until = $range->until();
+
+        return $at !== null && ($until === null || $until > $at);
+    }
+
+    /**
+     * The object with only the `FREEBUSY` values that intersect the range.
+     *
+     * §9.6.7: "the server MUST only return the FREEBUSY property values of a
+     * VFREEBUSY component that intersects a specified time range."
+     *
+     * **The values, not the properties.** A value is a list — RFC 5545
+     * §3.8.2.6: `fbvalue = period *("," period)` — so what is left of a
+     * property is written back as one, and a property with nothing left is not
+     * returned at all.
+     */
+    private static function withinTheFreeBusy(Component $object, TimeRange $range): Component
+    {
+        $kept = new Component($object->name());
+
+        foreach ($object->properties() as $property) {
+            $kept->add($property);
+        }
+
+        foreach ($object->components() as $component) {
+            $kept->add(
+                strcasecmp($component->name(), self::VFREEBUSY) === 0
+                    ? self::withoutTheOtherPeriods($component, $range)
+                    : $component,
+            );
+        }
+
+        return $kept;
+    }
+
+    /**
+     * One `VFREEBUSY` with only the periods that intersect the range.
+     */
+    private static function withoutTheOtherPeriods(Component $component, TimeRange $range): Component
+    {
+        $kept = new Component($component->name());
+
+        foreach ($component->properties() as $property) {
+            if (strcasecmp($property->name(), self::FREEBUSY) !== 0) {
+                $kept->add($property);
+
+                continue;
+            }
+
+            $periods = [];
+
+            foreach (explode(',', $property->value()) as $written) {
+                if ($range->intersectsThePeriod($written)) {
+                    $periods[] = $written;
+                }
+            }
+
+            if ($periods !== []) {
+                $kept->add(new Property($property->name(), implode(',', $periods), $property->parameters()));
+            }
+        }
+
+        foreach ($component->components() as $inner) {
+            $kept->add($inner);
+        }
+
+        return $kept;
+    }
+
+    /**
+     * @throws BadRequest If a second `CALDAV:comp` arrives, or one arrives
+     *                    after a limit
+     */
+    private static function theOnlyRestriction(
+        ?CalendarDataFilter $parts,
+        Element $element,
+        ?TimeRange $recurrences,
+        ?TimeRange $freeBusy,
+    ): CalendarDataFilter {
+        if ($parts !== null) {
+            throw new BadRequest(
+                'A CALDAV:calendar-data narrows the parts once: RFC 4791 §9.6 spells it comp?.',
+            );
+        }
+
+        if ($recurrences !== null || $freeBusy !== null) {
+            throw new BadRequest(
+                'A CALDAV:comp comes before the limits of a CALDAV:calendar-data: RFC 4791 §9.6 writes that order.',
+            );
+        }
+
+        return CalendarDataFilter::of($element);
+    }
+
+    /**
+     * **The attributes of an expansion are not read**, because the element is
+     * refused whole: what a client learns from `501` is that the feature is
+     * missing, which is the more useful answer while it is.
+     *
+     * @throws BadRequest If a second one arrives, one arrives beside a
+     *                    `CALDAV:limit-recurrence-set`, or one arrives after
+     *                    the free/busy limit
+     */
+    private static function theOnlyExpansion(bool $expands, ?TimeRange $recurrences, ?TimeRange $freeBusy): bool
+    {
+        self::mustBeTheFirstOfTheChoice($expands, $recurrences);
+
+        if ($freeBusy !== null) {
+            throw new BadRequest(
+                'A CALDAV:expand comes before a CALDAV:limit-freebusy-set: RFC 4791 §9.6 writes that order.',
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * @throws BadRequest If a second one arrives, one arrives beside a
+     *                    `CALDAV:expand`, or one arrives after the free/busy
+     *                    limit
+     */
+    private static function theOnlyRecurrenceLimit(
+        ?TimeRange $recurrences,
+        Element $element,
+        ?TimeRange $freeBusy,
+        bool $expands,
+    ): TimeRange {
+        self::mustBeTheFirstOfTheChoice($expands, $recurrences);
+
+        if ($freeBusy !== null) {
+            throw new BadRequest(
+                'A CALDAV:limit-recurrence-set comes before a CALDAV:limit-freebusy-set: RFC 4791 §9.6 writes that order.',
+            );
+        }
+
+        return TimeRange::ofBothEnds($element);
+    }
+
+    /**
+     * @throws BadRequest If a second one arrives
+     */
+    private static function theOnlyFreeBusyLimit(?TimeRange $freeBusy, Element $element): TimeRange
+    {
+        if ($freeBusy !== null) {
+            throw new BadRequest(
+                'A CALDAV:calendar-data limits the free/busy periods once: RFC 4791 §9.6 spells it limit-freebusy-set?.',
+            );
+        }
+
+        return TimeRange::ofBothEnds($element);
+    }
+
+    /**
+     * §9.6: `(expand | limit-recurrence-set)?` — one of the two, once.
+     *
+     * @throws BadRequest If the choice has already been made
+     */
+    private static function mustBeTheFirstOfTheChoice(bool $expands, ?TimeRange $recurrences): void
+    {
+        if ($expands || $recurrences !== null) {
+            throw new BadRequest(
+                'A CALDAV:calendar-data expands or limits the recurrences, once: RFC 4791 §9.6 spells it (expand | limit-recurrence-set)?.',
+            );
+        }
     }
 
     /**

@@ -180,6 +180,15 @@ final class RunTest extends TestCase
      * that the first was the machine, while a parse that is genuinely slow is
      * slow both times and stays a finding
      * ({@see testARunThatOutlastsItsLimitIsAFinding}).
+     *
+     * **The budget here is the case's own, and it is wide on purpose.** What
+     * the second reading does is return a string, and this case runs inside
+     * the sharded coverage run — twelve instrumented processes, where the wall
+     * clock carries whatever else the machine is doing. Measured on
+     * 20.10.2026 in that run: the second reading took 0.0011 s against a
+     * budget of 0.0010 s, and the case reported a finding about the scheduler.
+     * Fifty milliseconds is more than forty times that reading, and the first
+     * reading sleeps past it either way — which is what the case is about.
      */
     public function testAReadingTheMachineStretchedIsNotAFinding(): void
     {
@@ -187,11 +196,11 @@ final class RunTest extends TestCase
 
         $found = Run::of('BEGIN:VCARD', static function () use (&$readings): string {
             if (++$readings === 1) {
-                usleep(30_000);
+                usleep(120_000);
             }
 
             return 'quick the second time';
-        }, 0.001);
+        }, 0.05);
 
         self::assertNull($found);
         self::assertSame(2, $readings);

@@ -136,6 +136,39 @@ final readonly class TimeRange
     }
 
     /**
+     * One range whose both ends are there, as §9.6.5 to §9.6.7 want them.
+     *
+     * Those three elements limit what a report returns rather than asking a
+     * question about it, and each makes its attributes `#REQUIRED`:
+     *
+     *     <!ATTLIST limit-recurrence-set start CDATA #REQUIRED
+     *                                    end   CDATA #REQUIRED>
+     *
+     * **That is a different thing from §9.9's own element**, which reads a
+     * missing attribute as "any time in the past" or "any time in the future":
+     * a filter open at one end is an ordinary thing to ask, while a limit open
+     * at one end limits nothing. Everything else about the two ends is the
+     * same question, which §9.6.6 says itself — "The server MUST use the same
+     * logic as defined for CALDAV:time-range" — so the rest is {@see of()}.
+     *
+     * @throws BadRequest If an attribute is missing, is no "date with UTC
+     *                    time", or the end is not after the start
+     */
+    public static function ofBothEnds(Element $element): self
+    {
+        foreach (['start', 'end'] as $attribute) {
+            if ($element->attribute($attribute) === null) {
+                throw new BadRequest(sprintf(
+                    'A limit on what comes back names both ends: RFC 4791 §9.6.5 to §9.6.7 make "%s" #REQUIRED.',
+                    $attribute,
+                ));
+            }
+        }
+
+        return self::of($element);
+    }
+
+    /**
      * The inclusive start, or null for "-infinity".
      */
     public function from(): ?DateTimeImmutable
@@ -221,6 +254,38 @@ final readonly class TimeRange
     public static function isDefinedFor(string $property): bool
     {
         return in_array(strtoupper($property), self::DATED, true);
+    }
+
+    /**
+     * Whether one period of a `FREEBUSY` value intersects the range.
+     *
+     * **§9.6.7 limits a value by this question**: "the server MUST only return
+     * the FREEBUSY property values of a VFREEBUSY component that intersects a
+     * specified time range", and "The server MUST use the same logic as
+     * defined for CALDAV:time-range". That logic is §9.9's row for a component
+     * with no `DTSTART`: `(start < freebusy-period-end) AND (end >
+     * freebusy-period-start)`, so a period that merely touches an end of the
+     * range does not intersect it.
+     *
+     * **A period this library cannot read does not intersect anything.** §9.6.7
+     * asks for "only" the values that do, and one that cannot be read cannot
+     * be shown to — the same answer {@see periodsIn()} gives it when a whole
+     * component is judged.
+     *
+     * @param string $written One period, as a `FREEBUSY` value carries it
+     *                        (RFC 5545 §3.8.2.6: `fbvalue = period *("," period)`)
+     */
+    public function intersectsThePeriod(string $written): bool
+    {
+        $period = self::periodOf($written);
+
+        if ($period === null) {
+            return false;
+        }
+
+        [$begins, $finishes] = $period;
+
+        return $this->startsBefore($finishes) && $this->endsAfter($begins);
     }
 
     /**
@@ -615,41 +680,52 @@ final readonly class TimeRange
 
         foreach ($component->properties('FREEBUSY') as $property) {
             foreach (explode(',', $property->value()) as $written) {
-                try {
-                    $period = Period::decode($written);
-                } catch (ParseError) {
-                    continue;
+                $period = self::periodOf($written);
+
+                if ($period !== null) {
+                    $periods[] = $period;
                 }
-
-                $utc = new DateTimeZone('UTC');
-                $begins = $period->start()->in($utc);
-                $duration = $period->duration();
-
-                if ($duration !== null) {
-                    $periods[] = [$begins, $begins->add($duration->toDateInterval())];
-
-                    continue;
-                }
-
-                $until = $period->end();
-
-                // @codeCoverageIgnoreStart
-                // **A period has one or the other, and the type system does
-                // not say so.** {@see Period} is built from a
-                // `DateTime|Duration`, so a period with neither cannot exist —
-                // but its two accessors are separately nullable, and nothing
-                // declares them exclusive. The guard is for the reader of the
-                // types rather than for any input.
-                if ($until === null) {
-                    continue;
-                }
-                // @codeCoverageIgnoreEnd
-
-                $periods[] = [$begins, $until->in($utc)];
             }
         }
 
         return $periods;
+    }
+
+    /**
+     * One period as a start and an end, or null where it cannot be read.
+     *
+     * @return array{DateTimeImmutable, DateTimeImmutable}|null
+     */
+    private static function periodOf(string $written): ?array
+    {
+        try {
+            $period = Period::decode($written);
+        } catch (ParseError) {
+            return null;
+        }
+
+        $utc = new DateTimeZone('UTC');
+        $begins = $period->start()->in($utc);
+        $duration = $period->duration();
+
+        if ($duration !== null) {
+            return [$begins, $begins->add($duration->toDateInterval())];
+        }
+
+        $until = $period->end();
+
+        // @codeCoverageIgnoreStart
+        // **A period has one or the other, and the type system does not say
+        // so.** {@see Period} is built from a `DateTime|Duration`, so a period
+        // with neither cannot exist — but its two accessors are separately
+        // nullable, and nothing declares them exclusive. The guard is for the
+        // reader of the types rather than for any input.
+        if ($until === null) {
+            return null;
+        }
+        // @codeCoverageIgnoreEnd
+
+        return [$begins, $until->in($utc)];
     }
 
     /**

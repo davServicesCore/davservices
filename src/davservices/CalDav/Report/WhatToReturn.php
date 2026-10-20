@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\CalDav\Report;
 
 use DavServices\CalDav\CalendarData;
+use DavServices\CalDav\Moments;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
 use DavServices\Dav\PropFindForm;
@@ -70,13 +71,14 @@ final class WhatToReturn
     /**
      * @param list<string> $names The WebDAV properties named, with
      *                            `CALDAV:calendar-data` already taken out
-     * @param bool $data Whether the client asked for the object itself
+     * @param CalendarData|null $data What of the object the client asked for,
+     *                                or null where it asked for none of it
      */
     private function __construct(
         private readonly Server $server,
         private readonly ?PropFindForm $form,
         private readonly array $names,
-        private readonly bool $data,
+        private readonly ?CalendarData $data,
     ) {
     }
 
@@ -86,7 +88,7 @@ final class WhatToReturn
      * @throws Forbidden If a `CALDAV:calendar-data` asks for a media type this
      *                   server never advertised (§7.8's
      *                   `CALDAV:supported-calendar-data`)
-     * @throws NotImplemented If it asks for parts of an object (R-CAL-13)
+     * @throws NotImplemented If it asks for an expansion (R-CAL-14)
      * @throws BadRequest If it carries a child §9.6's DTD does not name
      */
     public static function of(Server $server, Element $asked): self
@@ -98,22 +100,27 @@ final class WhatToReturn
         }
 
         if ($asked->child('{DAV:}propname') !== null) {
-            return new self($server, PropFindForm::NamesOnly, [], false);
+            return new self($server, PropFindForm::NamesOnly, [], null);
         }
 
         if ($asked->child('{DAV:}allprop') !== null) {
-            return new self($server, PropFindForm::Everything, [], false);
+            return new self($server, PropFindForm::Everything, [], null);
         }
 
         // §9.5 and §9.10 make the group optional, and §7.8 has it that "the
         // request can include XML elements to request WebDAV properties to be
         // returned" — so one that named none wanted none, and answering
         // `allprop` would send an object nobody asked for.
-        return new self($server, null, [], false);
+        return new self($server, null, [], null);
     }
 
     /**
      * Adds this object to the report.
+     *
+     * @param Moments $moments What moment each of the object's properties
+     *                         names, which is what §9.6.6's and §9.6.7's
+     *                         limits are measured with — the zone having been
+     *                         chosen as §7.3 says, by whoever read the request
      */
     public function describe(
         MultiStatus $report,
@@ -121,13 +128,14 @@ final class WhatToReturn
         string $path,
         INode $node,
         Component $object,
+        Moments $moments,
     ): void {
         $byStatus = $this->form === null
             ? []
             : Answers::about($this->server->events(), $path, $node, $this->form, $this->names)->byStatus();
 
-        if ($this->data) {
-            $byStatus[200][CalendarData::NAME] = CalendarData::elementFor($object);
+        if ($this->data !== null) {
+            $byStatus[200][CalendarData::NAME] = $this->data->elementFor($object, $moments);
         }
 
         if ($byStatus === []) {
@@ -148,7 +156,7 @@ final class WhatToReturn
      * an empty `DAV:propstat`, which RFC 4918 §14.24 does not admit.
      *
      * @throws Forbidden If the data is not one this server keeps
-     * @throws NotImplemented If it is narrowed in a way R-CAL-13 is about
+     * @throws NotImplemented If it asks for an expansion (R-CAL-14)
      * @throws BadRequest If it carries a child §9.6's DTD does not name
      */
     private static function named(Server $server, Element $prop): self
@@ -162,15 +170,11 @@ final class WhatToReturn
             }
         }
 
-        if ($data !== null) {
-            CalendarData::mustBeOneItAnswers($data);
-        }
-
         return new self(
             $server,
             $names === [] ? null : PropFindForm::Named,
             $names,
-            $data !== null,
+            $data === null ? null : CalendarData::of($data),
         );
     }
 }

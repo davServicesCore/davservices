@@ -13,7 +13,9 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\CalDav\Report;
 
+use DateTimeZone;
 use DavServices\CalDav\CalendarObject;
+use DavServices\CalDav\Moments;
 use DavServices\CalDav\Report\WhatToReturn;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Property\LiveProperties;
@@ -182,18 +184,41 @@ final class WhatToReturnTest extends TestCase
     }
 
     /**
-     * And so is a narrowing this server cannot yet do (R-CAL-13): read once,
+     * And so is an expansion this server cannot yet do (R-CAL-14): read once,
      * before an object is fetched, rather than discovered per object.
      */
-    public function testANarrowingItCannotYetDoIsRefusedWhileReading(): void
+    public function testAnExpansionItCannotYetDoIsRefusedWhileReading(): void
     {
         $this->expectException(NotImplemented::class);
-        $this->expectExceptionMessage('comp');
+        $this->expectExceptionMessage('expand');
 
         $this->whatToReturn(
             '<D:prop xmlns:D="DAV:"><calendar-data xmlns="urn:ietf:params:xml:ns:caldav">'
-            . '<comp xmlns="urn:ietf:params:xml:ns:caldav" name="VCALENDAR"/></calendar-data></D:prop>',
+            . '<expand xmlns="urn:ietf:params:xml:ns:caldav" start="20260101T000000Z" end="20270101T000000Z"/>'
+            . '</calendar-data></D:prop>',
         );
+    }
+
+    /**
+     * **And a client that asked for less is answered with less**, which is
+     * §9.6's own sentence: "one can explicitly specify the calendar components
+     * and properties that should be returned in the calendar object resource
+     * data". Which parts those are is
+     * {@see \DavServices\CalDav\CalendarData}'s business; that it is asked at
+     * all is this one's.
+     */
+    public function testTheDataComesBackAsNarrowlyAsItWasAskedFor(): void
+    {
+        $written = $this->describing(
+            '<D:prop xmlns:D="DAV:"><calendar-data xmlns="urn:ietf:params:xml:ns:caldav">'
+            . '<comp xmlns="urn:ietf:params:xml:ns:caldav" name="VCALENDAR">'
+            . '<prop xmlns="urn:ietf:params:xml:ns:caldav" name="VERSION"/>'
+            . '</comp></calendar-data></D:prop>',
+        );
+
+        self::assertStringContainsString('VERSION:2.0', $written);
+        self::assertStringNotContainsString('PRODID', $written);
+        self::assertStringNotContainsString('SUMMARY', $written);
     }
 
     /**
@@ -213,12 +238,15 @@ final class WhatToReturnTest extends TestCase
         $server = $this->server();
         $report = new MultiStatus();
 
+        $read = $this->object($object);
+
         $this->whatToReturn($properties, $server)->describe(
             $report,
             $href ?? self::OBJECT,
             self::OBJECT,
             $server->tree()->node(self::OBJECT),
-            $this->object($object),
+            $read,
+            new Moments($read, new DateTimeZone('UTC')),
         );
 
         return (new Writer())->write($report->toElement());
