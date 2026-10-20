@@ -290,6 +290,145 @@ final class ShardedCoverageTest extends TestCase
     }
 
     /**
+     * **A function that ran was entered at the top.** Control enters a
+     * function at its first opcode, which is the branch at id 0, so a record
+     * whose later branches were hit and whose entry was not is describing
+     * something that cannot happen — and it is the entry that is wrong.
+     *
+     * ## The measurement this is about
+     *
+     * Measured on 20.10.2026 on `VObject\Recur\ObjectSet::instances()`, a
+     * generator, in the shard that ran its tests:
+     *
+     *     branch 0  ops 0-6    lines 183-187  hit: []           out_hit: [0, 0]
+     *     branch 7  ops 7-12   lines 193-195  hit: [1 test]     out_hit: [0]
+     *     branch 13 ops 13-21  lines 198-201  hit: [13 tests]   out_hit: [1]
+     *
+     * Branch 7 is the body of the `if` that branch 0 evaluates: there is no
+     * way into it but through branch 0. The same process reported the entry
+     * hit when the file's own test ran alone, and unhit with two unrelated
+     * test files in the process beside it — so what the entry says depends on
+     * the company it keeps, which is a property of the collector rather than
+     * of the suite.
+     *
+     * ## Why this cannot hide a gap
+     *
+     * An entry branch is unreachable only where the function is never called,
+     * and then no branch of it is hit — so nothing is claimed, and an untested
+     * function keeps counting against the floor.
+     */
+    public function testAFunctionWhoseBodyRanWasEnteredAtTheTop(): void
+    {
+        $repaired = ShardedCoverage::withTheEntryOfEveryFunctionThatRan([
+            'DavServices\VObject\Recur\ObjectSet->instances' => self::record([0 => false, 7 => true, 13 => true]),
+        ]);
+
+        self::assertSame(
+            [true, true, true],
+            self::hitsIn($repaired['DavServices\VObject\Recur\ObjectSet->instances'] ?? []),
+        );
+    }
+
+    /**
+     * **And a function that never ran is left alone**, which is the half that
+     * keeps the floor honest: nothing was entered, so nothing was entered at
+     * the top either.
+     */
+    public function testAFunctionThatNeverRanKeepsItsUnhitEntry(): void
+    {
+        $repaired = ShardedCoverage::withTheEntryOfEveryFunctionThatRan([
+            'Thing->neverCalled' => self::record([0 => false, 7 => false]),
+        ]);
+
+        self::assertSame([false, false], self::hitsIn($repaired['Thing->neverCalled'] ?? []));
+    }
+
+    /**
+     * An entry already hit is left as it is, hits and all: there is nothing to
+     * repair, and rewriting the list would lose which tests entered it.
+     */
+    public function testAnEntryAlreadyHitIsLeftAsItWas(): void
+    {
+        $repaired = ShardedCoverage::withTheEntryOfEveryFunctionThatRan([
+            'Thing->doIt' => ['branches' => [
+                0 => ['hit' => ['the one test'], 'line_start' => 90, 'line_end' => 90],
+                7 => ['hit' => ['another test'], 'line_start' => 91, 'line_end' => 91],
+            ]],
+        ]);
+        self::assertSame(['the one test'], self::entryHitsIn($repaired['Thing->doIt'] ?? null));
+    }
+
+    /**
+     * The tests named are the ones that ran the function, because they are the
+     * ones that entered it: a report that claimed a hit by nobody would say a
+     * branch was reached and leave no way to ask which case reached it.
+     */
+    public function testTheEntryNamesTheTestsThatRanTheFunction(): void
+    {
+        $repaired = ShardedCoverage::withTheEntryOfEveryFunctionThatRan([
+            'Thing->doIt' => ['branches' => [
+                0 => ['hit' => [], 'line_start' => 90, 'line_end' => 90],
+                7 => ['hit' => ['one case', 'another case'], 'line_start' => 91, 'line_end' => 91],
+                9 => ['hit' => ['another case'], 'line_start' => 92, 'line_end' => 92],
+            ]],
+        ]);
+        self::assertSame(['one case', 'another case'], self::entryHitsIn($repaired['Thing->doIt'] ?? null));
+    }
+
+    /**
+     * A record with no branch at id 0 is no function record this knows, and a
+     * record that is no record at all is passed through — the same care the
+     * folding above takes with data from another library.
+     */
+    public function testWhatItCannotRecogniseIsPassedThrough(): void
+    {
+        $repaired = ShardedCoverage::withTheEntryOfEveryFunctionThatRan([
+            'odd' => 'not a record',
+            'no branches' => ['branches' => 'odd'],
+            'no entry' => ['branches' => [7 => ['hit' => ['a test'], 'line_start' => 90, 'line_end' => 90]]],
+            'odd entry' => ['branches' => [0 => 'not a branch', 7 => ['hit' => ['a test']]]],
+        ]);
+
+        self::assertSame(['odd', 'no branches', 'no entry', 'odd entry'], array_keys($repaired));
+        self::assertSame('not a record', $repaired['odd'] ?? null);
+    }
+
+    /**
+     * The tests the entry branch of a record names.
+     *
+     * Read a step at a time, because these are records from another library:
+     * what the shape is said to be is checked rather than assumed.
+     *
+     * @return list<string>
+     */
+    private static function entryHitsIn(mixed $record): array
+    {
+        self::assertIsArray($record);
+
+        $branches = $record['branches'] ?? null;
+
+        self::assertIsArray($branches);
+
+        $entry = $branches[0] ?? null;
+
+        self::assertIsArray($entry);
+
+        $hit = $entry['hit'] ?? null;
+
+        self::assertIsArray($hit);
+
+        $tests = [];
+
+        foreach ($hit as $test) {
+            self::assertIsString($test);
+
+            $tests[] = $test;
+        }
+
+        return $tests;
+    }
+
+    /**
      * One function record, with a hit or no hit per branch id.
      *
      * @param array<int, bool> $hits

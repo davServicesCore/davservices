@@ -117,8 +117,16 @@ foreach ($shards as $at => $coverage) {
     // event and as a method call is recorded twice, the second time without
     // its class name — the same compiled function, with the hits split
     // between the two. See ShardedCoverage for the measurement.
+    // **And a function that ran was entered at the top**, which a report can
+    // deny: measured on 20.10.2026, `ObjectSet::instances()` came back with
+    // its entry branch unhit and the body of the `if` that branch evaluates
+    // hit, in the one shard that ran its tests. See ShardedCoverage.
     foreach ($layout as $file => $functions) {
-        $layout[$file] = is_array($functions) ? ShardedCoverage::oneRecordPerFunction($functions) : $functions;
+        $layout[$file] = is_array($functions)
+            ? ShardedCoverage::withTheEntryOfEveryFunctionThatRan(
+                ShardedCoverage::oneRecordPerFunction($functions),
+            )
+            : $functions;
     }
 
     $coverage->getData(true)->setFunctionCoverage($layout);

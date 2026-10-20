@@ -17,7 +17,10 @@ use DateTimeImmutable;
 use DateTimeZone;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Moments;
+use DavServices\CalDav\TimeZone;
 use DavServices\VObject\Component;
+use DavServices\VObject\TimeZone\Definition;
+use DavServices\VObject\Value\DateTime;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
@@ -327,6 +330,149 @@ final class MomentsTest extends TestCase
         );
     }
 
+    /**
+     * **A zone the request supplies need not be one PHP can name.** §7.3 makes
+     * the `CALDAV:timezone` element the first source a report reads, and §9.8
+     * has the server "rely on the specified VTIMEZONE component" — so the
+     * element's own observances are the zone, whatever its `TZID` is called.
+     * §5.2.2's example calls it `US-Eastern`, which is no name in the IANA
+     * database, so a reader that insisted on a nameable zone would refuse the
+     * memo's own spelling.
+     *
+     * The answer comes back in UTC, as every answer here does.
+     */
+    public function testAFloatingValueIsReadInAZoneNothingCanName(): void
+    {
+        self::assertSame(
+            '2026-01-05T06:23:00+00:00',
+            $this->momentInTheZone("DTSTART:20260105T120000\r\n", self::OLYMPUS)?->format('c'),
+        );
+    }
+
+    /**
+     * And an all-day value in such a zone is its midnight, which is the
+     * conversion §7.3 asks for in the same breath: "to perform the proper
+     * conversion of 'floating date' and 'floating time' values to date with
+     * UTC time values".
+     */
+    public function testAnAllDayValueIsMidnightInAZoneNothingCanName(): void
+    {
+        self::assertSame(
+            '2026-01-04T18:23:00+00:00',
+            $this->momentInTheZone("DTSTART;VALUE=DATE:20260105\r\n", self::OLYMPUS)?->format('c'),
+        );
+    }
+
+    /**
+     * **And a value that carries its own `TZID` still wins**, because §3.2.19
+     * puts the zone on the property: the zone chosen for the report is for
+     * what floats, and a value that names a zone is not floating.
+     */
+    public function testAValueThatNamesItsOwnZoneIsNotReadInTheChosenOne(): void
+    {
+        self::assertSame(
+            '2026-01-05T17:00:00+00:00',
+            $this->momentInTheZone(
+                "DTSTART;TZID=US-Eastern:20260105T120000\r\n",
+                self::OLYMPUS,
+                self::EASTERN,
+            )?->format('c'),
+        );
+    }
+
+    /**
+     * **One instance of a series, read like the component's own start.** A
+     * recurrence is a wall clock repeated — RFC 5545 §3.3.10 and §3.8.5.3 both
+     * put the arithmetic there — so the value changes and the zone does not:
+     * §3.2.19 puts the `TZID` on the property, and the instance is the same
+     * property with another value.
+     *
+     * Asked for by {@see \DavServices\CalDav\Filter\CompFilter}, which needs
+     * the instant an instance begins in order to ask §9.9's tables about it
+     * without writing the instance out.
+     */
+    public function testAnInstanceIsReadLikeTheComponentsOwnStart(): void
+    {
+        self::assertSame(
+            '2026-01-12T17:00:00+00:00',
+            $this->instanceAt(
+                "DTSTART;TZID=US-Eastern:20260105T120000\r\n",
+                '20260112T120000',
+                self::EASTERN,
+            )?->format('c'),
+        );
+    }
+
+    /**
+     * **A component that says nowhere it begins puts no instance anywhere.**
+     * RFC 5545 §3.8.5.1 computes a series "from the DTSTART property", so
+     * without one there is no property to write an instance like — and null is
+     * the answer every other reading here gives to a question with no value
+     * behind it.
+     */
+    public function testAComponentWithNoStartPutsNoInstanceAnywhere(): void
+    {
+        self::assertNull($this->instanceAt("SUMMARY:Some day\r\n", '20260112T120000'));
+    }
+
+    /**
+     * **And an instance at a local time that does not exist is no moment.**
+     * §3.3.10: "Recurrence rules may generate recurrence instances with an
+     * invalid date (e.g., February 30) or nonexistent local time (e.g., 1:30
+     * AM on a day where the local time is moved forward by an hour at 1:00
+     * AM). Such recurrence instances MUST be ignored and MUST NOT be counted
+     * as part of the recurrence set."
+     *
+     * The clocks in New York go forward at two on 8 March 2026, so half past
+     * two never comes that morning.
+     */
+    public function testAnInstanceAtALocalTimeThatDoesNotExistIsNoMoment(): void
+    {
+        self::assertNull($this->instanceAt(
+            "DTSTART;TZID=America/New_York:20260307T023000\r\n",
+            '20260308T023000',
+        ));
+    }
+
+    /**
+     * The moment one instance of a series begins, given the component's own
+     * start and where the series put that instance.
+     *
+     * @param string $line The component's `DTSTART`, or something else where
+     *                     the case is about there being none
+     * @param string $start Where the instance begins, as the series put it
+     * @param string $carried What the object carries beside the event
+     */
+    private function instanceAt(string $line, string $start, string $carried = ''): ?DateTimeImmutable
+    {
+        $object = $this->objectOf(
+            $carried . "BEGIN:VEVENT\r\nUID:1@example.com\r\n" . $line . "END:VEVENT\r\n",
+        );
+        $event = $object->component('VEVENT') ?? self::fail('The case built an object with no event in it.');
+
+        return (new Moments($object, new DateTimeZone('UTC')))->ofTheInstance($event, DateTime::decode($start));
+    }
+
+    /**
+     * The moment a property names when what floats is read in a `VTIMEZONE`'s
+     * own observances rather than in a named zone.
+     *
+     * @param string $line The property the case is about
+     * @param string $chosen The `VTIMEZONE` the report is to rely on
+     * @param string $carried What the object carries beside the event
+     */
+    private function momentInTheZone(string $line, string $chosen, string $carried = ''): ?DateTimeImmutable
+    {
+        $object = $this->objectOf(
+            $carried . "BEGIN:VEVENT\r\nUID:1@example.com\r\n" . $line . "END:VEVENT\r\n",
+        );
+        $definition = Definition::of(
+            TimeZone::in($this->wrapping($chosen)) ?? self::fail('The case built something that is no time zone.'),
+        ) ?? self::fail('The case built a time zone nothing can be resolved with.');
+
+        return (new Moments($object, $definition))->of($object->component('VEVENT')?->property('DTSTART'));
+    }
+
     private function momentOf(string $line, string $zone = 'UTC', string $carried = ''): ?DateTimeImmutable
     {
         $object = $this->objectOf(
@@ -339,9 +485,13 @@ final class MomentsTest extends TestCase
 
     private function objectOf(string $components): Component
     {
-        $text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
-            . $components . "END:VCALENDAR\r\n";
+        return CalendarObject::in($this->wrapping($components))
+            ?? self::fail('The case built something that is no calendar object.');
+    }
 
-        return CalendarObject::in($text) ?? self::fail('The case built something that is no calendar object.');
+    private function wrapping(string $components): string
+    {
+        return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
+            . $components . "END:VCALENDAR\r\n";
     }
 }

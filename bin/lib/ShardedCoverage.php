@@ -53,6 +53,12 @@ declare(strict_types=1);
  * part of it, which of the two numberings is the real one is not a question
  * this can answer, and keeping both is the strict reading.
  *
+ * ## And one thing a collector gets wrong
+ *
+ * A function whose body was run was entered at the top, whatever the report
+ * says — see {@see withTheEntryOfEveryFunctionThatRan()} for the measurement
+ * and why repairing it cannot hide a gap.
+ *
  * ## Why the types here say so little
  *
  * The records come from `php-code-coverage`, whose `lineCoverage()` and
@@ -171,6 +177,98 @@ final class ShardedCoverage
         }
 
         return $folded;
+    }
+
+    /**
+     * The same records, with the entry of every function that ran marked as
+     * entered.
+     *
+     * **Control enters a function at its first opcode**, which is the branch
+     * at id 0, so a record whose later branches were hit and whose entry was
+     * not is describing something that cannot happen. A generator is no
+     * exception: creating one runs the prologue, and resuming one continues
+     * inside the body.
+     *
+     * Measured on 20.10.2026 on `VObject\Recur\ObjectSet::instances()`, in the
+     * shard that ran its tests:
+     *
+     *     branch 0  ops 0-6    lines 183-187  hit: []          out_hit: [0, 0]
+     *     branch 7  ops 7-12   lines 193-195  hit: [1 test]    out_hit: [0]
+     *     branch 13 ops 13-21  lines 198-201  hit: [13 tests]  out_hit: [1]
+     *
+     * Branch 7 is the body of the `if` that branch 0 evaluates, and there is
+     * no way into it but through branch 0. The same test file reported the
+     * entry hit when it ran alone and unhit with two unrelated test files
+     * beside it in the process, so what the entry says depends on the company
+     * it keeps — a property of the collector rather than of the suite.
+     *
+     * **It cannot hide a gap.** An entry branch is unreachable only where the
+     * function is never called, and then no branch of it is hit, so nothing is
+     * claimed and an untested function keeps counting against the floor.
+     *
+     * The tests named are the ones that ran the function, because they are the
+     * ones that entered it: a hit by nobody would say a branch was reached and
+     * leave no way to ask which case reached it.
+     *
+     * @param array<array-key, mixed> $functions The function records of one
+     *                                           file
+     *
+     * @return array<array-key, mixed> The same records, repaired
+     */
+    public static function withTheEntryOfEveryFunctionThatRan(array $functions): array
+    {
+        foreach ($functions as $name => $record) {
+            if (!is_array($record) || !is_array($record['branches'] ?? null)) {
+                continue;
+            }
+
+            $branches = $record['branches'];
+            $entry = $branches[0] ?? null;
+
+            if (!is_array($entry) || ($entry['hit'] ?? null) !== []) {
+                continue;
+            }
+
+            $ran = self::theTestsThatRanIt($branches);
+
+            if ($ran === []) {
+                continue;
+            }
+
+            $entry['hit'] = $ran;
+            $branches[0] = $entry;
+            $record['branches'] = $branches;
+            $functions[$name] = $record;
+        }
+
+        return $functions;
+    }
+
+    /**
+     * Every test that entered any branch of this function, each once, in the
+     * order they turn up.
+     *
+     * @param array<array-key, mixed> $branches
+     *
+     * @return list<string>
+     */
+    private static function theTestsThatRanIt(array $branches): array
+    {
+        $tests = [];
+
+        foreach ($branches as $branch) {
+            if (!is_array($branch) || !is_array($branch['hit'] ?? null)) {
+                continue;
+            }
+
+            foreach ($branch['hit'] as $test) {
+                if (is_string($test) && !in_array($test, $tests, true)) {
+                    $tests[] = $test;
+                }
+            }
+        }
+
+        return $tests;
     }
 
     /**

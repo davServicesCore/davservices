@@ -134,6 +134,12 @@ final class Limits
      */
     private const TIME_ZONE = 'VTIMEZONE';
 
+    /** Where §5.3.2.1 states the preconditions, for a resource stored. */
+    private const STORED = '§5.3.2.1';
+
+    /** Where §7.8 states the same two, for a range a report asks about. */
+    private const ASKED = '§7.8';
+
     /**
      * The properties RFC 5545 gives a DATE or DATE-TIME value by default.
      *
@@ -266,6 +272,39 @@ final class Limits
     }
 
     /**
+     * Holds a range a report asks about to the dates this server keeps.
+     *
+     * §7.8 lists the two among the preconditions of `calendar-query`, and asks
+     * of a question what §5.3.2.1 asks of a resource:
+     *
+     * > (CALDAV:min-date-time): Any XML element specifying a range of time
+     * > MUST have its start or end DATE or DATE-TIME values greater than or
+     * > equal to the value of the CALDAV:min-date-time property value
+     * > (Section 5.2.6) on the calendar collections being targeted by the
+     * > REPORT request;
+     *
+     * **An open end breaks neither.** §9.9 reads a missing attribute as "any
+     * time in the past" or "any time in the future", which names no DATE or
+     * DATE-TIME value for the sentence above to be about — and a query open at
+     * one end is the ordinary way to ask for everything since a date.
+     *
+     * @throws Forbidden If either end lies outside them
+     */
+    public function mustTakeTheRange(TimeRange $range): void
+    {
+        $from = $range->from();
+        $until = $range->until();
+
+        if ($from !== null) {
+            $this->mustBeInRange($from, self::ASKED);
+        }
+
+        if ($until !== null) {
+            $this->mustBeInRange($until, self::ASKED);
+        }
+    }
+
+    /**
      * §5.2.4: "In the absence of this property, the server MUST only accept
      * data with the media type 'text/calendar' and iCalendar version 2.0."
      *
@@ -385,7 +424,7 @@ final class Limits
             }
 
             foreach (self::momentsIn($property) as $moment) {
-                $this->mustBeInRange($moment);
+                $this->mustBeInRange($moment, self::STORED);
             }
         }
 
@@ -399,15 +438,23 @@ final class Limits
     }
 
     /**
+     * @param string $section Where the precondition is asked for, which is
+     *                        §5.3.2.1 of a resource being stored and §7.8 of a
+     *                        range a report asks about. The element named is
+     *                        the same one either way, and a refusal that cited
+     *                        the other section would send a reader to the
+     *                        wrong page
+     *
      * @throws Forbidden If the moment lies outside the range
      */
-    private function mustBeInRange(DateTimeImmutable $moment): void
+    private function mustBeInRange(DateTimeImmutable $moment, string $section): void
     {
         if ($moment < $this->earliestMoment) {
             throw new Forbidden(
                 sprintf(
-                    'This server keeps nothing earlier than %s: the CALDAV:min-date-time precondition of RFC 4791 §5.3.2.1.',
+                    'This server keeps nothing earlier than %s: the CALDAV:min-date-time precondition of RFC 4791 %s.',
                     $this->earliest,
+                    $section,
                 ),
                 self::MIN_DATE_TIME,
             );
@@ -416,8 +463,9 @@ final class Limits
         if ($moment > $this->latestMoment) {
             throw new Forbidden(
                 sprintf(
-                    'This server keeps nothing later than %s: the CALDAV:max-date-time precondition of RFC 4791 §5.3.2.1.',
+                    'This server keeps nothing later than %s: the CALDAV:max-date-time precondition of RFC 4791 %s.',
                     $this->latest,
+                    $section,
                 ),
                 self::MAX_DATE_TIME,
             );

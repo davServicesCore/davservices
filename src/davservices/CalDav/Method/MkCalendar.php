@@ -102,7 +102,7 @@ final class MkCalendar
 
     private const LOCATION_OK = '{urn:ietf:params:xml:ns:caldav}calendar-collection-location-ok';
 
-    private const VALID_CALENDAR_DATA = '{urn:ietf:params:xml:ns:caldav}valid-calendar-data';
+    private const VALID_CALENDAR_DATA = TimeZone::VALID;
 
     public function __construct(private readonly Server $server)
     {

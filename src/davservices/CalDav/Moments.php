@@ -18,6 +18,7 @@ use DateTimeZone;
 use DavServices\VObject\Component;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Property;
+use DavServices\VObject\Recur\Zone;
 use DavServices\VObject\TimeZone\Named;
 use DavServices\VObject\TimeZone\Resolver;
 use DavServices\VObject\TimeZone\Zones;
@@ -70,14 +71,21 @@ use DavServices\VObject\Value\DateTime;
 final readonly class Moments
 {
     /**
+     * **A zone, or a `VTIMEZONE`'s own observances.** Both are what §7.3's
+     * three sources can yield: a name out of a catalogue, and the component a
+     * `CALDAV:timezone` element carries, of which §9.8 says the server "MUST
+     * rely on the specified VTIMEZONE component". §5.2.2's own example calls
+     * one `US-Eastern`, which is no name in the IANA database — so a reader
+     * that took none but nameable zones would refuse the memo's own spelling.
+     *
      * @param Component $object The calendar object, for the `VTIMEZONE`
      *                          components it carries
-     * @param DateTimeZone $floating The zone a floating value is read in,
-     *                               chosen as §7.3 says
+     * @param DateTimeZone|Zone $floating The zone a floating value is read in,
+     *                                    chosen as §7.3 says
      */
     public function __construct(
         private Component $object,
-        private DateTimeZone $floating,
+        private DateTimeZone|Zone $floating,
     ) {
     }
 
@@ -98,7 +106,7 @@ final readonly class Moments
 
         try {
             $moment = self::isADate($property)
-                ? Date::decode($written)->at($this->floating)
+                ? $this->startOf(Date::decode($written))
                 : $this->instantOf($property, DateTime::decode($written));
         } catch (ParseError) {
             return null;
@@ -110,6 +118,39 @@ final readonly class Moments
         // sometimes carried a local zone would make every reader of it decide
         // again.
         return $moment?->setTimezone(new DateTimeZone('UTC'));
+    }
+
+    /**
+     * The moment one instance of a series begins, in UTC, or null where it
+     * begins at no moment at all.
+     *
+     * **The instance's start is read as the property it would be written
+     * as**, which is what `CALDAV:expand` writes (§9.6.5) and the only thing
+     * this class can read: a recurrence is a wall clock repeated — RFC 5545
+     * §3.3.10 and §3.8.5.3 both put the arithmetic there — so the value
+     * changes and the zone does not. §3.2.19 puts the `TZID` on the property,
+     * and the instance is that same property with another value.
+     *
+     * **Null has two causes and both are ordinary.** A component that names
+     * nowhere it begins has no property to write an instance like, and
+     * §3.8.5.1 computes a series "from the DTSTART property"; and an instance
+     * at a local time that does not exist is no moment, which §3.3.10 settles
+     * — "Such recurrence instances MUST be ignored and MUST NOT be counted as
+     * part of the recurrence set."
+     *
+     * @param Component $component What describes the instance: the master of
+     *                             the series, or the component overriding it
+     * @param Date|DateTime $start Where the series put this instance
+     */
+    public function ofTheInstance(Component $component, Date|DateTime $start): ?DateTimeImmutable
+    {
+        $written = $component->property('DTSTART');
+
+        if ($written === null) {
+            return null;
+        }
+
+        return $this->of(new Property($written->name(), $start->encode(), $written->parameters()));
     }
 
     /**
@@ -149,9 +190,34 @@ final readonly class Moments
             return $instant;
         }
 
-        $zone = $this->zoneOf($property) ?? Named::of($this->floating);
+        $zone = $this->zoneOf($property) ?? $this->chosen();
 
         return $zone->momentOf($written);
+    }
+
+    /**
+     * The moment an all-day value begins in the chosen zone.
+     *
+     * **Midnight, by the same road either way.** A named zone can be handed a
+     * date ({@see Date::at()}); a `VTIMEZONE`'s observances answer for a wall
+     * clock, so the date is asked as the local time it begins at — which is
+     * what §7.3 calls converting a "floating date" to a "date with UTC time".
+     */
+    private function startOf(Date $date): ?DateTimeImmutable
+    {
+        if ($this->floating instanceof DateTimeZone) {
+            return $date->at($this->floating);
+        }
+
+        return $this->floating->momentOf(DateTime::decode($date->encode() . 'T000000'));
+    }
+
+    /**
+     * The chosen zone as the one question a zone is asked.
+     */
+    private function chosen(): Zone
+    {
+        return $this->floating instanceof DateTimeZone ? Named::of($this->floating) : $this->floating;
     }
 
     /**

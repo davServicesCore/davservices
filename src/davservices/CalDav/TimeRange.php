@@ -59,8 +59,16 @@ use DavServices\Xml\Element;
  * `VALARM`, and closes the subject: "The semantic of CALDAV:time-range is not
  * defined for any other calendar components and properties." A kind the memo
  * says nothing about therefore overlaps nothing — answering otherwise would
- * return resources a client cannot predict, and the report that asked is the
- * layer that may refuse such a filter outright.
+ * return resources a client cannot predict.
+ *
+ * **For a property the filter refuses outright rather than answering.** §9.9's
+ * last table names seven, and §7.8 makes a range nested anywhere else a
+ * `CALDAV:valid-filter` violation in those words: "a CALDAV:filter cannot nest
+ * a <C:time-range start='...' end='...'> element in a <C:prop
+ * name='SUMMARY'> element". So {@see isDefinedFor()} is asked where a
+ * `prop-filter` is read ({@see \DavServices\CalDav\Filter\PropFilter::of()}),
+ * and by the time a value is compared the question is only whether it falls in
+ * the range.
  *
  * ## Recurrence is not this class's business
  *
@@ -79,6 +87,19 @@ final readonly class TimeRange
 
     /** §9.9's effective duration for a value that names a day and no time. */
     private const A_DAY = 'P1D';
+
+    /**
+     * The seven properties §9.9's last table is about.
+     *
+     * "The calendar properties COMPLETED, CREATED, DTEND, DTSTAMP, DTSTART,
+     * DUE, and LAST-MODIFIED overlap a given time range if the following
+     * condition holds" — and of everything else the same section says: "The
+     * semantic of CALDAV:time-range is not defined for any other calendar
+     * components and properties."
+     *
+     * @var list<string>
+     */
+    private const DATED = ['COMPLETED', 'CREATED', 'DTEND', 'DTSTAMP', 'DTSTART', 'DUE', 'LAST-MODIFIED'];
 
     private function __construct(
         private ?DateTimeImmutable $from,
@@ -147,6 +168,59 @@ final readonly class TimeRange
         }
 
         return $this->startsAtOrBefore($moment) && $this->endsAfter($moment);
+    }
+
+    /**
+     * The same range, moved along by so many seconds.
+     *
+     * **This is how one instance of a series is asked about** without writing
+     * the instance out. §9.7.1 asks whether "at least one recurrence instance
+     * in the targeted calendar component is scheduled to overlap the specified
+     * time range", and an instance is its component shifted: asking whether a
+     * range reaches an instance Δ after its component is the same question as
+     * asking whether the range moved back by Δ reaches the component. So
+     * {@see \DavServices\CalDav\Filter\CompFilter} moves the range and the
+     * tables above are used exactly as they stand.
+     *
+     * **Seconds on a UTC instant, not an interval on a local one.** A shift
+     * expressed as a `DateInterval` added to a local time would land in a
+     * different offset across a change of season and move the range by an hour
+     * nobody asked for; the ends of a range are "date with UTC time" values
+     * (§9.9) and arithmetic on them is exact.
+     *
+     * An open end stays open: there is nothing to move about infinity.
+     */
+    public function moved(int $seconds): self
+    {
+        if ($seconds === 0) {
+            return $this;
+        }
+
+        $by = new DateInterval('PT' . abs($seconds) . 'S');
+
+        return $seconds > 0
+            ? new self($this->from?->add($by), $this->until?->add($by))
+            : new self($this->from?->sub($by), $this->until?->sub($by));
+    }
+
+    /**
+     * Whether §9.9's last table is about this property at all.
+     *
+     * **Asked from outside as well as in**, which is why it is not written
+     * into the method above: §7.8 makes a range nested in a `prop-filter` that
+     * names another property a `CALDAV:valid-filter` violation, in those words
+     * — "a CALDAV:filter cannot nest a <C:time-range start='...' end='...'>
+     * element in a <C:prop name='SUMMARY'> element" — and the report that
+     * refuses such a filter asks the list rather than keeping a second copy of
+     * it.
+     *
+     * Without regard to case: RFC 5545 §3.1 writes the names in capitals and
+     * RFC 5234 §2.3 makes the grammar's own spelling case-insensitive, so a
+     * client that sent `dtstart` named `DTSTART`.
+     */
+    public static function isDefinedFor(string $property): bool
+    {
+        return in_array(strtoupper($property), self::DATED, true);
     }
 
     /**

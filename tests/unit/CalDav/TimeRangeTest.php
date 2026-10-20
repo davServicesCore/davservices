@@ -776,6 +776,129 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
+     * **A range moved is how one instance of a series is asked about.** §9.7.1
+     * wants to know whether "at least one recurrence instance in the targeted
+     * calendar component is scheduled to overlap the specified time range",
+     * and asking whether a range reaches an instance Δ after its component is
+     * the same question as asking whether the range moved back by Δ reaches
+     * the component — so the tables above are used exactly as they stand, and
+     * no instance has to be written out.
+     *
+     * Asked here as well as through {@see \DavServices\CalDav\Filter\CompFilter}
+     * because the arithmetic is the whole of it: an hour in the wrong
+     * direction is a filter that finds yesterday's meeting.
+     */
+    public function testARangeMovesForwardsByTheSecondsItIsGiven(): void
+    {
+        $moved = $this->range(self::START, self::END)->moved(3600);
+
+        self::assertSame('2026-01-05T13:00:00+00:00', $moved->from()?->format('c'));
+        self::assertSame('2026-01-05T14:00:00+00:00', $moved->until()?->format('c'));
+    }
+
+    public function testARangeMovesBackwardsByNegativeSeconds(): void
+    {
+        $moved = $this->range(self::START, self::END)->moved(-3600);
+
+        self::assertSame('2026-01-05T11:00:00+00:00', $moved->from()?->format('c'));
+        self::assertSame('2026-01-05T12:00:00+00:00', $moved->until()?->format('c'));
+    }
+
+    /**
+     * An override brings its own component and its own start, so its Δ is
+     * nothing — and nothing is what it moves.
+     */
+    public function testARangeMovedByNothingIsTheRangeItself(): void
+    {
+        $range = $this->range(self::START, self::END);
+
+        self::assertSame($range, $range->moved(0));
+    }
+
+    /**
+     * **An open end stays open**: §9.9 reads a missing attribute as "any time
+     * in the past" or "any time in the future", and there is nothing to move
+     * about infinity.
+     *
+     * @param string|null $from What the range's `start` attribute says
+     * @param string|null $until What its `end` attribute says
+     * @param int $seconds How far the range moves
+     * @param string|null $movedFrom Where the start lands
+     * @param string|null $movedUntil Where the end lands
+     */
+    #[DataProvider('rangesOpenAtOneEnd')]
+    public function testMovingARangeOpenAtOneEndLeavesItOpen(
+        ?string $from,
+        ?string $until,
+        int $seconds,
+        ?string $movedFrom,
+        ?string $movedUntil,
+    ): void {
+        $moved = $this->range($from, $until)->moved($seconds);
+
+        self::assertSame($movedFrom, $moved->from()?->format('c'));
+        self::assertSame($movedUntil, $moved->until()?->format('c'));
+    }
+
+    /**
+     * Both ends and both directions, because the two directions are two arms
+     * of the arithmetic rather than the same one twice.
+     *
+     * @return iterable<string, array{?string, ?string, int, ?string, ?string}>
+     */
+    public static function rangesOpenAtOneEnd(): iterable
+    {
+        yield 'open at the start, forwards' => [null, self::END, 3600, null, '2026-01-05T14:00:00+00:00'];
+        yield 'open at the start, backwards' => [null, self::END, -3600, null, '2026-01-05T12:00:00+00:00'];
+        yield 'open at the end, forwards' => [self::START, null, 3600, '2026-01-05T13:00:00+00:00', null];
+        yield 'open at the end, backwards' => [self::START, null, -3600, '2026-01-05T11:00:00+00:00', null];
+    }
+
+    /**
+     * **§9.9 names the properties a range means anything for**, and the list
+     * is a question somebody else has to be able to ask: §7.8 makes a
+     * `time-range` nested in a `prop-filter` that names another property a
+     * `CALDAV:valid-filter` violation, in those words — "a CALDAV:filter
+     * cannot nest a <C:time-range start="..." end="..."> element in a <C:prop
+     * name="SUMMARY"> element" — and the report that refuses it must not keep
+     * a second copy of the list to do it by.
+     *
+     * @param string $property The property a filter names
+     * @param bool $defined Whether §9.9's last table is about it
+     */
+    #[DataProvider('propertiesARangeIsAboutOrNot')]
+    public function testItSaysWhichPropertiesARangeIsDefinedFor(string $property, bool $defined): void
+    {
+        self::assertSame($defined, TimeRange::isDefinedFor($property));
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function propertiesARangeIsAboutOrNot(): iterable
+    {
+        // "The calendar properties COMPLETED, CREATED, DTEND, DTSTAMP,
+        // DTSTART, DUE, and LAST-MODIFIED overlap a given time range if the
+        // following condition holds".
+        foreach (['COMPLETED', 'CREATED', 'DTEND', 'DTSTAMP', 'DTSTART', 'DUE', 'LAST-MODIFIED'] as $named) {
+            yield $named => [$named, true];
+        }
+
+        // "The semantic of CALDAV:time-range is not defined for any other
+        // calendar components and properties."
+        yield 'SUMMARY' => ['SUMMARY', false];
+        yield 'DURATION' => ['DURATION', false];
+        yield 'RECURRENCE-ID' => ['RECURRENCE-ID', false];
+        yield 'X-WHEN' => ['X-WHEN', false];
+
+        // RFC 5545 §3.1 writes the names in capitals, and RFC 5234 §2.3 makes
+        // the grammar's own spelling case-insensitive — so a client that sends
+        // the name in lower case has named the same property.
+        yield 'dtstart, in the case a client wrote it in' => ['dtstart', true];
+        yield 'last-modified, the same' => ['Last-Modified', true];
+    }
+
+    /**
      * One range, from what the attributes say; null leaves an attribute out.
      */
     private function range(?string $from, ?string $until): TimeRange

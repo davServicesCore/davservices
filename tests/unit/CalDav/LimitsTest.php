@@ -15,9 +15,11 @@ namespace DavServices\Tests\Unit\CalDav;
 
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Limits;
+use DavServices\CalDav\TimeRange;
 use DavServices\Exception\DavException;
 use DavServices\VObject\Component;
 use DavServices\VObject\Recur\Iterator;
+use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -599,6 +601,99 @@ final class LimitsTest extends TestCase
         $this->limits()->mustTake(...$this->of($zone . self::event()));
 
         $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **The same two limits, asked of a question instead of an object.** §7.8
+     * lists them among the preconditions of `calendar-query`, and says of each
+     * one what §5.3.2.1 says of a resource:
+     *
+     * > (CALDAV:min-date-time): Any XML element specifying a range of time
+     * > MUST have its start or end DATE or DATE-TIME values greater than or
+     * > equal to the value of the CALDAV:min-date-time property value
+     * > (Section 5.2.6) on the calendar collections being targeted by the
+     * > REPORT request;
+     *
+     * So a client asking what happened in 1898 is asking outside what this
+     * server keeps, and the answer is the precondition rather than an empty
+     * result that looks like an answer.
+     *
+     * @param string|null $from What the range's `start` attribute says
+     * @param string|null $until What its `end` attribute says
+     * @param string $precondition The precondition the range violates
+     */
+    #[DataProvider('rangesOutsideWhatItKeeps')]
+    public function testRefusesARangeOutsideTheDatesItKeeps(
+        ?string $from,
+        ?string $until,
+        string $precondition,
+    ): void {
+        $this->expectCode(403, $precondition);
+        $this->limits()->mustTakeTheRange($this->range($from, $until));
+    }
+
+    /**
+     * **Both ends, and each on its own**, because §7.8 says "its start or end"
+     * — a check that looked at the start alone would take a query that ran to
+     * the year 2600.
+     *
+     * @return iterable<string, array{?string, ?string, string}>
+     */
+    public static function rangesOutsideWhatItKeeps(): iterable
+    {
+        yield 'a start before the earliest' => ['18981231T120000Z', '20260105T130000Z', 'min-date-time'];
+        yield 'an end before the earliest' => [null, '18991231T120000Z', 'min-date-time'];
+        yield 'an end after the latest' => ['20260105T120000Z', '21000101T000000Z', 'max-date-time'];
+        yield 'a start after the latest' => ['21000101T000000Z', null, 'max-date-time'];
+    }
+
+    /**
+     * And a range inside them is a question this server can answer, with the
+     * open end of §9.9 — "assume 'any time in the past' or 'any time in the
+     * future'" — meaning no limit to break rather than a limit broken.
+     *
+     * @param string|null $from What the range's `start` attribute says
+     * @param string|null $until What its `end` attribute says
+     */
+    #[DataProvider('rangesItTakes')]
+    public function testTakesARangeWithinTheDatesItKeeps(?string $from, ?string $until): void
+    {
+        $this->limits()->mustTakeTheRange($this->range($from, $until));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * @return iterable<string, array{?string, ?string}>
+     */
+    public static function rangesItTakes(): iterable
+    {
+        yield 'both ends inside' => ['20260105T120000Z', '20260105T130000Z'];
+        yield 'open at the start' => [null, '20260105T130000Z'];
+        yield 'open at the end' => ['20260105T120000Z', null];
+
+        // "greater than or equal to", and "less than or equal to": the limits
+        // themselves are inside what the server keeps.
+        yield 'exactly the earliest' => [Limits::EARLIEST, '20260105T130000Z'];
+        yield 'exactly the latest' => ['20260105T120000Z', Limits::LATEST];
+    }
+
+    /**
+     * One range, from what the attributes say; null leaves an attribute out.
+     */
+    private function range(?string $from, ?string $until): TimeRange
+    {
+        $attributes = [];
+
+        if ($from !== null) {
+            $attributes['start'] = $from;
+        }
+
+        if ($until !== null) {
+            $attributes['end'] = $until;
+        }
+
+        return TimeRange::of(new Element(TimeRange::NAME, $attributes));
     }
 
     private function limits(?Limits $limits = null): Limits

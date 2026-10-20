@@ -15,6 +15,7 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
+use DavServices\CalDav\Filter\TextMatch;
 use DavServices\CalDav\Limits;
 use DavServices\CalDav\Method\MkCalendar;
 use DavServices\Dav\Acl\PrincipalInfo;
@@ -32,6 +33,7 @@ use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
 use DavServices\Dav\Method\Put;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\PropPatchResult;
@@ -69,11 +71,15 @@ use PHPUnit\Framework\TestCase;
  * **It does not announce `calendar-access`.** §5.1 makes that value a promise
  * with teeth: "A value of 'calendar-access' in the DAV response header MUST
  * indicate that the server supports all MUST level requirements specified in
- * this document" — and §7.8 makes `CALDAV:calendar-query` one of them. A server
- * announcing the class before the reports exist would send every client
- * straight into a `403`, which is worse than a server a client does not try.
- * The same reasoning kept `CARDDAV:supported-collation-set` out of P5-01 until
- * the collations existed.
+ * this document" — and **all three of its reports are among them**: "Support
+ * for the CALDAV:calendar-query REPORT is REQUIRED" (§7.8), and §7.9 and §7.10
+ * say the same of `calendar-multiget` and `free-busy-query`. A server
+ * announcing the class before the last of them exists would send every client
+ * that reads it straight into a `403`, which is worse than a server a client
+ * does not try.
+ *
+ * So `calendar-query` arriving is not enough, and the class waits for the
+ * chunk that finishes the third report.
  */
 #[CoversClass(CalDav::class)]
 final class CalDavTest extends TestCase
@@ -243,11 +249,78 @@ final class CalDavTest extends TestCase
         $server = $this->server();
         $server->onMethod('OPTIONS', (new Options($server))(...));
 
-        (new CalDav($server))->register();
+        (new CalDav($server))->register(new Report($server));
 
         $response = $server->handle(new Request('OPTIONS', '/calendars'));
 
         self::assertStringNotContainsString('calendar-access', $response->headers()->first('DAV') ?? '');
+    }
+
+    /**
+     * **§7.8: "Support for the CALDAV:calendar-query REPORT is REQUIRED."** So
+     * the plugin asks for the `REPORT` method and wires the query itself, the
+     * way {@see \DavServices\Plugin\CardDav} wires the two of RFC 6352 — a
+     * CalDAV server that did not answer it would not be one, and an
+     * application left to remember the line would sooner or later ship without
+     * it.
+     *
+     * What the report answers is tested where it lives, under `CalDav\Report`.
+     * What is proved here is that it is reachable at all: without the wiring,
+     * `Report` refuses the name with `403` and `DAV:supported-report`.
+     */
+    public function testRegisterAnswersTheQueryReportTheMemoRequires(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CalDav($server))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/calendars/work',
+            headers: new Headers(['Depth' => '1']),
+            body: new Body(
+                '<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav">'
+                . '<C:filter><C:comp-filter name="VCALENDAR"/></C:filter></C:calendar-query>',
+            ),
+        ));
+
+        self::assertSame(207, $response->status());
+        self::assertStringContainsString('<d:multistatus', (string) $response->body());
+        self::assertStringContainsString('/calendars/work/meeting.ics', (string) $response->body());
+    }
+
+    /**
+     * **And it is held to the limits this plugin publishes.** §7.8 makes
+     * `CALDAV:min-date-time` and `CALDAV:max-date-time` preconditions of the
+     * report "on the calendar collections being targeted", and §5.2.6 and
+     * §5.2.7 are the properties that publish them — so the same {@see Limits}
+     * travels from here rather than being written out again where it could
+     * drift from what a client was told.
+     */
+    public function testTheReportIsHeldToTheDatesThisPluginPublishes(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CalDav($server, limits: new Limits(earliest: '20200101T000000Z')))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/calendars/work',
+            headers: new Headers(['Depth' => '1']),
+            body: new Body(
+                '<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav"><C:filter>'
+                . '<C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">'
+                . '<C:time-range start="20100101T000000Z" end="20100102T000000Z"/>'
+                . '</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>',
+            ),
+        ));
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('min-date-time', (string) $response->body());
     }
 
     /**
@@ -372,16 +445,54 @@ final class CalDavTest extends TestCase
     }
 
     /**
-     * **And one it does not answer yet.** §7.5.1 makes
-     * `CALDAV:supported-collation-set` owed "on any resource that supports a
-     * report that does text matching" — and this server supports no such
-     * report yet. Announcing the collations would be the `calendar-access`
-     * mistake in miniature: §7.5.2 then obliges the server to honour any of
-     * them a client names.
+     * **And the one that was owed as soon as a report asked for it.** §7.5.1:
+     * "This property MUST be defined on any resource that supports a report
+     * that does text matching." `calendar-query`'s `text-match` is that
+     * report, so the property that was deliberately absent until now is now
+     * owed — and §7.5 makes it a promise with teeth: "Clients MUST only use
+     * collations from the list advertised by the server", and one the server
+     * has not got is a `CALDAV:supported-collation` precondition failure.
+     *
+     * §7.5 fixes the two that must be in it: "CalDAV servers are REQUIRED to
+     * support the 'i;ascii-casemap' and 'i;octet' collations, as described in
+     * [RFC4790], and MAY support other collations." The third is one this
+     * server has.
      */
-    public function testItDoesNotYetAnnounceTheCollations(): void
+    public function testItAnnouncesTheCollationsItHas(): void
     {
-        self::assertNull($this->answerFor('{urn:ietf:params:xml:ns:caldav}supported-collation-set'));
+        $answer = $this->answerFor('{urn:ietf:params:xml:ns:caldav}supported-collation-set');
+
+        self::assertInstanceOf(Element::class, $answer);
+        self::assertSame(
+            ['i;ascii-casemap', 'i;octet', 'i;unicode-casemap'],
+            array_map(static fn (Element $child): string => $child->text(), $answer->children()),
+        );
+        self::assertSame(
+            ['{urn:ietf:params:xml:ns:caldav}supported-collation'],
+            array_unique($answer->childNames()),
+        );
+    }
+
+    /**
+     * **And the list is what the filter honours**, which is the whole reason
+     * the property is a promise rather than a remark: a client that picks one
+     * of the three gets an answer, and one that picks a fourth gets §7.5's
+     * precondition.
+     */
+    public function testEveryCollationItAnnouncesIsOneTheFilterTakes(): void
+    {
+        $answer = $this->answerFor('{urn:ietf:params:xml:ns:caldav}supported-collation-set');
+
+        self::assertInstanceOf(Element::class, $answer);
+
+        foreach ($answer->children() as $child) {
+            $collation = $child->text();
+            $match = new Element('{urn:ietf:params:xml:ns:caldav}text-match', ['collation' => $collation]);
+
+            $match->appendText('Meeting');
+
+            self::assertTrue(TextMatch::of($match)->holds('A Meeting'), $collation);
+        }
     }
 
     /**
@@ -430,12 +541,12 @@ final class CalDavTest extends TestCase
     }
 
     /**
-     * **Not one of the nine turns up in an `allprop` response.** Every memo
-     * that defines one says the same sentence about it — §5.2.3 to §5.2.9 and
-     * §6.2.1 of RFC 4791, and §2.4.1 of RFC 6638: it "SHOULD NOT be returned
-     * by a PROPFIND DAV:allprop request". Nine properties nobody asked for,
-     * on every calendar and every principal in the response, is what that
-     * sentence exists to prevent.
+     * **Not one of the ten turns up in an `allprop` response.** Every memo
+     * that defines one says the same sentence about it — §5.2.3 to §5.2.9,
+     * §6.2.1 and §7.5.1 of RFC 4791, and §2.4.1 of RFC 6638: it "SHOULD NOT
+     * be returned by a PROPFIND DAV:allprop request". Ten properties nobody
+     * asked for, on every calendar and every principal in the response, is
+     * what that sentence exists to prevent.
      *
      * **And `DAV:include` is how a client asks for one anyway**, which is why
      * the same case checks both: RFC 4918 §9.1 gives it "to define the
@@ -481,6 +592,7 @@ final class CalDavTest extends TestCase
             'max-date-time',
             'max-instances',
             'max-attendees-per-instance',
+            'supported-collation-set',
         ] as $property) {
             yield $property => [$namespace . $property, false];
         }
@@ -507,6 +619,7 @@ final class CalDavTest extends TestCase
                 'max-date-time',
                 'max-instances',
                 'max-attendees-per-instance',
+                'supported-collation-set',
             ] as $property
         ) {
             self::assertNull($this->answerFor('{urn:ietf:params:xml:ns:caldav}' . $property, $plain), $property);
@@ -996,7 +1109,7 @@ final class CalDavTest extends TestCase
     {
         $server = new Server(new Tree($this->tree()));
 
-        (new CalDav($server))->register();
+        (new CalDav($server))->register(new Report($server));
         (new DeadProperties(new MemoryPropertyStorage()))->registerOn($server->events());
 
         $server->onMethod('PROPPATCH', (new PropPatch($server))(...));
@@ -1254,7 +1367,7 @@ final class CalDavTest extends TestCase
 
         $guarded = new Server(new Tree($this->tree()));
 
-        (new CalDav($guarded))->register();
+        (new CalDav($guarded))->register(new Report($guarded));
         $guarded->onMethod('MKCALENDAR', (new MkCalendar($guarded))(...));
         $guarded->onMethod('MOVE', (new Move($guarded))(...));
 
@@ -1453,7 +1566,7 @@ final class CalDavTest extends TestCase
     {
         $server = new Server(new Tree($this->tree()));
 
-        (new CalDav($server, limits: $limits ?? new Limits()))->register();
+        (new CalDav($server, limits: $limits ?? new Limits()))->register(new Report($server));
 
         $server->onMethod('PUT', (new Put($server))(...));
         $server->onMethod('COPY', (new Copy($server))(...));
@@ -1471,7 +1584,7 @@ final class CalDavTest extends TestCase
     {
         $server = new Server(new Tree($this->tree()));
 
-        (new CalDav($server))->register();
+        (new CalDav($server))->register(new Report($server));
 
         $server->onMethod('MKCALENDAR', (new MkCalendar($server))(...));
         $server->onMethod('COPY', (new Copy($server))(...));
