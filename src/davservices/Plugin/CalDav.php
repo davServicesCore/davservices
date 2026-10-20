@@ -18,7 +18,9 @@ use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Limits;
+use DavServices\CalDav\Report\CalendarQuery;
 use DavServices\CalDav\TimeZone;
+use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Event\BeforeCopy;
 use DavServices\Dav\Event\BeforeCreateCollection;
 use DavServices\Dav\Event\BeforeCreateFile;
@@ -30,6 +32,7 @@ use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\IProperties;
+use DavServices\Dav\Method\Report;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
 use DavServices\Exception\Forbidden;
@@ -107,20 +110,30 @@ use DavServices\Xml\Element;
  * is storing them and handing them back — which is what this plugin leaving
  * them alone achieves.
  *
- * **`CALDAV:supported-collation-set`** (§7.5.1) is owed "on any resource that
- * supports a report that does text matching", and this server supports no such
- * report yet. Announcing three collations would be a promise §7.5.2 then
- * obliges it to keep for any of them a client names — the same reasoning that
- * kept the property out of {@see CardDav} until the collations existed.
+ * ## And one it answers now that a report does text matching
+ *
+ * **`CALDAV:supported-collation-set`** (§7.5.1) was deliberately absent while
+ * no report of this server matched text, and the sentence that excused it is
+ * the one that now owes it: "This property MUST be defined on any resource
+ * that supports a report that does text matching." `calendar-query` carries
+ * `CALDAV:text-match` ({@see \DavServices\CalDav\Filter\TextMatch}), so a
+ * calendar owes the list — and §7.5 gives the list teeth: "Clients MUST only
+ * use collations from the list advertised by the server", and one the server
+ * has not got draws a `CALDAV:supported-collation` precondition. It is read
+ * from {@see Collations} rather than written out a second time, so what is
+ * advertised and what is honoured cannot drift apart.
  *
  * ## And the compliance class, still not announced
  *
  * §5.1 makes `calendar-access` a promise that "the server supports all MUST
- * level requirements specified in this document", and §7.8 makes
- * `CALDAV:calendar-query` one of them. A server announcing the class before
- * the reports exist would send every client that reads it straight into a
- * `403`, which is worse than a server a client does not try. The class arrives
- * with the chunk that completes the promise.
+ * level requirements specified in this document", and **all three of this
+ * memo's reports are among them**: "Support for the CALDAV:calendar-query
+ * REPORT is REQUIRED" (§7.8), and §7.9 and §7.10 say the same of
+ * `calendar-multiget` and `free-busy-query`. A server announcing the class
+ * before the last of them exists would send every client that reads it
+ * straight into a `403`, which is worse than a server a client does not try.
+ * So `calendar-query` arriving is not enough: the class waits for the chunk
+ * that finishes the third report.
  */
 final class CalDav
 {
@@ -137,10 +150,10 @@ final class CalDav
      * same condition a second job — the time zone a `PROPPATCH` sets "MUST be
      * a valid iCalendar object containing a single valid VTIMEZONE component".
      */
-    private const VALID_CALENDAR_DATA = '{' . self::NS . '}valid-calendar-data';
+    private const VALID_CALENDAR_DATA = TimeZone::VALID;
 
     /**
-     * RFC 4918 §9.2, for a `PROPPATCH` that goes for one of the seven: "If
+     * RFC 4918 §9.2, for a `PROPPATCH` that goes for one of the eight: "If
      * returning this error, the server SHOULD use the precondition code
      * 'cannot-modify-protected-property' inside the response body."
      */
@@ -164,9 +177,16 @@ final class CalDav
 
     private const USER_ADDRESSES = '{' . self::NS . '}calendar-user-address-set';
 
+    /** §9.5's element, and the name §7.8's report answers to. */
+    private const QUERY = '{' . self::NS . '}calendar-query';
+
+    private const COLLATION_SET = '{' . self::NS . '}supported-collation-set';
+
+    private const COLLATION = '{' . self::NS . '}supported-collation';
+
     /**
-     * The properties §5.2.3 to §5.2.9 each call protected, in the order the
-     * memo defines them.
+     * The properties §5.2.3 to §5.2.9 and §7.5.1 each call protected, in the
+     * order the memo defines them.
      *
      * @var list<string>
      */
@@ -178,6 +198,7 @@ final class CalDav
         Limits::MAX_DATE_TIME,
         Limits::MAX_INSTANCES,
         Limits::MAX_ATTENDEES,
+        self::COLLATION_SET,
     ];
 
     private readonly Limits $limits;
@@ -220,8 +241,13 @@ final class CalDav
 
     /**
      * Switches the rules on, at every seam they are about.
+     *
+     * @param Report $report The `REPORT` method, which this plugin owes a
+     *                       `calendar-query` (§7.8). It is asked for rather
+     *                       than optional for the reason {@see
+     *                       answerTheReportsItOwes()} gives
      */
-    public function register(): void
+    public function register(Report $report): void
     {
         $events = $this->server->events();
 
@@ -232,6 +258,33 @@ final class CalDav
         $events->on(BeforeMove::class, $this->refuseABadDestination(...));
         $events->on(BeforeCreateFile::class, $this->validateTheObject(...));
         $events->on(BeforeWriteContent::class, $this->validateTheObject(...));
+
+        $this->answerTheReportsItOwes($report);
+    }
+
+    /**
+     * The reports this memo makes REQUIRED, as far as they exist.
+     *
+     * **This is why `register()` asks for the `REPORT` method** rather than
+     * leaving the line to an application: §7.8 says "Support for the
+     * CALDAV:calendar-query REPORT is REQUIRED", and a CalDAV server that did
+     * not answer the report every client reads a month with would not be one.
+     * An application left to remember the line would sooner or later ship
+     * without it.
+     *
+     * **It is handed the limits this plugin publishes.** §5.2.6 and §5.2.7
+     * define the two properties, and §7.8 makes the same two values
+     * preconditions of the report "on the calendar collections being targeted
+     * by the REPORT request" — so they travel from here rather than being
+     * written out again where they could drift from what a client was told.
+     *
+     * `calendar-multiget` (§7.9) and `free-busy-query` (§7.10) are REQUIRED
+     * too and arrive with the chunks that are about them, R-CAL-11 and
+     * R-CAL-12 — which is also what the compliance class waits for.
+     */
+    private function answerTheReportsItOwes(Report $report): void
+    {
+        $report->on(self::QUERY, (new CalendarQuery($this->server, $this->limits))(...));
     }
 
     /**
@@ -528,7 +581,15 @@ final class CalDav
     }
 
     /**
-     * The seven properties a calendar owes a client.
+     * The eight properties a calendar owes a client.
+     *
+     * **Each is answered only to a client that named it**, which every one of
+     * the memos asks for in the same words: §5.2.3 to §5.2.9 and §7.5.1 each
+     * close with "SHOULD NOT be returned by a PROPFIND DAV:allprop request".
+     * They are limits and capabilities, uninteresting in bulk, and listing
+     * them on every calendar of a response is what that line exists to
+     * prevent — {@see PropFindResult::wasNamed()} is what keeps it, and counts
+     * a `DAV:include` as naming one.
      */
     private function describeTheCalendar(PropFindResult $result, Calendar $node): void
     {
@@ -538,6 +599,10 @@ final class CalDav
 
         if ($result->wasNamed(Limits::SUPPORTED_DATA)) {
             $result->set(Limits::SUPPORTED_DATA, $this->theCalendarDataItKeeps());
+        }
+
+        if ($result->wasNamed(self::COLLATION_SET)) {
+            $result->set(self::COLLATION_SET, $this->theCollationsItHas());
         }
 
         foreach ($this->theLimitsItSets() as $name => $value) {
@@ -591,6 +656,30 @@ final class CalDav
             self::CALENDAR_DATA,
             ['content-type' => Limits::MEDIA_TYPE, 'version' => Limits::VERSION],
         ));
+
+        return $property;
+    }
+
+    /**
+     * §7.5.1's element: one `supported-collation` per identifier.
+     *
+     * **The list is read rather than written out**, because §7.5 makes it a
+     * promise with teeth: "If the client chooses a collation not supported by
+     * the server, the server MUST respond with a CALDAV:supported-collation
+     * precondition error response." A property naming a fourth collation would
+     * owe a client a match this server cannot give, and a literal written
+     * twice is how that happens.
+     */
+    private function theCollationsItHas(): Element
+    {
+        $property = new Element(self::COLLATION_SET);
+
+        foreach (Collations::names() as $identifier) {
+            $collation = new Element(self::COLLATION);
+
+            $collation->appendText($identifier);
+            $property->append($collation);
+        }
 
         return $property;
     }

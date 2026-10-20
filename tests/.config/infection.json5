@@ -117,6 +117,28 @@
             "ignore": [
                 "DavServices\\Backend\\File\\CardBackend::put",
                 "DavServices\\Backend\\File\\CalendarBackend::put",
+                // **How many matches a report will answer is a server's own
+                // number, and no test can watch the default one.** RFC 4791
+                // §7.8 asks for "server-specific, predefined limits" and names
+                // no value, so five thousand against four thousand nine
+                // hundred and ninety-nine is the same promise. Telling them
+                // apart would mean a calendar of five thousand objects in a
+                // unit test; what the limit *does* is measured instead, with a
+                // limit the case sets itself. The same is true of
+                // `CardDav\Report\AddressBookMultiGet::__construct`, where the
+                // pair is left to be judged by whoever next reads the log.
+                "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
+            ]
+        },
+        // **A comparison against nothing, where nothing is already answered.**
+        // {@see \DavServices\CalDav\TimeRange::moved()} returns itself for a
+        // shift of zero seconds — an override's gap is nothing, and a range
+        // moved by nothing is that range — so the sign test below it never
+        // sees a zero, and `> 0` and `>= 0` cannot be told apart by any shift
+        // that reaches it.
+        "GreaterThan": {
+            "ignore": [
+                "DavServices\\CalDav\\TimeRange::moved",
             ]
         },
         "IncrementInteger": {
@@ -133,6 +155,9 @@
                 // memo's wording does, and no input can tell the mutant from
                 // the original.
                 "DavServices\\Dav\\Collation\\UnicodeCasemap::prepare",
+                // And the other half of the pair above: the default number of
+                // matches a `calendar-query` will answer.
+                "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
             ]
         },
         // A variadic parameter is a list already, so dropping array_values()
