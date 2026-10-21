@@ -15,7 +15,6 @@ namespace DavServices\CalDav;
 
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
-use DavServices\Exception\NotImplemented;
 use DavServices\VObject\Component;
 use DavServices\VObject\Property;
 use DavServices\VObject\Serializer;
@@ -71,27 +70,27 @@ use DavServices\Xml\Element;
  * same words: "The server MUST use the same logic as defined for
  * CALDAV:time-range".
  *
- * **`CALDAV:expand` (§9.6.5) is `501` until R-CAL-14.** It asks for "calendar
- * components that define exactly one recurrence instance", with every
- * recurrence property gone and every local time converted to UTC — and a
- * client that asked for instances and was sent a master with an `RRULE` would
- * have to do the work it asked the server for. RFC 9110 §15.6.2 is the status
- * for a request a server cannot fulfil.
+ * **Which instances, written out one component each**, is §9.6.5's
+ * `CALDAV:expand` and {@see Expander} (R-CAL-14). It stands in the same choice
+ * as the recurrence limit, because the two are the same question answered two
+ * ways: one says which overrides matter to a range, the other writes out what
+ * the range holds.
  *
- * ## The limits come before the narrowing
+ * ## The limits and the expansion come before the narrowing
  *
- * §9.6's DTD writes them the other way round, but that is the order of a
- * document rather than of the work: a narrowing can take away the very
- * property a limit is judged by — `RECURRENCE-ID` is what says which instance
- * an override replaces — so a client that asked only for summaries would
- * otherwise leave the server unable to tell a master from an override.
+ * §9.6's DTD writes the narrowing first, but that is the order of a document
+ * rather than of the work: a narrowing can take away the very property the
+ * others are computed from — `RECURRENCE-ID` says which instance an override
+ * replaces, and `RRULE` is the series itself — so a client that asked only for
+ * summaries would otherwise leave the server unable to tell a master from an
+ * override, or to expand anything at all.
  */
 final readonly class CalendarData
 {
     public const NAME = '{urn:ietf:params:xml:ns:caldav}calendar-data';
 
     /** §9.6.5: recurrences written out as instances. */
-    private const EXPAND = '{urn:ietf:params:xml:ns:caldav}expand';
+    private const EXPAND = Expander::NAME;
 
     /** §9.6.6: the instances inside a range, and the overrides outside it. */
     private const LIMIT_RECURRENCE = '{urn:ietf:params:xml:ns:caldav}limit-recurrence-set';
@@ -108,6 +107,8 @@ final readonly class CalendarData
     /**
      * @param CalendarDataFilter|null $parts Which parts of which components
      *                                       come back, or null for all of them
+     * @param Expander|null $expands The range §9.6.5 writes the instances of,
+     *                               or null where the client asked for none
      * @param TimeRange|null $recurrences The range §9.6.6 limits the
      *                                    overridden components to
      * @param TimeRange|null $freeBusy The range §9.6.7 limits the `FREEBUSY`
@@ -115,6 +116,7 @@ final readonly class CalendarData
      */
     private function __construct(
         private ?CalendarDataFilter $parts,
+        private ?Expander $expands,
         private ?TimeRange $recurrences,
         private ?TimeRange $freeBusy,
     ) {
@@ -128,7 +130,6 @@ final readonly class CalendarData
      *
      * @throws Forbidden If the attributes name calendar data this server does
      *                   not keep (§7.8's `CALDAV:supported-calendar-data`)
-     * @throws NotImplemented If it asks for an expansion (R-CAL-14)
      * @throws BadRequest If the children are not what §9.6's DTD admits in the
      *                    order it writes them
      */
@@ -139,12 +140,12 @@ final readonly class CalendarData
         $parts = null;
         $recurrences = null;
         $freeBusy = null;
-        $expands = false;
+        $expands = null;
 
         foreach ($element->children() as $child) {
             match ($child->name()) {
                 CalendarDataFilter::NAME => $parts = self::theOnlyRestriction($parts, $child, $recurrences, $freeBusy),
-                self::EXPAND => $expands = self::theOnlyExpansion($expands, $recurrences, $freeBusy),
+                self::EXPAND => $expands = self::theOnlyExpansion($expands, $child, $recurrences, $freeBusy),
                 self::LIMIT_RECURRENCE => $recurrences = self::theOnlyRecurrenceLimit(
                     $recurrences,
                     $child,
@@ -159,17 +160,7 @@ final readonly class CalendarData
             };
         }
 
-        // **The whole shape is read before the one part of it this server
-        // cannot answer is refused**, because a body that does not fit §9.6's
-        // DTD is a request that cannot be read at all, where an expansion is
-        // one that can be read and not answered.
-        if ($expands) {
-            throw new NotImplemented(
-                'This server answers a recurring component as it is stored, so CALDAV:expand of RFC 4791 §9.6.5 is not one it can do yet.',
-            );
-        }
-
-        return new self($parts, $recurrences, $freeBusy);
+        return new self($parts, $expands, $recurrences, $freeBusy);
     }
 
     /**
@@ -208,6 +199,10 @@ final readonly class CalendarData
      */
     private function asked(Component $object, Moments $moments): Component
     {
+        if ($this->expands !== null) {
+            $object = $this->expands->appliedTo($object, $moments);
+        }
+
         if ($this->recurrences !== null) {
             $object = $this->withinTheRecurrences($object, $this->recurrences, $moments);
         }
@@ -376,9 +371,8 @@ final readonly class CalendarData
     private static function reaches(TimeRange $range, Property $identifier, Moments $moments): bool
     {
         $at = $moments->of($identifier);
-        $until = $range->until();
 
-        return $at !== null && ($until === null || $until > $at);
+        return $at !== null && $range->reachesPast($at);
     }
 
     /**
@@ -471,16 +465,16 @@ final readonly class CalendarData
     }
 
     /**
-     * **The attributes of an expansion are not read**, because the element is
-     * refused whole: what a client learns from `501` is that the feature is
-     * missing, which is the more useful answer while it is.
-     *
      * @throws BadRequest If a second one arrives, one arrives beside a
-     *                    `CALDAV:limit-recurrence-set`, or one arrives after
-     *                    the free/busy limit
+     *                    `CALDAV:limit-recurrence-set`, one arrives after the
+     *                    free/busy limit, or it names no range §9.6.5 admits
      */
-    private static function theOnlyExpansion(bool $expands, ?TimeRange $recurrences, ?TimeRange $freeBusy): bool
-    {
+    private static function theOnlyExpansion(
+        ?Expander $expands,
+        Element $element,
+        ?TimeRange $recurrences,
+        ?TimeRange $freeBusy,
+    ): Expander {
         self::mustBeTheFirstOfTheChoice($expands, $recurrences);
 
         if ($freeBusy !== null) {
@@ -489,7 +483,7 @@ final readonly class CalendarData
             );
         }
 
-        return true;
+        return Expander::of($element);
     }
 
     /**
@@ -501,7 +495,7 @@ final readonly class CalendarData
         ?TimeRange $recurrences,
         Element $element,
         ?TimeRange $freeBusy,
-        bool $expands,
+        ?Expander $expands,
     ): TimeRange {
         self::mustBeTheFirstOfTheChoice($expands, $recurrences);
 
@@ -533,9 +527,9 @@ final readonly class CalendarData
      *
      * @throws BadRequest If the choice has already been made
      */
-    private static function mustBeTheFirstOfTheChoice(bool $expands, ?TimeRange $recurrences): void
+    private static function mustBeTheFirstOfTheChoice(?Expander $expands, ?TimeRange $recurrences): void
     {
-        if ($expands || $recurrences !== null) {
+        if ($expands !== null || $recurrences !== null) {
             throw new BadRequest(
                 'A CALDAV:calendar-data expands or limits the recurrences, once: RFC 4791 §9.6 spells it (expand | limit-recurrence-set)?.',
             );
