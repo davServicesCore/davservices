@@ -143,6 +143,10 @@
                 // many hrefs in a unit test. What the limit *does* is measured
                 // instead, with a limit the case sets itself.
                 "DavServices\\CalDav\\Report\\CalendarMultiGet::__construct",
+                // And the third of the three: §7.10's postcondition asks for
+                // "server-specific, predefined limits" in the same words and
+                // names no value either.
+                "DavServices\\CalDav\\Report\\FreeBusyQuery::__construct",
             ]
         },
         // **A comparison against nothing, where nothing is already answered.**
@@ -171,10 +175,26 @@
                 // the original.
                 "DavServices\\Dav\\Collation\\UnicodeCasemap::prepare",
                 // And the other half of the pair above: the default number of
-                // matches a `calendar-query` will answer, and of hrefs a
-                // `calendar-multiget` will.
+                // matches a `calendar-query` will answer, of hrefs a
+                // `calendar-multiget` will, and of objects a
+                // `free-busy-query` will consider.
                 "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
                 "DavServices\\CalDav\\Report\\CalendarMultiGet::__construct",
+                "DavServices\\CalDav\\Report\\FreeBusyQuery::__construct",
+            ]
+        },
+        // **The caret cannot change which form of a period is read.** RFC 5545
+        // §3.3.9 writes the two as `date-time "/" date-time` and `date-time "/"
+        // dur-value`, and the `P` of `dur-value` is what tells them apart — so
+        // the anchor is there to say "a duration begins with it". Dropping the
+        // anchor would matter only for a second half that holds a `P`
+        // somewhere else and is still a readable date-time, and §3.3.5's
+        // date-time is digits, `T` and `Z`: there is no such value. A half
+        // that is neither raises a `ParseError` either way, from
+        // `Duration::decode()` instead of from `DateTime::decode()`.
+        "PregMatchRemoveCaret": {
+            "ignore": [
+                "DavServices\\VObject\\Value\\Period::decode",
             ]
         },
         // A variadic parameter is a list already, so dropping array_values()

@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\VObject\Value;
 
+use DateTimeInterface;
 use DavServices\VObject\ParseError;
 use DavServices\VObject\Value\Period;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -71,6 +72,60 @@ final class PeriodTest extends TestCase
         self::assertSame('19970101T180000Z', $period->start()->encode());
         self::assertSame('PT5H30M', $period->duration()?->encode());
         self::assertNull($period->end());
+    }
+
+    /**
+     * **Both forms come to the same pair of moments**, which is what anybody
+     * measuring a period actually wants: §3.3.9's two examples differ in how
+     * they are written and not in what they say.
+     *
+     * @param non-empty-string $raw
+     * @param string $begins The first moment, in UTC
+     * @param string $finishes And the last
+     */
+    #[DataProvider('periodsAndTheMomentsTheyRunBetween')]
+    public function testBothFormsComeToTheSameTwoMoments(string $raw, string $begins, string $finishes): void
+    {
+        $instants = Period::decode($raw)->instants();
+
+        self::assertSame($begins, $instants[0]->format(DateTimeInterface::ATOM));
+        self::assertSame($finishes, $instants[1]->format(DateTimeInterface::ATOM));
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function periodsAndTheMomentsTheyRunBetween(): iterable
+    {
+        yield 'an end' => [
+            '19970101T180000Z/19970102T070000Z',
+            '1997-01-01T18:00:00+00:00',
+            '1997-01-02T07:00:00+00:00',
+        ];
+
+        yield 'a length' => [
+            '19970101T180000Z/PT5H30M',
+            '1997-01-01T18:00:00+00:00',
+            '1997-01-01T23:30:00+00:00',
+        ];
+
+        // §3.3.6: `dur-value` counts in weeks and days as well, and a week is
+        // seven days of it.
+        yield 'a length in days' => [
+            '19970101T180000Z/P1DT2H',
+            '1997-01-01T18:00:00+00:00',
+            '1997-01-02T20:00:00+00:00',
+        ];
+
+        // A value written without the UTC designator knows no zone of its own
+        // — §3.3.5's FORM #3 hangs on a `TZID` parameter, and a parameter
+        // belongs to the property — so the wall clock is read as UTC, which is
+        // the one form §3.8.2.6 admits in a `FREEBUSY` anyway.
+        yield 'no designator' => [
+            '19970101T180000/PT1H',
+            '1997-01-01T18:00:00+00:00',
+            '1997-01-01T19:00:00+00:00',
+        ];
     }
 
     /**

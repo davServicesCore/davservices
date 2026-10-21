@@ -87,6 +87,67 @@ final class ReportDepthTest extends TestCase
         yield 'nothing at all' => [''];
     }
 
+    /**
+     * **And the reports that do walk a collection read the same sentence.**
+     * RFC 4791 §7.8 and §7.10 both say "The request MAY include a Depth
+     * header. If no Depth header is included, Depth:0 is assumed", and
+     * RFC 4918 §10.2 writes the value as `("0" | "1" | "infinity")`.
+     *
+     * `infinity` comes back as a depth deeper than any tree, so that a walk
+     * counting down through it needs no case of its own.
+     *
+     * @param string|null $depth What the header says, or nothing at all
+     */
+    #[DataProvider('depthsAndWhatTheyMean')]
+    public function testADepthAReportMayWalkIsRead(?string $depth, int $meaning): void
+    {
+        $request = $depth === null
+            ? new Request('REPORT', '/calendars/work')
+            : $this->report($depth);
+
+        self::assertSame($meaning, ReportDepth::of($request));
+    }
+
+    /**
+     * @return iterable<string, array{?string, int}>
+     */
+    public static function depthsAndWhatTheyMean(): iterable
+    {
+        yield 'none, which is zero' => [null, 0];
+        yield 'zero' => ['0', 0];
+        yield 'one' => ['1', 1];
+        yield 'infinity' => ['infinity', ReportDepth::ENDLESS];
+
+        // RFC 5234 §2.3 makes the grammar's own strings case-insensitive, so a
+        // client that shouted it still said infinity.
+        yield 'infinity, loudly' => ['Infinity', ReportDepth::ENDLESS];
+    }
+
+    /**
+     * A fourth value is a request the report has no meaning for rather than
+     * one to guess at, and the refusal says which three it has.
+     *
+     * @param string $depth What the header says
+     */
+    #[DataProvider('depthsNoReportIsDefinedAt')]
+    public function testADepthNoReportIsDefinedAtIsRefused(string $depth): void
+    {
+        $this->expectException(BadRequest::class);
+        $this->expectExceptionMessage('0, 1 or infinity');
+
+        ReportDepth::of($this->report($depth));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function depthsNoReportIsDefinedAt(): iterable
+    {
+        yield 'two' => ['2'];
+        yield 'nonsense' => ['deep'];
+        yield 'nothing at all' => [''];
+    }
+
     private function report(string $depth): Request
     {
         return new Request('REPORT', '/principals', headers: new Headers(['Depth' => $depth]));

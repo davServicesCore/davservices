@@ -15,7 +15,6 @@ namespace DavServices\CalDav;
 
 use DateInterval;
 use DateTimeImmutable;
-use DateTimeZone;
 use DavServices\Exception\BadRequest;
 use DavServices\VObject\Component;
 use DavServices\VObject\ParseError;
@@ -719,33 +718,10 @@ final readonly class TimeRange
     private static function periodOf(string $written): ?array
     {
         try {
-            $period = Period::decode($written);
+            return Period::decode($written)->instants();
         } catch (ParseError) {
             return null;
         }
-
-        $utc = new DateTimeZone('UTC');
-        $begins = $period->start()->in($utc);
-        $duration = $period->duration();
-
-        if ($duration !== null) {
-            return [$begins, $begins->add($duration->toDateInterval())];
-        }
-
-        $until = $period->end();
-
-        // @codeCoverageIgnoreStart
-        // **A period has one or the other, and the type system does not say
-        // so.** {@see Period} is built from a `DateTime|Duration`, so a period
-        // with neither cannot exist — but its two accessors are separately
-        // nullable, and nothing declares them exclusive. The guard is for the
-        // reader of the types rather than for any input.
-        if ($until === null) {
-            return null;
-        }
-        // @codeCoverageIgnoreEnd
-
-        return [$begins, $until->in($utc)];
     }
 
     /**

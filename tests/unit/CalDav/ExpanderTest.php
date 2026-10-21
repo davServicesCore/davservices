@@ -17,6 +17,7 @@ use DateTimeZone;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Expander;
 use DavServices\CalDav\Moments;
+use DavServices\CalDav\TimeRange;
 use DavServices\Exception\BadRequest;
 use DavServices\VObject\Component;
 use DavServices\VObject\Serializer;
@@ -638,6 +639,30 @@ final class ExpanderTest extends TestCase
         yield 'neither' => [''];
         yield 'a local time' => ['start="20260101T000000" end="20260201T000000Z"'];
         yield 'an end before the start' => ['start="20260201T000000Z" end="20260101T000000Z"'];
+    }
+
+    /**
+     * **A range settled somewhere else expands the same series.** §9.6.5's two
+     * attributes are `#REQUIRED` because that element says both ends, and a
+     * caller holding a range §9.9 left open at one end — §7.10's free/busy
+     * report is one — is not reading that element at all.
+     */
+    public function testExpandsOverARangeThatWasSettledSomewhereElse(): void
+    {
+        $object = CalendarObject::in(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
+            . self::WEEKLY . "END:VCALENDAR\r\n",
+        ) ?? self::fail('The case built something that is no calendar object.');
+        $range = TimeRange::of((new Reader())->parse(
+            '<time-range xmlns="urn:ietf:params:xml:ns:caldav" start="20260112T000000Z" end="20260113T000000Z"/>',
+        ));
+        $expanded = Expander::overTheRange($range)->appliedTo($object, new Moments($object, new DateTimeZone('UTC')));
+
+        $written = (new Serializer())->write($expanded);
+
+        self::assertSame(1, substr_count($written, 'BEGIN:VEVENT'));
+        self::assertStringContainsString("RECURRENCE-ID:20260112T120000Z\r\n", $written);
+        self::assertStringNotContainsString('RRULE', $written);
     }
 
     /** An event in New York, with the zone the object carries. */

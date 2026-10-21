@@ -35,7 +35,10 @@ use InvalidArgumentException;
  * (RFC 4791 §6.1.1), and CalDAV is a layer **above** this one, so this tree
  * cannot name it:
  *
- *     $tree = Privilege::standard()->with('{DAV:}read', new Privilege(CalDav::FREE_BUSY));
+ *     $tree = Privilege::standard()->with('{DAV:}read', new Privilege(
+ *         CalDav::FREE_BUSY,
+ *         'see when this calendar is busy, without seeing what is in it',
+ *     ));
  *
  * A tree that could not grow would force every extension's privileges into
  * the core, which is the opposite of what R-ARC-02 asks.
