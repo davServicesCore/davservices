@@ -20,7 +20,6 @@ use DavServices\CalDav\Limits;
 use DavServices\CalDav\Moments;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
-use DavServices\Exception\NotImplemented;
 use DavServices\VObject\Component;
 use DavServices\Xml\Element;
 use DavServices\Xml\Reader;
@@ -597,23 +596,40 @@ final class CalendarDataTest extends TestCase
     }
 
     /**
-     * **An expansion is refused rather than answered with the series.** §9.6.5
-     * has `CALDAV:expand` return "calendar components that define exactly one
-     * recurrence instance" with every recurrence property gone and every local
-     * time converted to UTC — which is R-CAL-14, and a chunk of its own.
-     *
-     * Until then the honest answer is `501`: a client that asked for instances
-     * and was sent a master with an `RRULE` would have to expand it itself,
-     * which is the work it asked the server to do. RFC 9110 §15.6.2 is the
-     * status for it — "the server does not support the functionality required
-     * to fulfill the request".
+     * **§9.6.5: an expansion answers with the instances.** „the server MUST
+     * expand the recurrence set into calendar components that define exactly
+     * one recurrence instance, and MUST return only those whose scheduled time
+     * intersect a specified time range." What those components look like is
+     * {@see \DavServices\CalDav\Expander}'s business; that it is asked at all
+     * is this one's.
      */
-    public function testItRefusesAnExpansionItCannotYetDo(): void
+    public function testAnExpansionAnswersWithTheInstances(): void
     {
-        $this->expectException(NotImplemented::class);
-        $this->expectExceptionMessage('expand');
+        $written = $this->applied(
+            '<expand start="20260112T000000Z" end="20260113T000000Z"/>',
+            self::WEEKLY,
+        );
 
-        $this->data(sprintf('<expand %s/>', self::NOON));
+        self::assertStringContainsString("DTSTART:20260112T120000Z\r\n", $written);
+        self::assertStringContainsString("RECURRENCE-ID:20260112T120000Z\r\n", $written);
+        self::assertStringNotContainsString('RRULE', $written);
+        self::assertSame(1, substr_count($written, 'BEGIN:VEVENT'));
+    }
+
+    /**
+     * **And an expansion runs before the parts are narrowed**, for the reason
+     * the limits do: what the expansion is computed from — `RRULE`,
+     * `RECURRENCE-ID` — is what a narrowing may take away.
+     */
+    public function testAnExpansionRunsBeforeThePartsAreNarrowed(): void
+    {
+        $written = $this->applied(
+            '<comp name="VCALENDAR"><comp name="VEVENT"><prop name="SUMMARY"/></comp></comp>'
+            . '<expand start="20260112T000000Z" end="20260113T000000Z"/>',
+            self::WEEKLY,
+        );
+
+        self::assertSame("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", $written);
     }
 
     /**
@@ -677,6 +693,10 @@ final class CalendarDataTest extends TestCase
         // `#REQUIRED` — unlike §9.9's own element.
         yield 'a limit open at one end' => ['<limit-recurrence-set start="20260105T120000Z"/>', '#REQUIRED'];
         yield 'a free/busy limit open at one end' => ['<limit-freebusy-set end="20260105T130000Z"/>', '#REQUIRED'];
+
+        // §9.6.5 makes the two attributes of an expansion `#REQUIRED` as well,
+        // and now that the expansion is answered they are read.
+        yield 'an expansion open at one end' => ['<expand start="20260105T120000Z"/>', '#REQUIRED'];
     }
 
     /**

@@ -850,6 +850,47 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
+     * **Whether the range still holds anything at or after a moment**, which
+     * is what a walk over a series needs in order to know it may stop: §9.9's
+     * end is non-inclusive — "the 'end' attribute specifies the non-inclusive
+     * end of the time range" — so a range that ends at a moment holds nothing
+     * from it on, and one that was never closed holds everything.
+     *
+     * Asked for by {@see \DavServices\CalDav\Expander}, which walks a series
+     * that may run for ever, and by
+     * {@see \DavServices\CalDav\CalendarData}'s `limit-recurrence-set`, which
+     * asks the same of an override that speaks for the instances after it.
+     *
+     * @param string|null $until What the range's `end` attribute says
+     * @param string $moment The moment the question is about
+     * @param bool $reaches Whether the range holds anything from there on
+     */
+    #[DataProvider('momentsARangeReachesOrNot')]
+    public function testItSaysWhetherItStillReachesPastAMoment(
+        ?string $until,
+        string $moment,
+        bool $reaches,
+    ): void {
+        self::assertSame(
+            $reaches,
+            $this->range(self::START, $until)->reachesPast(new DateTimeImmutable($moment)),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{?string, string, bool}>
+     */
+    public static function momentsARangeReachesOrNot(): iterable
+    {
+        yield 'before its end' => [self::END, '2026-01-05T12:30:00+00:00', true];
+        yield 'at its end' => [self::END, '2026-01-05T13:00:00+00:00', false];
+        yield 'past its end' => [self::END, '2026-01-05T14:00:00+00:00', false];
+
+        // "assume […] '+infinity'" where there is no end at all.
+        yield 'anywhere, with no end' => [null, '2099-01-01T00:00:00+00:00', true];
+    }
+
+    /**
      * **One period of a `FREEBUSY` value, against the range** — which is what
      * §9.6.7 limits by: "the server MUST only return the FREEBUSY property
      * values of a VFREEBUSY component that intersects a specified time range",

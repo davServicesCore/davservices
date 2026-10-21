@@ -22,8 +22,8 @@ use DavServices\Dav\Property\LiveProperties;
 use DavServices\Dav\Server;
 use DavServices\Dav\Tree;
 use DavServices\Event\EventEmitter;
+use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
-use DavServices\Exception\NotImplemented;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\VObject\Component;
@@ -184,18 +184,45 @@ final class WhatToReturnTest extends TestCase
     }
 
     /**
-     * And so is an expansion this server cannot yet do (R-CAL-14): read once,
-     * before an object is fetched, rather than discovered per object.
+     * And so is an expansion that names no range it can be read as: §9.6.5
+     * makes both attributes `#REQUIRED`, and the whole `CALDAV:calendar-data`
+     * is read once, before an object is fetched, rather than per object.
      */
-    public function testAnExpansionItCannotYetDoIsRefusedWhileReading(): void
+    public function testAnExpansionThatNamesNoRangeIsRefusedWhileReading(): void
     {
-        $this->expectException(NotImplemented::class);
-        $this->expectExceptionMessage('expand');
+        $this->expectException(BadRequest::class);
+        $this->expectExceptionMessage('#REQUIRED');
 
         $this->whatToReturn(
             '<D:prop xmlns:D="DAV:"><calendar-data xmlns="urn:ietf:params:xml:ns:caldav">'
-            . '<expand xmlns="urn:ietf:params:xml:ns:caldav" start="20260101T000000Z" end="20270101T000000Z"/>'
+            . '<expand xmlns="urn:ietf:params:xml:ns:caldav" start="20260101T000000Z"/>'
             . '</calendar-data></D:prop>',
+        );
+    }
+
+    /**
+     * **And an expansion that does name one reaches the answer** (R-CAL-14):
+     * §9.6.5 has the server "expand the recurrence set into calendar
+     * components that define exactly one recurrence instance, and […] return
+     * only those whose scheduled time intersect a specified time range".
+     */
+    public function testAnExpansionReachesTheAnswer(): void
+    {
+        $written = $this->describing(
+            '<D:prop xmlns:D="DAV:"><calendar-data xmlns="urn:ietf:params:xml:ns:caldav">'
+            . '<expand xmlns="urn:ietf:params:xml:ns:caldav" start="20260105T000000Z" end="20260106T000000Z"/>'
+            . '</calendar-data></D:prop>',
+        );
+
+        self::assertStringContainsString('SUMMARY:A Meeting', $written);
+        self::assertStringNotContainsString(
+            'SUMMARY:A Meeting',
+            $this->describing(
+                '<D:prop xmlns:D="DAV:"><calendar-data xmlns="urn:ietf:params:xml:ns:caldav">'
+                . '<expand xmlns="urn:ietf:params:xml:ns:caldav" start="20260301T000000Z" end="20260302T000000Z"/>'
+                . '</calendar-data></D:prop>',
+            ),
+            'an instance outside the range',
         );
     }
 

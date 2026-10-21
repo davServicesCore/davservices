@@ -113,8 +113,17 @@
                 "DavServices\\Backend\\File\\CalendarBackend::put",
             ]
         },
+        // **A time zone falls through the range either way, and the skip
+        // says why it is skipped.** §9.6.5 has it that the components that
+        // come back "MUST NOT […] include VTIMEZONE components", so
+        // {@see \DavServices\CalDav\Expander} leaves one out where it meets
+        // it — and §9.9 defines no table for that kind, so the range test
+        // behind it would drop one too. Nothing a test can observe tells the
+        // two apart, and relying on the second would make §9.6.5's rule an
+        // accident of another section.
         "DecrementInteger": {
             "ignore": [
+                "DavServices\\CalDav\\Expander::appliedTo",
                 "DavServices\\Backend\\File\\CardBackend::put",
                 "DavServices\\Backend\\File\\CalendarBackend::put",
                 // **How many matches a report will answer is a server's own
