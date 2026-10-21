@@ -241,8 +241,18 @@ final class CalDavTest extends TestCase
     /**
      * **The `DAV` header says nothing about CalDAV yet**, and that is the
      * decision this test records: §5.1 makes `calendar-access` a promise that
-     * every MUST-level requirement of RFC 4791 is met, and §7.8's
-     * `calendar-query` is one of them.
+     * "the server supports all MUST level requirements specified in this
+     * document".
+     *
+     * All three REQUIRED reports are now answered. What is still missing is
+     * §6.1.1: "Servers MUST support this privilege on all calendar
+     * collections, regular collections, and calendar object resources", and
+     * `CALDAV:read-free-busy` does not yet control what that section says it
+     * controls — a principal holding it and not `DAV:read` is refused the very
+     * report it exists for, {@see \DavServices\Plugin\Acl} asking every
+     * `REPORT` for `DAV:read` before a body is read. That is over-restrictive
+     * rather than leaky, and announcing the class over it would tell a client
+     * something untrue.
      */
     public function testItDoesNotYetAnnounceCalendarAccess(): void
     {
@@ -319,6 +329,54 @@ final class CalDavTest extends TestCase
 
         self::assertSame(207, $response->status());
         self::assertStringContainsString('BEGIN:VCALENDAR', (string) $response->body());
+    }
+
+    /**
+     * **§7.10: "Support for the CALDAV:free-busy-query REPORT is REQUIRED."**
+     * The third and last of the memo's three, wired for the same reason as the
+     * other two.
+     *
+     * The answer is an iCalendar object rather than a multistatus, which is
+     * what makes this report unlike every other one in the library — and the
+     * events in this tree are moments rather than stretches, so what comes
+     * back is the component with no `FREEBUSY` property that §7.10 makes a
+     * MUST where nothing was found.
+     */
+    public function testRegisterAnswersTheFreeBusyReportTheMemoRequires(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CalDav($server))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/calendars/work',
+            headers: new Headers(['Depth' => '1']),
+            body: new Body(
+                '<C:free-busy-query xmlns:C="urn:ietf:params:xml:ns:caldav">'
+                . '<C:time-range start="20260105T000000Z" end="20260106T000000Z"/></C:free-busy-query>',
+            ),
+        ));
+        $body = (string) $response->body();
+
+        self::assertSame(200, $response->status());
+        self::assertSame('text/calendar; charset=utf-8', $response->headers()->first('Content-Type'));
+        self::assertStringContainsString("BEGIN:VFREEBUSY\r\n", $body);
+        self::assertStringNotContainsString('FREEBUSY:', $body);
+    }
+
+    /**
+     * **§6.1.1's privilege has a name, and this is where it is spelled.**
+     * `<!ELEMENT read-free-busy EMPTY>` in the CalDAV namespace — the one
+     * privilege this memo adds, which §6.1.1 hangs under `DAV:read` and
+     * {@see \DavServices\Acl\Privilege} cannot name itself, access control
+     * being the layer below this one.
+     */
+    public function testItNamesThePrivilegeTheMemoDefines(): void
+    {
+        self::assertSame('{urn:ietf:params:xml:ns:caldav}read-free-busy', CalDav::FREE_BUSY);
     }
 
     /**

@@ -20,6 +20,7 @@ use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Limits;
 use DavServices\CalDav\Report\CalendarMultiGet;
 use DavServices\CalDav\Report\CalendarQuery;
+use DavServices\CalDav\Report\FreeBusyQuery;
 use DavServices\CalDav\TimeZone;
 use DavServices\Dav\Collation\Collations;
 use DavServices\Dav\Event\BeforeCopy;
@@ -127,18 +128,55 @@ use DavServices\Xml\Element;
  * ## And the compliance class, still not announced
  *
  * §5.1 makes `calendar-access` a promise that "the server supports all MUST
- * level requirements specified in this document", and **all three of this
- * memo's reports are among them**: "Support for the CALDAV:calendar-query
- * REPORT is REQUIRED" (§7.8), and §7.9 and §7.10 say the same of
- * `calendar-multiget` and `free-busy-query`. A server announcing the class
- * before the last of them exists would send every client that reads it
- * straight into a `403`, which is worse than a server a client does not try.
- * So `calendar-query` arriving is not enough: the class waits for the chunk
- * that finishes the third report.
+ * level requirements specified in this document". **All three of this memo's
+ * reports are now answered** — "Support for the CALDAV:calendar-query REPORT
+ * is REQUIRED" (§7.8), and §7.9 and §7.10 say the same of
+ * `calendar-multiget` and `free-busy-query`.
+ *
+ * **What is left is §6.1.1**, which is a MUST of its own: "Servers MUST
+ * support this privilege on all calendar collections, regular collections,
+ * and calendar object resources." {@see self::FREE_BUSY} is named, hangs
+ * under `DAV:read` where a deployment grows the tree, and is granted with it
+ * — but it does not yet control "which calendar collections, regular
+ * collections, and calendar object resources are examined when a
+ * CALDAV:free-busy-query REPORT request is processed", because
+ * {@see Acl} asks every `REPORT` for `DAV:read` before a body is read. A
+ * principal holding only the free/busy privilege is therefore refused the
+ * one report it exists for.
+ *
+ * That is over-restrictive rather than leaky, and it is still a promise this
+ * server cannot make: announcing the class over it would tell a client
+ * something untrue. Closing it means teaching the access control guard which
+ * privilege a given report needs, which is a change to that layer.
  */
 final class CalDav
 {
     private const NS = 'urn:ietf:params:xml:ns:caldav';
+
+    /**
+     * The one privilege this memo adds (§6.1.1).
+     *
+     *     <!ELEMENT read-free-busy EMPTY>
+     *
+     * > The CALDAV:read-free-busy privilege controls which calendar
+     * > collections, regular collections, and calendar object resources are
+     * > examined when a CALDAV:free-busy-query REPORT request is processed.
+     *
+     * It hangs under `DAV:read`, and {@see \DavServices\Acl\Privilege}
+     * cannot name it: access control is the layer below this one, so the
+     * tree is grown from outside instead.
+     *
+     *     $tree = Privilege::standard()->with('{DAV:}read', new Privilege(
+     *         CalDav::FREE_BUSY,
+     *         'see when this calendar is busy, without seeing what is in it',
+     *     ));
+     *
+     * **What it does not yet do is control that examination.**
+     * {@see \DavServices\CalDav\Report\FreeBusyQuery} says what is missing
+     * and why closing it belongs to the access control layer, and it is also
+     * why {@see self::announce()} is still not wired.
+     */
+    public const FREE_BUSY = '{' . self::NS . '}read-free-busy';
 
     /**
      * The precondition §5.3.1 defines for a calendar that would go where one
@@ -183,6 +221,9 @@ final class CalDav
 
     /** §9.10's element, and the name §7.9's report answers to. */
     private const MULTIGET = '{' . self::NS . '}calendar-multiget';
+
+    /** §7.10's report, which §9.11 defines as `(time-range)`. */
+    private const FREE_BUSY_QUERY = '{' . self::NS . '}free-busy-query';
 
     private const COLLATION_SET = '{' . self::NS . '}supported-collation-set';
 
@@ -283,14 +324,17 @@ final class CalDav
      * by the REPORT request" — so they travel from here rather than being
      * written out again where they could drift from what a client was told.
      *
-     * `free-busy-query` (§7.10) is REQUIRED too and arrives with the chunk
-     * that is about it, R-CAL-12 — which is also what the compliance class
-     * waits for.
+     * **The third answers with iCalendar rather than a multistatus**, which
+     * is §7.10's own doing: "The response body for a successful request MUST
+     * be an iCalendar object that contains exactly one VFREEBUSY component."
+     * It is wired here all the same, because the sentence that matters is the
+     * same one — "Support for the CALDAV:free-busy-query REPORT is REQUIRED".
      */
     private function answerTheReportsItOwes(Report $report): void
     {
         $report->on(self::QUERY, (new CalendarQuery($this->server, $this->limits))(...));
         $report->on(self::MULTIGET, (new CalendarMultiGet($this->server, $this->limits))(...));
+        $report->on(self::FREE_BUSY_QUERY, (new FreeBusyQuery($this->server, $this->limits))(...));
     }
 
     /**
