@@ -18,6 +18,7 @@ use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Limits;
+use DavServices\CalDav\Report\CalendarMultiGet;
 use DavServices\CalDav\Report\CalendarQuery;
 use DavServices\CalDav\TimeZone;
 use DavServices\Dav\Collation\Collations;
@@ -180,6 +181,9 @@ final class CalDav
     /** §9.5's element, and the name §7.8's report answers to. */
     private const QUERY = '{' . self::NS . '}calendar-query';
 
+    /** §9.10's element, and the name §7.9's report answers to. */
+    private const MULTIGET = '{' . self::NS . '}calendar-multiget';
+
     private const COLLATION_SET = '{' . self::NS . '}supported-collation-set';
 
     private const COLLATION = '{' . self::NS . '}supported-collation';
@@ -243,9 +247,9 @@ final class CalDav
      * Switches the rules on, at every seam they are about.
      *
      * @param Report $report The `REPORT` method, which this plugin owes a
-     *                       `calendar-query` (§7.8). It is asked for rather
-     *                       than optional for the reason {@see
-     *                       answerTheReportsItOwes()} gives
+     *                       `calendar-query` (§7.8) and a `calendar-multiget`
+     *                       (§7.9). It is asked for rather than optional for
+     *                       the reason {@see answerTheReportsItOwes()} gives
      */
     public function register(Report $report): void
     {
@@ -266,11 +270,12 @@ final class CalDav
      * The reports this memo makes REQUIRED, as far as they exist.
      *
      * **This is why `register()` asks for the `REPORT` method** rather than
-     * leaving the line to an application: §7.8 says "Support for the
-     * CALDAV:calendar-query REPORT is REQUIRED", and a CalDAV server that did
-     * not answer the report every client reads a month with would not be one.
-     * An application left to remember the line would sooner or later ship
-     * without it.
+     * leaving the lines to an application: §7.8 says "Support for the
+     * CALDAV:calendar-query REPORT is REQUIRED" and §7.9 says the same of the
+     * multiget, and a CalDAV server that did not answer the report every
+     * client reads a month with — or the one it stays in step with — would not
+     * be one. An application left to remember the lines would sooner or later
+     * ship without one.
      *
      * **It is handed the limits this plugin publishes.** §5.2.6 and §5.2.7
      * define the two properties, and §7.8 makes the same two values
@@ -278,13 +283,14 @@ final class CalDav
      * by the REPORT request" — so they travel from here rather than being
      * written out again where they could drift from what a client was told.
      *
-     * `calendar-multiget` (§7.9) and `free-busy-query` (§7.10) are REQUIRED
-     * too and arrive with the chunks that are about them, R-CAL-11 and
-     * R-CAL-12 — which is also what the compliance class waits for.
+     * `free-busy-query` (§7.10) is REQUIRED too and arrives with the chunk
+     * that is about it, R-CAL-12 — which is also what the compliance class
+     * waits for.
      */
     private function answerTheReportsItOwes(Report $report): void
     {
         $report->on(self::QUERY, (new CalendarQuery($this->server, $this->limits))(...));
+        $report->on(self::MULTIGET, (new CalendarMultiGet($this->server, $this->limits))(...));
     }
 
     /**

@@ -137,6 +137,12 @@
                 // `CardDav\Report\AddressBookMultiGet::__construct`, where the
                 // pair is left to be judged by whoever next reads the log.
                 "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
+                // And the same number for the report beside it: §7.9 names no
+                // figure either, and telling five thousand from four thousand
+                // nine hundred and ninety-nine would mean a body with that
+                // many hrefs in a unit test. What the limit *does* is measured
+                // instead, with a limit the case sets itself.
+                "DavServices\\CalDav\\Report\\CalendarMultiGet::__construct",
             ]
         },
         // **A comparison against nothing, where nothing is already answered.**
@@ -165,8 +171,10 @@
                 // the original.
                 "DavServices\\Dav\\Collation\\UnicodeCasemap::prepare",
                 // And the other half of the pair above: the default number of
-                // matches a `calendar-query` will answer.
+                // matches a `calendar-query` will answer, and of hrefs a
+                // `calendar-multiget` will.
                 "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
+                "DavServices\\CalDav\\Report\\CalendarMultiGet::__construct",
             ]
         },
         // A variadic parameter is a list already, so dropping array_values()

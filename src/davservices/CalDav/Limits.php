@@ -15,6 +15,7 @@ namespace DavServices\CalDav;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\PayloadTooLarge;
 use DavServices\Exception\UnsupportedMediaType;
@@ -26,6 +27,7 @@ use DavServices\VObject\Recur\ObjectSet;
 use DavServices\VObject\Recur\TooManyIterations;
 use DavServices\VObject\Value\Date;
 use DavServices\VObject\Value\DateTime;
+use DavServices\Xml\Element;
 
 /**
  * What a calendar collection will take, and the preconditions for what it will
@@ -139,6 +141,19 @@ final class Limits
 
     /** Where §7.8 states the same two, for a range a report asks about. */
     private const ASKED = '§7.8';
+
+    /**
+     * The elements of a request body that specify a range of time, and whether
+     * each wants both of its ends.
+     *
+     * @var array<string, bool>
+     */
+    private const RANGED = [
+        TimeRange::NAME => false,
+        '{urn:ietf:params:xml:ns:caldav}expand' => true,
+        '{urn:ietf:params:xml:ns:caldav}limit-recurrence-set' => true,
+        '{urn:ietf:params:xml:ns:caldav}limit-freebusy-set' => true,
+    ];
 
     /**
      * The properties RFC 5545 gives a DATE or DATE-TIME value by default.
@@ -269,6 +284,40 @@ final class Limits
         $this->mustNotCrowdAnInstance($object);
         $this->mustBeWithinTheDates($object);
         $this->mustNotGenerateTooMany($object);
+    }
+
+    /**
+     * Holds every range a request body names to the dates this server keeps.
+     *
+     * **"Any XML element specifying a range of time"**, which is how §7.8 and
+     * §7.9 both put it — so the whole body is walked rather than the filter
+     * alone. RFC 4791 writes four such elements: §9.9's `CALDAV:time-range`,
+     * which a `comp-filter` or a `prop-filter` carries, and the three of §9.6
+     * that say what of an object comes back — `CALDAV:expand` (§9.6.5) and the
+     * two `limit-…` elements (§9.6.6, §9.6.7).
+     *
+     * **The three of §9.6 want both ends**, their attributes being `#REQUIRED`
+     * where §9.9 reads a missing one as infinity; {@see TimeRange::ofBothEnds()}
+     * is where that difference lives.
+     *
+     * @throws BadRequest If a range is not one the memo admits
+     * @throws Forbidden If a range lies outside §5.2.6 and §5.2.7
+     */
+    public function mustTakeTheRangesIn(Element $body): void
+    {
+        foreach ($body->children() as $child) {
+            $closed = self::RANGED[$child->name()] ?? null;
+
+            if ($closed === null) {
+                $this->mustTakeTheRangesIn($child);
+
+                continue;
+            }
+
+            // Every one of the four elements is `EMPTY`, so there is nothing
+            // inside one to walk into.
+            $this->mustTakeTheRange($closed ? TimeRange::ofBothEnds($child) : TimeRange::of($child));
+        }
     }
 
     /**
