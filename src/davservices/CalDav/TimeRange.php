@@ -257,6 +257,26 @@ final readonly class TimeRange
     }
 
     /**
+     * Whether the range still holds anything at or after this moment.
+     *
+     * **§9.9's end is non-inclusive** — "the 'end' attribute specifies the
+     * non-inclusive end of the time range" — so a range that ends at a moment
+     * holds nothing from there on, and one that was never closed holds
+     * everything: "assume […] '+infinity'".
+     *
+     * **Asked by a walk that has to know when it may stop.**
+     * {@see \DavServices\CalDav\Expander} takes the instances of a series one
+     * at a time, and a series may run for ever; `limit-recurrence-set` asks
+     * the same of an override that speaks for the instances after it
+     * ({@see \DavServices\CalDav\CalendarData}). Both would otherwise test the
+     * open end themselves, which is a question this class already answers.
+     */
+    public function reachesPast(DateTimeImmutable $moment): bool
+    {
+        return $this->endsAfter($moment);
+    }
+
+    /**
      * Whether one period of a `FREEBUSY` value intersects the range.
      *
      * **§9.6.7 limits a value by this question**: "the server MUST only return
