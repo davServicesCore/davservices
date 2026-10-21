@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace DavServices\VObject\Value;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use DavServices\VObject\ParseError;
 
 /**
@@ -104,6 +106,34 @@ final class Period
     public function duration(): ?Duration
     {
         return $this->until instanceof Duration ? $this->until : null;
+    }
+
+    /**
+     * The two moments it runs between, in UTC.
+     *
+     * **Both forms come to the same pair**, which is the whole point of asking
+     * here rather than outside: a reader that took {@see end()} and
+     * {@see duration()} would have to handle a period with neither, and there
+     * is no such period — the one field this is built from holds either a
+     * moment or a length, never nothing.
+     *
+     * The length is added to the start rather than to anything else, because
+     * that is what `period-start` means: "a period of time consisting of a
+     * start and positive duration of time" (RFC 5545 §3.3.9).
+     *
+     * @return array{DateTimeImmutable, DateTimeImmutable}
+     */
+    public function instants(): array
+    {
+        $utc = new DateTimeZone('UTC');
+        $begins = $this->start->in($utc);
+
+        return [
+            $begins,
+            $this->until instanceof Duration
+                ? $begins->add($this->until->toDateInterval())
+                : $this->until->in($utc),
+        ];
     }
 
     /**
