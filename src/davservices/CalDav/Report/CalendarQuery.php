@@ -13,18 +13,15 @@ declare(strict_types=1);
 
 namespace DavServices\CalDav\Report;
 
-use DateTimeZone;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Filter\Filter;
 use DavServices\CalDav\Limits;
 use DavServices\CalDav\Moments;
-use DavServices\CalDav\TimeRange;
 use DavServices\CalDav\TimeZone;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
-use DavServices\Dav\PropFindForm;
 use DavServices\Dav\Server;
 use DavServices\Dav\VisibleMembers;
 use DavServices\Exception\BadRequest;
@@ -138,9 +135,9 @@ use Generator;
  * a zone this server can resolve a moment with.
  *
  * **`CALDAV:min-date-time` and `CALDAV:max-date-time`** are asked of "any XML
- * element specifying a range of time", which is every `CALDAV:time-range` in
- * the body wherever it sits — inside a `comp-filter` or inside a `prop-filter`
- * — and held to the collection's {@see Limits}.
+ * element specifying a range of time", which {@see Limits::mustTakeTheRangesIn()}
+ * reads as the four elements RFC 4791 writes one with — §9.9's own, wherever it
+ * sits, and the three of §9.6 that say what of an object comes back.
  *
  * **`CALDAV:supported-collation`** is answered where the attribute is read, in
  * {@see \DavServices\CalDav\Filter\TextMatch}.
@@ -174,13 +171,7 @@ final class CalendarQuery
     /** What `Depth: infinity` becomes: deeper than any tree a backend holds. */
     private const ENDLESS = PHP_INT_MAX;
 
-    private const TIMEZONE = '{urn:ietf:params:xml:ns:caldav}timezone';
-
-    private const KEPT_TIMEZONE = '{urn:ietf:params:xml:ns:caldav}calendar-timezone';
-
     private const WITHIN_LIMITS = '{DAV:}number-of-matches-within-limits';
-
-    private const UTC = 'UTC';
 
     /**
      * @param Limits $limits What the targeted collection keeps (§5.2.6,
@@ -218,24 +209,17 @@ final class CalendarQuery
             'A CALDAV:calendar-query carries a CALDAV:filter: RFC 4791 §9.5 has it outside the optional group, so there is no query without one.',
         ));
 
-        $this->mustAskAboutTimeItKeeps($asked);
+        $this->limits->mustTakeTheRangesIn($asked);
 
         $returning = WhatToReturn::of($this->server, $asked);
-        $given = self::theZoneAsked($asked);
+        $zone = FloatingZone::of($this->server, $asked);
 
         $path = $this->server->path($request);
         $node = $this->server->tree()->node($path);
 
         $report = new MultiStatus();
         $reported = 0;
-        $found = $this->matchesUnder(
-            $path,
-            $node,
-            $depth,
-            $filter,
-            $this->zoneFor($given, $path, $node),
-            $given !== null,
-        );
+        $found = $this->matchesUnder($path, $node, $depth, $filter, $zone);
 
         foreach ($found as $where => [$member, $object, $moments]) {
             if ($reported === $this->atMost) {
@@ -274,10 +258,8 @@ final class CalendarQuery
      * with the moments that object's properties name, so that the response
      * neither reads the body a second time nor works out the zone again.
      *
-     * @param DateTimeZone|Zone $floating The zone what floats is read in here
-     * @param bool $fixed Whether the request chose that zone, in which case
-     *                    §9.8 has it stand "instead of" every collection's
-     *                    own property
+     * @param FloatingZone $zone What a floating value is read in, which §7.3
+     *                           settles per object
      *
      * @return Generator<string, array{INode, Component, Moments}>
      */
@@ -286,8 +268,7 @@ final class CalendarQuery
         INode $node,
         int $depth,
         Filter $filter,
-        DateTimeZone|Zone $floating,
-        bool $fixed,
+        FloatingZone $zone,
     ): Generator {
         if (!$node instanceof ICollection) {
             $object = CalendarObject::of($node);
@@ -296,7 +277,7 @@ final class CalendarQuery
                 return;
             }
 
-            $moments = new Moments($object, $floating);
+            $moments = new Moments($object, $zone->forTheObjectAt($path, $node));
 
             if ($filter->holds($object, $moments)) {
                 yield $path => [$node, $object, $moments];
@@ -312,146 +293,15 @@ final class CalendarQuery
             return;
         }
 
-        $within = $fixed ? $floating : ($this->zoneKeptBy($path, $node) ?? $floating);
-
         foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
-            yield from $this->matchesUnder($member, $child, $depth - 1, $filter, $within, $fixed);
+            yield from $this->matchesUnder($member, $child, $depth - 1, $filter, $zone);
         }
     }
 
-    /**
-     * The zone the walk starts in.
-     *
-     * **The nearest calendar collection at or above what was asked about**,
-     * because that is the one §9.8 names — "the CALDAV:calendar-timezone
-     * property of the calendar collection, in which the calendar object
-     * resource is contained" — and a report may be aimed at the calendar, at
-     * one object in it, or at a plain folder §4.2 lets the calendar hold. All
-     * three are inside the same calendar, so all three are read with its zone,
-     * and a property somebody kept on a calendar home above it is none of
-     * theirs.
-     *
-     * Going down is the walk's business: a calendar met on the way sets the
-     * zone for what is below it ({@see matchesUnder()}).
-     */
-    private function zoneFor(DateTimeZone|Zone|null $given, string $path, INode $node): DateTimeZone|Zone
-    {
-        return $given ?? $this->zoneOfTheCalendarHolding($path, $node) ?? new DateTimeZone(self::UTC);
-    }
 
-    /**
-     * The zone kept by the nearest calendar collection at or above this path,
-     * or null where no calendar above it keeps one.
-     */
-    private function zoneOfTheCalendarHolding(string $path, INode $node): DateTimeZone|Zone|null
-    {
-        $kept = $this->zoneKeptBy($path, $node);
 
-        // The root is where looking up stops, and no calendar collection is
-        // the root: §4.2 has one hold calendar object resources, and a server
-        // whose whole tree was a calendar could hold no principals.
-        if ($kept !== null || $path === '') {
-            return $kept;
-        }
 
-        $above = Path::split($path)[0];
 
-        return $this->zoneOfTheCalendarHolding($above, $this->server->tree()->node($above));
-    }
-
-    /**
-     * The zone this calendar collection keeps as `CALDAV:calendar-timezone`,
-     * or null where it keeps none this server can resolve a moment with.
-     *
-     * **Only a calendar collection is asked.** §5.2.2 defines the property on
-     * one, and §9.8 names the collection holding the resource — so a home, or
-     * a plain folder §4.2 lets a calendar hold, has no answer to give here
-     * even if something put the property there. A calendar is one this library
-     * was told about, which is what {@see Calendar} is: the same thing
-     * {@see \DavServices\Plugin\CalDav} answers the other calendar properties
-     * for.
-     *
-     * **Asked the way a `PROPFIND` asks**, through {@see Answers}, because the
-     * property may be kept by the collection itself or by
-     * {@see \DavServices\Plugin\DeadProperties} behind it — and because a
-     * plugin that refuses the property to this client is then the one that
-     * answers, rather than being gone around.
-     *
-     * A value nothing can be resolved with is treated as none: §5.2.10 and
-     * §5.3.1 refuse such a value on the way in, so one in a store got there
-     * another way, and §7.3's last clause — a zone of the server's choice — is
-     * a better answer than a report that fails.
-     */
-    private function zoneKeptBy(string $path, INode $node): DateTimeZone|Zone|null
-    {
-        if (!$node instanceof Calendar) {
-            return null;
-        }
-
-        $answers = Answers::about(
-            $this->server->events(),
-            $path,
-            $node,
-            PropFindForm::Named,
-            [self::KEPT_TIMEZONE],
-        )->byStatus();
-
-        $kept = $answers[200][self::KEPT_TIMEZONE] ?? null;
-
-        if ($kept === null) {
-            return null;
-        }
-
-        return TimeZone::zoneIn($kept instanceof Element ? $kept->text() : $kept);
-    }
-
-    /**
-     * The zone the request supplies, or null where it supplies none.
-     *
-     * @throws Forbidden If it is no iCalendar object with one `VTIMEZONE` this
-     *                   server can resolve a moment with (§7.8's
-     *                   `CALDAV:valid-calendar-data`)
-     */
-    private static function theZoneAsked(Element $asked): DateTimeZone|Zone|null
-    {
-        $element = $asked->child(self::TIMEZONE);
-
-        if ($element === null) {
-            return null;
-        }
-
-        return TimeZone::zoneIn($element->text()) ?? throw new Forbidden(
-            'A CALDAV:timezone carries "an iCalendar object with exactly one VTIMEZONE" (RFC 4791 §9.8) that a moment can be resolved with: the CALDAV:valid-calendar-data precondition of §7.8.',
-            TimeZone::VALID,
-        );
-    }
-
-    /**
-     * Holds every range in the body to the dates this server keeps.
-     *
-     * §7.8 says "any XML element specifying a range of time", so the whole
-     * body is walked rather than the filter alone: §9.7.1 puts a
-     * `CALDAV:time-range` inside a `comp-filter` and §9.7.2 inside a
-     * `prop-filter`, and a check that knew only the first would take a query
-     * the memo refuses.
-     *
-     * @throws BadRequest If a range is not one §9.9 admits
-     * @throws Forbidden If a range lies outside §5.2.6 and §5.2.7
-     */
-    private function mustAskAboutTimeItKeeps(Element $element): void
-    {
-        foreach ($element->children() as $child) {
-            if ($child->name() === TimeRange::NAME) {
-                // §9.9's element is empty, so there is nothing inside one to
-                // walk into.
-                $this->limits->mustTakeTheRange(TimeRange::of($child));
-
-                continue;
-            }
-
-            $this->mustAskAboutTimeItKeeps($child);
-        }
-    }
 
     /**
      * How far down the query reaches.

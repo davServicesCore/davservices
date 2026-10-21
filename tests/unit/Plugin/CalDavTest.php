@@ -292,6 +292,36 @@ final class CalDavTest extends TestCase
     }
 
     /**
+     * **§7.9: "Support for the CALDAV:calendar-multiget REPORT is
+     * REQUIRED."** The second of the memo's three, wired for the same reason
+     * as the first — and the body names one object that is there, so a `207`
+     * with its data proves the whole path: the report is reachable, it read
+     * the href, and it found the resource.
+     */
+    public function testRegisterAnswersTheMultigetReportTheMemoRequires(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $report = new Report($server);
+
+        (new CalDav($server))->register($report);
+        $report->register();
+
+        $response = $server->handle(new Request(
+            'REPORT',
+            '/calendars/work',
+            body: new Body(
+                '<C:calendar-multiget xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:D="DAV:">'
+                . '<D:prop><C:calendar-data/></D:prop>'
+                . '<D:href>/calendars/work/meeting.ics</D:href>'
+                . '</C:calendar-multiget>',
+            ),
+        ));
+
+        self::assertSame(207, $response->status());
+        self::assertStringContainsString('BEGIN:VCALENDAR', (string) $response->body());
+    }
+
+    /**
      * **And it is held to the limits this plugin publishes.** §7.8 makes
      * `CALDAV:min-date-time` and `CALDAV:max-date-time` preconditions of the
      * report "on the calendar collections being targeted", and §5.2.6 and
