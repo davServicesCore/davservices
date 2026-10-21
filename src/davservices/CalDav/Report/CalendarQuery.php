@@ -22,6 +22,7 @@ use DavServices\CalDav\TimeZone;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
+use DavServices\Dav\ReportDepth;
 use DavServices\Dav\Server;
 use DavServices\Dav\VisibleMembers;
 use DavServices\Exception\BadRequest;
@@ -58,7 +59,9 @@ use Generator;
  * ## The scope is the `Depth` header, and it may be left out
  *
  * §7.8: "The request MAY include a Depth header. If no Depth header is
- * included, Depth:0 is assumed." **The opposite of RFC 6352 §8.6**, which
+ * included, Depth:0 is assumed." It is read through
+ * {@see ReportDepth::of()}, where §7.10 reads the same sentence.
+ * **The opposite of RFC 6352 §8.6**, which
  * raises the header to a MUST for its own report — so where an
  * `addressbook-query` without one is refused, this one is answered at depth
  * zero, and at depth zero a calendar collection reports nothing: a collection
@@ -168,9 +171,6 @@ use Generator;
  */
 final class CalendarQuery
 {
-    /** What `Depth: infinity` becomes: deeper than any tree a backend holds. */
-    private const ENDLESS = PHP_INT_MAX;
-
     private const WITHIN_LIMITS = '{DAV:}number-of-matches-within-limits';
 
     /**
@@ -204,7 +204,7 @@ final class CalendarQuery
      */
     public function __invoke(Request $request, Element $asked): Response
     {
-        $depth = self::depthOf($request);
+        $depth = ReportDepth::of($request);
         $filter = Filter::of($asked->child(Filter::NAME) ?? throw new BadRequest(
             'A CALDAV:calendar-query carries a CALDAV:filter: RFC 4791 §9.5 has it outside the optional group, so there is no query without one.',
         ));
@@ -298,45 +298,4 @@ final class CalendarQuery
         }
     }
 
-
-
-
-
-
-    /**
-     * How far down the query reaches.
-     *
-     * §7.8: "The request MAY include a Depth header. If no Depth header is
-     * included, Depth:0 is assumed." The default is the memo's own, and
-     * RFC 4918 §10.2 is where the three values come from.
-     *
-     * @throws BadRequest If the header names a depth this report is not
-     *                    defined at
-     */
-    private static function depthOf(Request $request): int
-    {
-        $header = $request->headers()->first('Depth');
-
-        if ($header === null) {
-            return 0;
-        }
-
-        // Without regard to case: RFC 4918 §10.2 writes the value as `("0" |
-        // "1" | "infinity")`, and RFC 5234 §2.3 makes the grammar's own
-        // strings case-insensitive.
-        $depth = strtolower($header);
-
-        if ($depth === '0' || $depth === '1') {
-            return (int) $depth;
-        }
-
-        if ($depth === 'infinity') {
-            return self::ENDLESS;
-        }
-
-        throw new BadRequest(sprintf(
-            'A calendar-query goes 0, 1 or infinity deep, not "%s".',
-            $header,
-        ));
-    }
 }

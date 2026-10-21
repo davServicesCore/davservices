@@ -36,6 +36,9 @@ use DavServices\Http\Request;
  */
 final class ReportDepth
 {
+    /** What `Depth: infinity` becomes: deeper than any tree a backend holds. */
+    public const ENDLESS = PHP_INT_MAX;
+
     /**
      * Insists on the only depth this report is defined at.
      *
@@ -46,5 +49,45 @@ final class ReportDepth
         if (($request->headers()->first('Depth') ?? '0') !== '0') {
             throw new BadRequest('This report is only defined at Depth: 0.');
         }
+    }
+
+    /**
+     * How far down a report that walks a collection was asked to reach.
+     *
+     * **The three reports of RFC 4791 that read the header word the sentence
+     * identically** — §7.8 and §7.10: "The request MAY include a Depth header.
+     * If no Depth header is included, Depth:0 is assumed." — so the sentence
+     * is read in one place rather than three. RFC 4918 §10.2 is where the
+     * three values come from, and a fourth is a request this report has no
+     * meaning for rather than one to guess at.
+     *
+     * `Depth: infinity` comes back as {@see self::ENDLESS} so that a walk can
+     * count down through it without a case of its own; no tree a backend holds
+     * is that deep.
+     *
+     * @throws BadRequest If the header names a depth no report is defined at
+     */
+    public static function of(Request $request): int
+    {
+        $header = $request->headers()->first('Depth');
+
+        if ($header === null) {
+            return 0;
+        }
+
+        // Without regard to case: RFC 4918 §10.2 writes the value as `("0" |
+        // "1" | "infinity")`, and RFC 5234 §2.3 makes the grammar's own
+        // strings case-insensitive.
+        $depth = strtolower($header);
+
+        if ($depth === '0' || $depth === '1') {
+            return (int) $depth;
+        }
+
+        if ($depth === 'infinity') {
+            return self::ENDLESS;
+        }
+
+        throw new BadRequest(sprintf('This report goes 0, 1 or infinity deep, not "%s".', $header));
     }
 }
