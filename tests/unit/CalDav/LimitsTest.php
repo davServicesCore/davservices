@@ -16,10 +16,12 @@ namespace DavServices\Tests\Unit\CalDav;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Limits;
 use DavServices\CalDav\TimeRange;
+use DavServices\Exception\BadRequest;
 use DavServices\Exception\DavException;
 use DavServices\VObject\Component;
 use DavServices\VObject\Recur\Iterator;
 use DavServices\Xml\Element;
+use DavServices\Xml\Reader;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -676,6 +678,132 @@ final class LimitsTest extends TestCase
         // themselves are inside what the server keeps.
         yield 'exactly the earliest' => [Limits::EARLIEST, '20260105T130000Z'];
         yield 'exactly the latest' => ['20260105T120000Z', Limits::LATEST];
+    }
+
+    /**
+     * **Every element of a request body that names a range is held to the
+     * dates.** §7.8 and §7.9 say it in the same words — "Any XML element
+     * specifying a range of time MUST have its start or end DATE or DATE-TIME
+     * values greater than or equal to the value of the CALDAV:min-date-time
+     * property value" — and RFC 4791 has four such elements: §9.9's
+     * `time-range` inside a filter, and the three of §9.6 that say what of an
+     * object comes back (§9.6.5 to §9.6.7).
+     *
+     * A walk that knew only the first would take a query the memo refuses,
+     * which is exactly what an `expand` over the next two centuries is.
+     *
+     * @param string $body The request body, as a client writes it
+     * @param string $precondition The precondition it violates
+     */
+    #[DataProvider('bodiesNamingATimeItKeepsNothingFrom')]
+    public function testRefusesEveryRangeInABodyThatLiesOutsideTheDatesItKeeps(
+        string $body,
+        string $precondition,
+    ): void {
+        $this->expectCode(403, $precondition);
+        $this->limits()->mustTakeTheRangesIn((new Reader())->parse($body));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function bodiesNamingATimeItKeepsNothingFrom(): iterable
+    {
+        yield 'a time-range in a filter' => [
+            self::query('<filter><comp-filter name="VCALENDAR"><comp-filter name="VEVENT">'
+                . '<time-range start="18900101T000000Z" end="18900102T000000Z"/>'
+                . '</comp-filter></comp-filter></filter>'),
+            'min-date-time',
+        ];
+
+        yield 'a time-range inside a prop-filter' => [
+            self::query('<filter><comp-filter name="VCALENDAR"><comp-filter name="VEVENT">'
+                . '<prop-filter name="DTSTART">'
+                . '<time-range start="21000101T000000Z" end="21000102T000000Z"/>'
+                . '</prop-filter></comp-filter></comp-filter></filter>'),
+            'max-date-time',
+        ];
+
+        yield 'an expansion' => [
+            self::query('<D:prop xmlns:D="DAV:"><calendar-data>'
+                . '<expand start="18900101T000000Z" end="18900102T000000Z"/>'
+                . '</calendar-data></D:prop>'),
+            'min-date-time',
+        ];
+
+        yield 'a limit on the recurrences' => [
+            self::query('<D:prop xmlns:D="DAV:"><calendar-data>'
+                . '<limit-recurrence-set start="21000101T000000Z" end="21000102T000000Z"/>'
+                . '</calendar-data></D:prop>'),
+            'max-date-time',
+        ];
+
+        // **Every child of the body, not the first of them.** A
+        // `calendar-query` carries its property group *and* its filter, and a
+        // walk that stopped after the first child it stepped into would take a
+        // range the memo refuses.
+        yield 'a range in the second child of the body' => [
+            self::query('<D:prop xmlns:D="DAV:"><calendar-data>'
+                . '<expand start="20260101T000000Z" end="20270101T000000Z"/>'
+                . '</calendar-data></D:prop>'
+                . '<filter><comp-filter name="VCALENDAR"><comp-filter name="VEVENT">'
+                . '<time-range start="18900101T000000Z" end="18900102T000000Z"/>'
+                . '</comp-filter></comp-filter></filter>'),
+            'min-date-time',
+        ];
+
+        yield 'a limit on the free/busy' => [
+            self::query('<D:prop xmlns:D="DAV:"><calendar-data>'
+                . '<limit-freebusy-set start="18900101T000000Z" end="18900102T000000Z"/>'
+                . '</calendar-data></D:prop>'),
+            'min-date-time',
+        ];
+    }
+
+    /**
+     * And a body whose ranges all lie inside them is a request this server can
+     * answer — whichever of the four elements they are written in.
+     */
+    public function testTakesABodyWhoseRangesLieInsideTheDatesItKeeps(): void
+    {
+        $this->limits()->mustTakeTheRangesIn((new Reader())->parse(self::query(
+            '<D:prop xmlns:D="DAV:"><calendar-data>'
+            . '<expand start="20260101T000000Z" end="20270101T000000Z"/>'
+            . '</calendar-data></D:prop>'
+            . '<filter><comp-filter name="VCALENDAR"><comp-filter name="VEVENT">'
+            . '<time-range start="20260105T120000Z" end="20260105T130000Z"/>'
+            . '</comp-filter></comp-filter></filter>',
+        )));
+
+        $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * **The three elements of §9.6 want both ends**, and that is read here as
+     * well: a limit open at one end limits nothing, and §9.6.5 to §9.6.7 make
+     * both attributes `#REQUIRED`.
+     */
+    public function testRefusesALimitThatNamesOnlyOneEnd(): void
+    {
+        $this->expectException(BadRequest::class);
+        $this->expectExceptionMessage('#REQUIRED');
+
+        $this->limits()->mustTakeTheRangesIn((new Reader())->parse(self::query(
+            '<D:prop xmlns:D="DAV:"><calendar-data>'
+            . '<limit-recurrence-set start="20260101T000000Z"/>'
+            . '</calendar-data></D:prop>',
+        )));
+    }
+
+    /**
+     * One request body, with the namespaces a client writes.
+     */
+    private static function query(string $children): string
+    {
+        return sprintf(
+            '<calendar-query xmlns="urn:ietf:params:xml:ns:caldav">%s</calendar-query>',
+            $children,
+        );
     }
 
     /**
