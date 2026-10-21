@@ -153,7 +153,25 @@ final readonly class Expander
      */
     public static function of(Element $element, int $iterations = Iterator::ITERATIONS): self
     {
-        return new self(TimeRange::ofBothEnds($element), $iterations);
+        return self::overTheRange(TimeRange::ofBothEnds($element), $iterations);
+    }
+
+    /**
+     * The same expansion, over a range that was settled somewhere else.
+     *
+     * **Not every caller has a `CALDAV:expand` to read.** §9.9's own sentence
+     * — "Time range tests MUST consider every recurrence instance when testing
+     * the time range condition" — is asked by more than that element, and
+     * §7.10's free/busy report is one of those askers: its body is
+     * `(time-range)` and nothing else, so the range it works over is already
+     * in hand and §9.6.5's `#REQUIRED` attributes are not its rule.
+     *
+     * @param int $iterations The hard limit the expansion is given
+     *                        (R-RRULE-04)
+     */
+    public static function overTheRange(TimeRange $range, int $iterations = Iterator::ITERATIONS): self
+    {
+        return new self($range, $iterations);
     }
 
     /**
