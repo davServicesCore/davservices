@@ -41,22 +41,73 @@ final class TestShards
     /**
      * Whether a shard's process crashed rather than failed.
      *
-     * **The retry is for the collector falling over and for nothing else.** A
-     * shard whose tests fail exits 1 or 2, fails on the first attempt and
-     * stays failed, because a real failure repeats.
+     * **This is for the collector falling over and for nothing else.** A shard
+     * whose tests fail exits 1 or 2, fails on the first attempt and stays
+     * failed, because a real failure repeats.
      *
-     * And the crash has **two** signatures, not one: a POSIX shell reports a
-     * child killed by SIGSEGV as 128 + 11, while Windows has no signals — the
-     * process ends with the access violation itself, `0xC0000005`, which
-     * `passthru` hands back as a signed int. This project is measured in CI on
-     * Linux and written on Windows, so a retry that knows only the first
-     * number is dead exactly where somebody would be watching it happen.
+     * The crash has **three** signatures, and each was found the hard way:
+     *
+     * - **128 + 11**, a child killed by SIGSEGV as a POSIX shell reports it.
+     * - **`0xC0000005`**, the access violation itself, because Windows has no
+     *   signals and `passthru` hands the code back as a signed int. This
+     *   project is measured in CI on Linux and written on Windows, so a rule
+     *   that knew only the first number would be dead exactly where somebody
+     *   is watching it happen.
+     * - **128 + 6**, an abort. On 23.10.2026 shard 4 of run 39946575362
+     *   printed `OK (329 tests, 695 assertions)`, wrote its report, and then
+     *   said `double free or corruption (out)` and aborted. That is the same
+     *   heap corruption as the segfault, surfacing through glibc's allocator
+     *   instead of through a bad address — and while it was not recognised
+     *   here, the identical crash came back as an ordinary failure.
+     *
+     * **A process somebody stopped is not a crash**, which is why SIGTERM and
+     * SIGINT are not here: a stopped run stops part way, where the collector
+     * falls over on the way out with its work already done. That difference is
+     * what {@see reportSurvived()} rests on.
      *
      * @param int $status What `passthru` gave back
      */
     public static function crashed(int $status): bool
     {
-        return $status === 139 || $status === -1073741819;
+        return $status === 139 || $status === 134 || $status === -1073741819;
+    }
+
+    /**
+     * Whether a crashed attempt nonetheless left the report it was asked for.
+     *
+     * **A shard that crashed on the way out has still done its work.** The run
+     * named above wrote `Generating code coverage report in PHP format ...
+     * done` before it aborted: the tests had passed and the measurement was on
+     * disc. Running it again would measure the same thing a second time and
+     * stand the same chance of crashing again — which is what happened on the
+     * attempt before, where the retry fired and the collector fell over once
+     * more.
+     *
+     * So the report decides, and it has to be **this attempt's**. PHPUnit
+     * writes it at the end of a run, so a file left by an earlier attempt would
+     * otherwise vouch for a run that never finished.
+     *
+     * **An empty file is no report.** A crash *during* the write leaves one,
+     * and taking it would hand the merge something it cannot read.
+     * {@see in\merge-coverage.php} refuses anything that is not a
+     * `CodeCoverage` by name, so the worst case is a loud failure rather than a
+     * quiet gap — but there is no reason to walk into it.
+     *
+     * @param string $report Where the shard was told to write it
+     * @param int $startedAt When the attempt began, as `time()` gives it
+     */
+    public static function reportSurvived(string $report, int $startedAt): bool
+    {
+        if (!is_file($report)) {
+            return false;
+        }
+
+        clearstatcache(true, $report);
+
+        // At or after the second the attempt began: a run that takes under a
+        // second would otherwise look as though somebody else had written its
+        // report.
+        return filesize($report) > 0 && filemtime($report) >= $startedAt;
     }
 
     /**
