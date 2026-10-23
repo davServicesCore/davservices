@@ -164,22 +164,32 @@ jobs:
           # on which a mutation run killed 44 of 44 mutants. A gate has to
           # measure the code rather than the measuring device.
           #
-          # And 3.5.x crashes on this suite under branch coverage. On
-          # 23.10.2026 shard 4 died four times over on the same two tests —
-          # twice SIGSEGV mid-run, once a double free on the way out — with an
-          # identical tree that had passed on the pull request. That is Xdebug
-          # bug 2252, a SIGSEGV in xdebug_branch_info_mark_reached: open since
-          # March 2024, acknowledged, with no fixed version and no workaround
-          # from the maintainer. A direct comparison on one suite elsewhere
-          # reports six crashes out of six on 3.5.0, 3.5.1 and 3.5.3 and none
-          # on 3.4.7 (netresearch/t3x-nr-llm#1156), which matches what is seen
-          # here: 3.4 is also the version the branch figures above were
-          # compared against.
+          # And the collector crashes on this suite under branch coverage —
+          # Xdebug bug 2252, a SIGSEGV in xdebug_branch_info_mark_reached,
+          # open since March 2024, acknowledged, with no fixed version and no
+          # workaround from the maintainer.
           #
-          # So the floor is measured on the last 3.4 release. Bump this
+          # **3.4.7 does not cure that, and the pin is not a claim that it
+          # does.** It crashes here too. What differs is how: on 3.5.3, on
+          # 23.10.2026, shard 4 crashed on the first attempt *and the retry*,
+          # both times on the same test — and a crash that repeats is one no
+          # retry can carry, so the job stayed red. On 3.4.7 the same shard
+          # crashed once and passed on the second attempt. That is the
+          # difference between a measurement that can be taken and one that
+          # cannot.
+          #
+          # A direct comparison on another suite reports six crashes out of
+          # six on 3.5.0, 3.5.1 and 3.5.3 and none on 3.4.7
+          # (netresearch/t3x-nr-llm#1156); here 3.4.7 still crashes, so the
+          # claim to make is the weaker one. 3.4 is also the version the
+          # branch figures above were compared against.
+          #
+          # So the floor is measured on the last 3.4 release, and the retry in
+          # bin/coverage-shard.php is what makes it dependable. Bump this
           # together with the copies in nightly.yml, quality.yml and
-          # release.yml once a 3.5 or 3.6 release both counts branches the way
-          # php-code-coverage expects and stops crashing.
+          # release.yml once a release counts branches the way
+          # php-code-coverage expects and stops crashing — bug 2252 is the one
+          # to watch.
           coverage: xdebug
           # pdo_sqlite is listed although it is only a `suggest`: the tests of
           # the PDO lock backend skip themselves without it, and skipped tests
