@@ -25,6 +25,9 @@ plugin is using it.
 | `Pdo\PrincipalBackend` | Those people in a table, for a deployment that already keeps its users in one |
 | `ICardBackend` | Where the address books and cards of RFC 6352 come from, in batches a `PROPFIND Depth: 1` and a multiget can use |
 | `File\CardBackend` | Those cards in directories: one per principal, one per address book, one file per card |
+| `ICalendarBackend` | Where the calendars and calendar objects of RFC 4791 come from, with the one cut nothing else has: a question about a range |
+| `File\CalendarBackend` | Those objects in directories: one per principal, one per calendar, one file per object |
+| `ISubscriptionBackend` | Which calendars a user follows and does not own. It hands out what was subscribed to; nothing here goes and fetches it |
 
 ## Using it
 
