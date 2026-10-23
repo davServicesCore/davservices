@@ -34,7 +34,7 @@ declare(strict_types=1);
 require __DIR__ . '/lib/Scanner.php';
 
 /** Lower index means lower layer. */
-const LAYERS = ['VObject', 'Event', 'Uri', 'Http', 'Xml', 'Dav', 'Backend', 'Acl', 'CalDav', 'CardDav', 'Plugin'];
+const LAYERS = ['VObject', 'Event', 'Uri', 'Http', 'Xml', 'Dav', 'Backend', 'Sync', 'Acl', 'CalDav', 'CardDav', 'Plugin'];
 
 $rank = array_flip(LAYERS);
 $violations = [];
