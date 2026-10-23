@@ -34,6 +34,9 @@ final class MultiStatus
     /** @var list<Element> */
     private array $responses = [];
 
+    /** What RFC 6578 §6.4 adds to the element, where a report says so. */
+    private ?string $syncToken = null;
+
     /**
      * Adds a resource whose properties were asked for.
      *
@@ -132,6 +135,25 @@ final class MultiStatus
     }
 
     /**
+     * Says which state the answer is of (RFC 6578 §6.4).
+     *
+     * **That memo overrides the element of RFC 4918 §14.16** to carry one
+     * more child:
+     *
+     *     <!ELEMENT multistatus (response*, responsedescription?, sync-token?)>
+     *
+     * So the token comes **after** the responses, which is why it is given
+     * here rather than appended by a caller: the order is part of the shape,
+     * and this class is where the shape is kept right.
+     *
+     * @param string $token The token, which §3.2 requires to be a valid URI
+     */
+    public function addSyncToken(string $token): void
+    {
+        $this->syncToken = $token;
+    }
+
+    /**
      * The whole document, ready for the writer.
      */
     public function toElement(): Element
@@ -140,6 +162,13 @@ final class MultiStatus
 
         foreach ($this->responses as $response) {
             $multiStatus->append($response);
+        }
+
+        if ($this->syncToken !== null) {
+            $token = new Element('{DAV:}sync-token');
+
+            $token->appendText($this->syncToken);
+            $multiStatus->append($token);
         }
 
         return $multiStatus;
