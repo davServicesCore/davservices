@@ -478,6 +478,59 @@ final class MultiStatusTest extends TestCase
         self::assertCount(2, self::childAt($multiStatus->toElement(), 0)->children());
     }
 
+    /**
+     * **RFC 6578 §6.4 overrides the element of RFC 4918 §14.16** to carry one
+     * more child, and puts it last:
+     *
+     *     <!ELEMENT multistatus (response*, responsedescription?, sync-token?)>
+     *
+     * So a report that says which state its answer is of gets the token after
+     * every response, whatever order it said it in.
+     */
+    public function testTheSyncTokenComesAfterTheResponses(): void
+    {
+        $multiStatus = new MultiStatus();
+
+        $multiStatus->addSyncToken('https://dav.services/sync/0123456789abcdef0123456789abcdef/7');
+        $multiStatus->addStatus('/calendars/work/gone.ics', 404);
+
+        $document = $multiStatus->toElement();
+
+        self::assertCount(2, $document->children());
+        self::assertSame('{DAV:}response', self::childAt($document, 0)->name());
+        self::assertSame('{DAV:}sync-token', self::childAt($document, 1)->name());
+        self::assertSame(
+            'https://dav.services/sync/0123456789abcdef0123456789abcdef/7',
+            self::childAt($document, 1)->text(),
+        );
+    }
+
+    /**
+     * And a `207` that is about nothing else carries it alone, which is what
+     * an initial synchronisation of an empty collection answers.
+     */
+    public function testASyncTokenMayBeTheWholeOfTheAnswer(): void
+    {
+        $multiStatus = new MultiStatus();
+
+        $multiStatus->addSyncToken('https://dav.services/sync/0123456789abcdef0123456789abcdef/0');
+
+        self::assertCount(1, $multiStatus->toElement()->children());
+    }
+
+    /**
+     * Every other `207` in WebDAV has none, so one is written only where a
+     * report asked for it — RFC 4918 §14.16's own element has no such child.
+     */
+    public function testWithoutOneTheDocumentIsRfc4918s(): void
+    {
+        $multiStatus = new MultiStatus();
+
+        $multiStatus->addStatus('/calendars/work/gone.ics', 404);
+
+        self::assertCount(1, $multiStatus->toElement()->children());
+    }
+
     private static function childAt(Element $element, int $index): Element
     {
         $child = $element->children()[$index] ?? null;

@@ -181,6 +181,15 @@
                 "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
                 "DavServices\\CalDav\\Report\\CalendarMultiGet::__construct",
                 "DavServices\\CalDav\\Report\\FreeBusyQuery::__construct",
+                // **Where in a hash the collection’s key is taken from is
+                // arbitrary**, and no test can say otherwise. RFC 6578 §3.2 asks
+                // the client to treat the token as opaque, so which digits they
+                // are is nobody’s business; what matters is that they are the
+                // same length and come from the path, and both of those are
+                // measured. Pinning an offset would mean pinning a hash value in
+                // a case, which is a test about this implementation rather than
+                // about the promise.
+                "DavServices\\Sync\\Token::keyOf",
             ]
         },
         // **The caret cannot change which form of a period is read.** RFC 5545
