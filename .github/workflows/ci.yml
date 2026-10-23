@@ -156,19 +156,36 @@ jobs:
           # when Xdebug is present. With pcov it collects nothing at all and
           # never writes a report.
           #
-          # The version is pinned because the newest release, 3.6.0alpha1,
-          # ships a rewritten coverage engine that php-code-coverage 11 has
-          # not caught up with: it reported 20 of 52 branches for a class that
-          # Xdebug 3.4 reports as fully covered and on which a mutation run
-          # killed 44 of 44 mutants. A gate has to measure the code rather
-          # than the measuring device. Bump this together with the copies in
-          # nightly.yml and release.yml once 3.6 is stable.
+          # The version is pinned, and now for two reasons.
+          #
+          # 3.6.0alpha1 ships a rewritten coverage engine that
+          # php-code-coverage 11 has not caught up with: it reported 20 of 52
+          # branches for a class that Xdebug 3.4 reports as fully covered and
+          # on which a mutation run killed 44 of 44 mutants. A gate has to
+          # measure the code rather than the measuring device.
+          #
+          # And 3.5.x crashes on this suite under branch coverage. On
+          # 23.10.2026 shard 4 died four times over on the same two tests —
+          # twice SIGSEGV mid-run, once a double free on the way out — with an
+          # identical tree that had passed on the pull request. That is Xdebug
+          # bug 2252, a SIGSEGV in xdebug_branch_info_mark_reached: open since
+          # March 2024, acknowledged, with no fixed version and no workaround
+          # from the maintainer. A direct comparison on one suite elsewhere
+          # reports six crashes out of six on 3.5.0, 3.5.1 and 3.5.3 and none
+          # on 3.4.7 (netresearch/t3x-nr-llm#1156), which matches what is seen
+          # here: 3.4 is also the version the branch figures above were
+          # compared against.
+          #
+          # So the floor is measured on the last 3.4 release. Bump this
+          # together with the copies in nightly.yml, quality.yml and
+          # release.yml once a 3.5 or 3.6 release both counts branches the way
+          # php-code-coverage expects and stops crashing.
           coverage: xdebug
           # pdo_sqlite is listed although it is only a `suggest`: the tests of
           # the PDO lock backend skip themselves without it, and skipped tests
           # would take that class out of the coverage report rather than fail
           # the run. A floor that a missing extension can lower is no floor.
-          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite, xdebug-3.5.3
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite, xdebug-3.4.7
 
       - uses: ramsey/composer-install@v4
 
