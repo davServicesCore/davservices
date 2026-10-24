@@ -25,21 +25,26 @@
  * not cover it and be thrown away. Naming the class in a second `CoversClass`
  * cures each case (#72), and a fixed order cures the kind.
  *
- * Xdebug's coverage collector has segfaulted on this suite (24.09.2026, at
- * test 1934 of 1954, in CI and in the nightly the same morning). Smaller
- * processes should make that rarer, but nothing says they make it
- * impossible, so a crash is answered rather than reported — and only a crash,
- * by its signature, which is three numbers rather than one: see
- * TestShards::crashed().
+ * Xdebug's coverage collector crashes on this suite under branch coverage —
+ * Xdebug bug 2252, open since March 2024, with no fixed version. So a crash
+ * is answered rather than reported, and only a crash, by its signature: three
+ * numbers rather than one, see TestShards::crashed().
  *
- * **And it is answered by asking for the report, not by running it again.**
- * On 23.10.2026 shard 4 printed `OK (329 tests, 695 assertions)`, wrote its
- * report, and then aborted on a double free. The work was done; a second run
- * would have measured the same thing and stood the same chance of crashing
- * again — which is what the attempt before showed, where the retry fired and
- * the collector fell over once more. So where the attempt left a report of its
- * own, that report is taken; where it left none, the shard is tried once more.
- * See TestShards::reportSurvived().
+ * **It is answered in two ways, because the collector falls over in two
+ * places.**
+ *
+ * *After* writing the report: on 23.10.2026 shard 4 printed `OK (329 tests,
+ * 695 assertions)`, wrote its report, and then aborted on a double free. The
+ * work was done, so the report is taken — see TestShards::reportSurvived().
+ *
+ * *Part way through*, with nothing written: then the shard is run again, up to
+ * TestShards::ATTEMPTS times. One retry is not enough, and that is measured
+ * rather than assumed — over six attempts at shard 4 the collector crashed
+ * three times and survived three, twice in a row each way, which leaves a
+ * single retry red on about a quarter of pushes.
+ *
+ * A shard whose **tests** fail exits 1 or 2, is no crash, and is not run
+ * again: a real failure repeats.
  *
  * Usage:
  *   php bin/coverage-shard.php 3      runs shard 3 (CI runs the shards side by side)
@@ -96,33 +101,37 @@ foreach (TestShards::split($sizes, $count) as $index => $shard) {
     fwrite(STDOUT, "== Shard {$number} of {$count}: " . count($files) . " test files\n");
 
     $report = "build/coverage/shard-{$number}.cov";
-    $startedAt = time();
     $status = 0;
 
-    passthru($command, $status);
+    for ($attempt = 1; $attempt <= TestShards::ATTEMPTS; $attempt++) {
+        $startedAt = time();
 
-    if (TestShards::crashed($status)) {
+        passthru($command, $status);
+
+        if (!TestShards::crashed($status)) {
+            break;
+        }
+
         // **A crash on the way out is not a measurement lost.** The collector
         // falls over after writing the report as well as before it, so the
         // report is asked rather than assumed: where this attempt wrote one,
-        // the shard did what it was asked, and running it again would measure
-        // the same thing twice and stand the same chance of crashing again.
+        // the shard did what it was asked and there is nothing to repeat.
         if (TestShards::reportSurvived($report, $startedAt)) {
             fwrite(STDOUT, "::warning::Xdebug's coverage collector crashed on the way out of shard "
                 . "{$number} (exit {$status}), after writing its report. Taking the report.\n");
             $status = 0;
-        } else {
-            fwrite(STDOUT, "::warning::Xdebug's coverage collector crashed in shard {$number} "
-                . "(exit {$status}) with no report written. Running once more.\n");
 
-            $startedAt = time();
-            passthru($command, $status);
-
-            if (TestShards::crashed($status) && TestShards::reportSurvived($report, $startedAt)) {
-                fwrite(STDOUT, "::warning::And again on the way out, with a report. Taking it.\n");
-                $status = 0;
-            }
+            break;
         }
+
+        fwrite(STDOUT, sprintf(
+            "::warning::Xdebug's coverage collector crashed in shard %d (exit %d) with no report "
+            . "written, on attempt %d of %d.\n",
+            $number,
+            $status,
+            $attempt,
+            TestShards::ATTEMPTS,
+        ));
     }
 
     if ($status !== 0) {
