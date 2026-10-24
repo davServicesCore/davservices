@@ -149,6 +149,22 @@ final class TestShardsTest extends TestCase
     }
 
     /**
+     * **A crash that is a coin toss needs more than one retry**, and the
+     * number is measured rather than picked. Over six attempts at one shard on
+     * 23. and 24.10.2026 the collector crashed three times and survived three,
+     * both outcomes twice in a row — so a single retry leaves a job red on
+     * about a quarter of pushes, and five attempts on about one in thirty.
+     *
+     * The case is here so that lowering the number is a decision somebody
+     * makes rather than a line somebody edits: at two attempts the arithmetic
+     * above is what goes wrong, and nothing else would complain.
+     */
+    public function testAShardIsTriedOftenEnoughForACoinToss(): void
+    {
+        self::assertGreaterThanOrEqual(5, TestShards::ATTEMPTS);
+    }
+
+    /**
      * And an empty file is no report. A crash while the report was being
      * written leaves one, and taking it would hand the merge something it
      * cannot read — `bin/merge-coverage.php` refuses anything that is not a

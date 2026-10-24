@@ -39,6 +39,28 @@ final class TestShards
     public const BYTES_PER_SHARD = 200_000;
 
     /**
+     * How many times a shard whose collector crashed is tried.
+     *
+     * **Because the crash is a coin toss, and one retry is not enough of
+     * them.** Measured on 23. and 24.10.2026 over six attempts at shard 4 with
+     * Xdebug 3.4.7: three crashed and three did not, and both outcomes came up
+     * twice in a row. With one retry a job therefore goes red on roughly a
+     * quarter of pushes, which is often enough that nobody trusts the colour.
+     *
+     * At that rate five attempts leave about one job in thirty red, and a
+     * crashed attempt is cheap: it dies a third of the way through the shard,
+     * in well under half a minute. Raising the number further buys little and
+     * hides a rising crash rate, which is the thing worth noticing if the
+     * suite grows.
+     *
+     * **This is a flaky instrument, not a flaky measurement.** Every attempt
+     * that finishes gives the same figures, and a shard whose *tests* fail
+     * exits 1 or 2, is no crash, and is not tried again. The cure is upstream:
+     * Xdebug bug 2252, open since March 2024.
+     */
+    public const ATTEMPTS = 5;
+
+    /**
      * Whether a shard's process crashed rather than failed.
      *
      * **This is for the collector falling over and for nothing else.** A shard
