@@ -41,17 +41,23 @@ final class TestShards
     /**
      * How many times a shard whose collector crashed is tried.
      *
-     * **Because the crash is a coin toss, and one retry is not enough of
-     * them.** Measured on 23. and 24.10.2026 over six attempts at shard 4 with
-     * Xdebug 3.4.7: three crashed and three did not, and both outcomes came up
-     * twice in a row. With one retry a job therefore goes red on roughly a
-     * quarter of pushes, which is often enough that nobody trusts the colour.
+     * **Not because the crash is a coin toss** — that was measured and found
+     * wrong. Over eight jobs between 23. and 25.10.2026 the attempts read 0 of
+     * 1, 2 of 2, 1 of 2, 0, 2 of 2, 0, 1 of 1 and **5 of 5**: a job that
+     * crashes tends to crash every time, so retrying inside one buys only the
+     * rare mixed job. It is kept because that job happened once and an attempt
+     * costs well under half a minute, not because it makes a crashing job
+     * pass.
      *
-     * At that rate five attempts leave about one job in thirty red, and a
-     * crashed attempt is cheap: it dies a third of the way through the shard,
-     * in well under half a minute. Raising the number further buys little and
-     * hides a rising crash rate, which is the thing worth noticing if the
-     * suite grows.
+     * **What a crashing job needed was the trigger gone.** Xdebug's branch
+     * coverage segfaulted inside one report's tests at a different test each
+     * time — 74, 104, 104, 102, 102 of the same shard — which ruled out a
+     * fixed test and pointed at the code every one of them drives.
+     * {@see \DavServices\Sync\Report\SyncCollection::membersUnder()} was a
+     * generator that both yielded and delegated with `yield from` in one
+     * frame; written as a worklist it stopped. Two hypotheses fell on the way:
+     * the version (3.4.7 crashes as 3.5.3 did, only less often) and the
+     * closure seam the bug report pointed at (an interface changed nothing).
      *
      * **This is a flaky instrument, not a flaky measurement.** Every attempt
      * that finishes gives the same figures, and a shard whose *tests* fail
@@ -67,31 +73,46 @@ final class TestShards
      * whose tests fail exits 1 or 2, fails on the first attempt and stays
      * failed, because a real failure repeats.
      *
-     * The crash has **three** signatures, and each was found the hard way:
+     * ## Why a set of signals rather than a list of the ones seen
      *
-     * - **128 + 11**, a child killed by SIGSEGV as a POSIX shell reports it.
-     * - **`0xC0000005`**, the access violation itself, because Windows has no
-     *   signals and `passthru` hands the code back as a signed int. This
-     *   project is measured in CI on Linux and written on Windows, so a rule
-     *   that knew only the first number would be dead exactly where somebody
-     *   is watching it happen.
-     * - **128 + 6**, an abort. On 23.10.2026 shard 4 of run 39946575362
-     *   printed `OK (329 tests, 695 assertions)`, wrote its report, and then
-     *   said `double free or corruption (out)` and aborted. That is the same
-     *   heap corruption as the segfault, surfacing through glibc's allocator
-     *   instead of through a bad address — and while it was not recognised
-     *   here, the identical crash came back as an ordinary failure.
+     * This rule was written three times, and each time a run brought a
+     * signature it did not know: SIGSEGV on 23.10.2026, SIGABRT the same day
+     * after `double free or corruption (out)`, and SIGBUS on 25.10.2026 in the
+     * nightly. Each time the identical crash came back as an ordinary failure
+     * because the number was not on the list. Keeping a list of what has
+     * happened is a rule that is wrong until the next time.
      *
-     * **A process somebody stopped is not a crash**, which is why SIGTERM and
-     * SIGINT are not here: a stopped run stops part way, where the collector
-     * falls over on the way out with its work already done. That difference is
-     * what {@see reportSurvived()} rests on.
+     * So the rule is the **closed** set POSIX already defines: the signals
+     * that say a process was killed by a fault **in itself**, each of which
+     * dumps core. There are five — SIGILL, SIGABRT, SIGBUS, SIGFPE and
+     * SIGSEGV — and a shell reports a child killed by one as 128 plus its
+     * number. Heap corruption inside an extension can surface as any of them,
+     * which is exactly what has been seen.
+     *
+     * **A process somebody stopped is still not a crash.** SIGTERM, SIGINT and
+     * SIGKILL are deliberately outside the set: a stopped run stops part way
+     * and running it again would fight whoever stopped it.
+     *
+     * **And Windows has no signals**, so the equivalents are the status codes
+     * for the two faults this bug produces — an access violation and heap
+     * corruption — which `passthru` hands back as signed ints. This project is
+     * measured in CI on Linux and written on Windows, so a rule that knew only
+     * the POSIX side would be dead exactly where somebody is watching it
+     * happen.
      *
      * @param int $status What `passthru` gave back
      */
     public static function crashed(int $status): bool
     {
-        return $status === 139 || $status === 134 || $status === -1073741819;
+        // SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV — the faults that dump
+        // core, as a shell reports them.
+        if (in_array($status, [128 + 4, 128 + 6, 128 + 7, 128 + 8, 128 + 11], true)) {
+            return true;
+        }
+
+        // 0xC0000005 and 0xC0000374: the access violation and heap corruption
+        // Windows reports in place of them.
+        return $status === -1073741819 || $status === -1073740940;
     }
 
     /**

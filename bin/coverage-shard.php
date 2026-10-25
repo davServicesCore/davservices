@@ -27,8 +27,10 @@
  *
  * Xdebug's coverage collector crashes on this suite under branch coverage —
  * Xdebug bug 2252, open since March 2024, with no fixed version. So a crash
- * is answered rather than reported, and only a crash, by its signature: three
- * numbers rather than one, see TestShards::crashed().
+ * is answered rather than reported, and only a crash — recognised by the
+ * closed set of POSIX fault signals rather than by a list of the ones that
+ * have happened, which was wrong three times running: see
+ * TestShards::crashed().
  *
  * **It is answered in two ways, because the collector falls over in two
  * places.**

@@ -13,13 +13,13 @@ declare(strict_types=1);
 
 namespace DavServices\Plugin;
 
-use Closure;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Event\StateTokensRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
+use DavServices\Sync\IRevisions;
 use DavServices\Sync\Report\SyncCollection;
 use DavServices\Sync\Token;
 
@@ -31,7 +31,7 @@ use DavServices\Sync\Token;
  * tags every time; with it, the client hands back a token and is told only
  * what moved.
  *
- *     $sync = new Sync($server, $revisionOf);
+ *     $sync = new Sync($server, $yourRevisions);
  *
  *     $sync->register($report);
  *
@@ -70,13 +70,13 @@ use DavServices\Sync\Token;
  * in as many words — "There is no guarantee that changes to members of a
  * collection will result in a change in any entity tag of that collection".
  *
- * So the revision is handed in, and **required rather than defaulted**: a
- * plugin whose default answered something would look wired while handing out
- * tokens it could not keep honest, and §5's conditional writes rest on a token
- * that moves when the collection does. A collection the caller answers `null`
- * for is one this server does not synchronise: it gets no property, names no
- * state token, and the report refuses it with RFC 3253 §3.6's own
- * `DAV:supported-report`.
+ * So the revision is asked across a seam, {@see IRevisions}, and the seam is
+ * **required rather than defaulted**: a plugin whose default answered something
+ * would look wired while handing out tokens it could not keep honest, and §5's
+ * conditional writes rest on a token that moves when the collection does. A
+ * collection it answers `null` for is one this server does not synchronise: it
+ * gets no property, names no state token, and the report refuses it with
+ * RFC 3253 §3.6's own `DAV:supported-report`.
  *
  * ## It announces no compliance class
  *
@@ -107,20 +107,15 @@ final class Sync
 
     private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
 
-    /** @var Closure(string): ?int */
-    private readonly Closure $revisionOf;
-
     /**
-     * @param callable(string): ?int $revisionOf Which change the collection at
-     *                                           that path is at, or null where
-     *                                           this server keeps no
-     *                                           synchronisation state for it
+     * @param IRevisions $revisions Which change a collection is at, or null
+     *                              where this server keeps no synchronisation
+     *                              state for it
      */
     public function __construct(
         private readonly Server $server,
-        callable $revisionOf,
+        private readonly IRevisions $revisions,
     ) {
-        $this->revisionOf = $revisionOf(...);
     }
 
     /**
@@ -150,7 +145,7 @@ final class Sync
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
         $events->on(StateTokensRequested::class, $this->nameTheState(...));
 
-        $report->on(self::SYNC_COLLECTION, (new SyncCollection($this->server, $this->revisionOf))(...));
+        $report->on(self::SYNC_COLLECTION, (new SyncCollection($this->server, $this->revisions))(...));
     }
 
     /**
@@ -178,7 +173,7 @@ final class Sync
             return;
         }
 
-        $revision = ($this->revisionOf)($result->path());
+        $revision = $this->revisions->revisionOf($result->path());
 
         if ($revision === null) {
             return;
@@ -222,7 +217,7 @@ final class Sync
      */
     private function nameTheState(StateTokensRequested $event): void
     {
-        $revision = ($this->revisionOf)($event->path());
+        $revision = $this->revisions->revisionOf($event->path());
 
         if ($revision === null) {
             return;

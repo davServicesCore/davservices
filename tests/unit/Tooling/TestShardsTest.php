@@ -63,32 +63,35 @@ final class TestShardsTest extends TestCase
      */
     public static function theWaysAProcessComesBack(): iterable
     {
-        yield 'killed by SIGSEGV, as a POSIX shell reports it' => [139, true];
-
-        // Windows has no signals: the process ends with the access violation
-        // itself, 0xC0000005, which comes back as a signed int.
-        yield 'an access violation, as Windows reports it' => [-1073741819, true];
-
-        // **128 + 6, and it took CI to find out.** On 23.10.2026 shard 4 of
-        // run 39946575362 printed `OK (329 tests, 695 assertions)`, wrote its
-        // report, and then said `double free or corruption (out)` and aborted.
-        // That is the same heap corruption inside the collector as the
-        // segfault above, surfacing through glibc's allocator instead of
-        // through a bad address — so a retry rule that knew only SIGSEGV let
-        // the identical crash through as a failure.
+        // **The five faults that dump core**, as a shell reports a child
+        // killed by one: 128 plus the signal's number. Heap corruption inside
+        // an extension can surface as any of them, and this rule was written
+        // three times before it said so — SIGSEGV on 23.10.2026, SIGABRT the
+        // same day after `double free or corruption (out)`, SIGBUS on
+        // 25.10.2026 in the nightly. Each time the identical crash came back
+        // as an ordinary failure because the number was not on the list.
+        yield 'killed by SIGILL' => [132, true];
         yield 'killed by SIGABRT' => [134, true];
+        yield 'killed by SIGBUS' => [135, true];
+        yield 'killed by SIGFPE' => [136, true];
+        yield 'killed by SIGSEGV' => [139, true];
+
+        // Windows has no signals: the process ends with the fault itself,
+        // which comes back as a signed int. Both are faults this bug has
+        // produced — an access violation and heap corruption.
+        yield 'an access violation, as Windows reports it' => [-1073741819, true];
+        yield 'heap corruption, as Windows reports it' => [-1073740940, true];
 
         yield 'nothing wrong' => [0, false];
         yield 'a test that failed' => [1, false];
         yield 'a run that could not start' => [2, false];
 
         // **A process somebody stopped is no crash**, and that distinction has
-        // teeth: a stopped run is stopped part way, where a crash of the
-        // collector happens on the way out, with the work done. Accepting the
-        // one would accept half a measurement.
-        yield 'killed by SIGTERM' => [143, false];
-
+        // teeth: a stopped run stops part way, and running it again would
+        // fight whoever stopped it.
         yield 'killed by SIGINT' => [130, false];
+        yield 'killed by SIGKILL' => [137, false];
+        yield 'killed by SIGTERM' => [143, false];
     }
 
     /**
