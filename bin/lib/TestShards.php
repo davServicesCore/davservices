@@ -41,17 +41,23 @@ final class TestShards
     /**
      * How many times a shard whose collector crashed is tried.
      *
-     * **Because the crash is a coin toss, and one retry is not enough of
-     * them.** Measured on 23. and 24.10.2026 over six attempts at shard 4 with
-     * Xdebug 3.4.7: three crashed and three did not, and both outcomes came up
-     * twice in a row. With one retry a job therefore goes red on roughly a
-     * quarter of pushes, which is often enough that nobody trusts the colour.
+     * **Not because the crash is a coin toss** — that was measured and found
+     * wrong. Over eight jobs between 23. and 25.10.2026 the attempts read 0 of
+     * 1, 2 of 2, 1 of 2, 0, 2 of 2, 0, 1 of 1 and **5 of 5**: a job that
+     * crashes tends to crash every time, so retrying inside one buys only the
+     * rare mixed job. It is kept because that job happened once and an attempt
+     * costs well under half a minute, not because it makes a crashing job
+     * pass.
      *
-     * At that rate five attempts leave about one job in thirty red, and a
-     * crashed attempt is cheap: it dies a third of the way through the shard,
-     * in well under half a minute. Raising the number further buys little and
-     * hides a rising crash rate, which is the thing worth noticing if the
-     * suite grows.
+     * **What a crashing job needed was the trigger gone.** Xdebug's branch
+     * coverage segfaulted inside one report's tests at a different test each
+     * time — 74, 104, 104, 102, 102 of the same shard — which ruled out a
+     * fixed test and pointed at the code every one of them drives.
+     * {@see \DavServices\Sync\Report\SyncCollection::membersUnder()} was a
+     * generator that both yielded and delegated with `yield from` in one
+     * frame; written as a worklist it stopped. Two hypotheses fell on the way:
+     * the version (3.4.7 crashes as 3.5.3 did, only less often) and the
+     * closure seam the bug report pointed at (an interface changed nothing).
      *
      * **This is a flaky instrument, not a flaky measurement.** Every attempt
      * that finishes gives the same figures, and a shard whose *tests* fail

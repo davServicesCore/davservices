@@ -326,30 +326,51 @@ final class SyncCollection
     /**
      * The members below this path, by path, down to the level asked for.
      *
+     * **A worklist rather than recursion**, and the order that falls out of it
+     * is the order a client gets: every member of one collection before any
+     * member of the collections inside it. Nothing asks for an order — §3.2
+     * wants "one DAV:response element for each member URL" and says nothing
+     * about where — so the walk is free to be the shape that is easiest to
+     * read, and a list of what is still to do is that shape.
+     *
+     * It is also the shape that does not crash the measuring device. A
+     * generator that both yields and delegates with `yield from` in one frame
+     * made Xdebug's branch coverage segfault somewhere inside this report's
+     * own tests, over and over and at a different test each time — see
+     * bin/lib/TestShards.php for the whole of that hunt. The library is not
+     * contorted for it: a worklist is ordinary code, and the recursion bought
+     * nothing but a stack.
+     *
      * @return Generator<string, INode>
      */
     private function membersUnder(string $path, ICollection $node, int $depth): Generator
     {
-        // At the end of the depth there is nothing here, which is the shape
-        // every walking report in this library has. §6.3 admits no level that
-        // comes to zero, so no request reaches this — but a walk whose end
-        // condition lived in the recursion instead would be one where the
-        // depth it was given did not decide what came back.
-        if ($depth === 0) {
-            return;
-        }
+        /** @var list<array{string, ICollection, int}> $pending */
+        $pending = [[$path, $node, $depth]];
 
-        foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
-            yield $member => $child;
+        while ($pending !== []) {
+            [$where, $collection, $left] = array_shift($pending);
 
-            // §3.3: "all appropriate member URLs […] are reported, provided
-            // child collections themselves also support the
-            // DAV:sync-collection report." Which child collections do not is
-            // §3.3's own `403` case, and it arrives with the journal that can
-            // tell them apart (P7-02); until then every collection this server
-            // holds is walked.
-            if ($child instanceof ICollection) {
-                yield from $this->membersUnder($member, $child, $depth - 1);
+            // At the end of the depth there is nothing here. §6.3 admits no
+            // level that comes to zero, so no request starts here — but a walk
+            // whose end condition lived anywhere else would be one where the
+            // depth it was given did not decide what came back.
+            if ($left === 0) {
+                continue;
+            }
+
+            foreach (VisibleMembers::of($this->server->events(), $where, $collection) as $member => $child) {
+                yield $member => $child;
+
+                // §3.3: "all appropriate member URLs […] are reported, provided
+                // child collections themselves also support the
+                // DAV:sync-collection report." Which child collections do not
+                // is §3.3's own `403` case, and it arrives with the journal
+                // that can tell them apart (P7-02); until then every
+                // collection this server holds is walked.
+                if ($child instanceof ICollection) {
+                    $pending[] = [$member, $child, $left - 1];
+                }
             }
         }
     }
