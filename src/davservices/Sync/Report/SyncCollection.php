@@ -29,7 +29,6 @@ use DavServices\Sync\IRevisions;
 use DavServices\Sync\Token;
 use DavServices\Xml\Element;
 use DavServices\Xml\MultiStatus;
-use Generator;
 
 /**
  * Answers `DAV:sync-collection`: what has changed here (RFC 6578 §3.2).
@@ -333,18 +332,25 @@ final class SyncCollection
      * about where — so the walk is free to be the shape that is easiest to
      * read, and a list of what is still to do is that shape.
      *
-     * It is also the shape that does not crash the measuring device. A
-     * generator that both yields and delegates with `yield from` in one frame
-     * made Xdebug's branch coverage segfault somewhere inside this report's
-     * own tests, over and over and at a different test each time — see
-     * bin/lib/TestShards.php for the whole of that hunt. The library is not
-     * contorted for it: a worklist is ordinary code, and the recursion bought
-     * nothing but a stack.
+     * **And it hands back what it found rather than yielding it**, because
+     * nothing here stops early: a `DAV:limit` is refused outright (§3.7), and
+     * §3.2 wants a response for every member URL. A generator whose laziness
+     * nobody uses is an array that is harder to read — and P7-03's truncation,
+     * which *will* stop early, can ask for laziness back when it has a reason.
      *
-     * @return Generator<string, INode>
+     * Both shapes also happen to be the ones that do not crash the measuring
+     * device: Xdebug's branch coverage segfaulted on this walk while it was a
+     * generator, first delegating with `yield from` and then not. See
+     * bin/lib/TestShards.php for that hunt. The library is not contorted for
+     * a tool — a worklist and an array are ordinary code, and the recursion
+     * and the laziness each bought nothing.
+     *
+     * @return array<string, INode>
      */
-    private function membersUnder(string $path, ICollection $node, int $depth): Generator
+    private function membersUnder(string $path, ICollection $node, int $depth): array
     {
+        $found = [];
+
         /** @var list<array{string, ICollection, int}> $pending */
         $pending = [[$path, $node, $depth]];
 
@@ -360,7 +366,7 @@ final class SyncCollection
             }
 
             foreach (VisibleMembers::of($this->server->events(), $where, $collection) as $member => $child) {
-                yield $member => $child;
+                $found[$member] = $child;
 
                 // §3.3: "all appropriate member URLs […] are reported, provided
                 // child collections themselves also support the
@@ -373,5 +379,7 @@ final class SyncCollection
                 }
             }
         }
+
+        return $found;
     }
 }
