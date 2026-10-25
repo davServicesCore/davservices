@@ -28,9 +28,11 @@ use DavServices\Http\Headers;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\Sync;
+use DavServices\Sync\IRevisions;
 use DavServices\Sync\Token;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Sync\FixedRevisions;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
@@ -214,7 +216,7 @@ final class SyncTest extends TestCase
     {
         $answer = (string) $this->propFind(
             '<propfind xmlns="DAV:"><prop><sync-token/></prop></propfind>',
-            revisionOf: static fn (): ?int => null,
+            revisions: FixedRevisions::none(),
         )->body();
 
         self::assertStringContainsString('404 Not Found', $answer);
@@ -260,7 +262,7 @@ final class SyncTest extends TestCase
     {
         $response = $this->putWith(
             sprintf('<%s> (<%s>)', self::COLLECTION, Token::for('home', 7)),
-            static fn (): ?int => null,
+            FixedRevisions::none(),
         );
 
         self::assertSame(412, $response->status());
@@ -286,12 +288,12 @@ final class SyncTest extends TestCase
     private function propFind(
         string $body,
         string $path = self::COLLECTION,
-        ?callable $revisionOf = null,
+        ?IRevisions $revisions = null,
     ): Response {
         $server = $this->server();
         $report = new Report($server);
 
-        $this->plugin($server, $revisionOf)->register($report);
+        $this->plugin($server, $revisions)->register($report);
         $report->register();
 
         return $server->handle(new Request(
@@ -302,11 +304,11 @@ final class SyncTest extends TestCase
         ));
     }
 
-    private function putWith(string $if, ?callable $revisionOf = null): Response
+    private function putWith(string $if, ?IRevisions $revisions = null): Response
     {
         $server = $this->server();
 
-        $this->plugin($server, $revisionOf)->register(new Report($server));
+        $this->plugin($server, $revisions)->register(new Report($server));
         $server->onMethod('PUT', (new Put($server))(...));
 
         return $server->handle(new Request(
@@ -317,9 +319,9 @@ final class SyncTest extends TestCase
         ));
     }
 
-    private function plugin(Server $server, ?callable $revisionOf = null): Sync
+    private function plugin(Server $server, ?IRevisions $revisions = null): Sync
     {
-        return new Sync($server, $revisionOf ?? static fn (): int => 7);
+        return new Sync($server, $revisions ?? FixedRevisions::at(7));
     }
 
     /**

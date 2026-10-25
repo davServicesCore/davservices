@@ -26,10 +26,12 @@ use DavServices\Http\Body;
 use DavServices\Http\Headers;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
+use DavServices\Sync\IRevisions;
 use DavServices\Sync\Report\SyncCollection;
 use DavServices\Sync\Token;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Sync\FixedRevisions;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -457,7 +459,7 @@ final class SyncCollectionTest extends TestCase
     public function testACollectionThatCannotSayWhenItChangedIsRefusedByName(): void
     {
         try {
-            $this->sync(revisionOf: static fn (): ?int => null);
+            $this->sync(revisions: FixedRevisions::none());
         } catch (Forbidden $refusal) {
             self::assertSame(403, $refusal->status());
             self::assertSame('{DAV:}supported-report', $refusal->errorElement());
@@ -480,8 +482,8 @@ final class SyncCollectionTest extends TestCase
      */
     public function testALaterStateIsALaterToken(): void
     {
-        $earlier = $this->tokenIn((string) $this->sync(revisionOf: static fn (): int => 9)->body());
-        $later = $this->tokenIn((string) $this->sync(revisionOf: static fn (): int => 10)->body());
+        $earlier = $this->tokenIn((string) $this->sync(revisions: FixedRevisions::at(9))->body());
+        $later = $this->tokenIn((string) $this->sync(revisions: FixedRevisions::at(10))->body());
 
         self::assertNotSame($earlier, $later);
 
@@ -543,13 +545,13 @@ final class SyncCollectionTest extends TestCase
         string $limit = '',
         ?string $depth = '0',
         string $path = self::HOME,
-        ?callable $revisionOf = null,
+        ?IRevisions $revisions = null,
     ): Response {
         return $this->syncOf(
             $this->body($token, $level, $properties, $limit),
             $path,
             $depth,
-            revisionOf: $revisionOf,
+            revisions: $revisions,
         );
     }
 
@@ -574,10 +576,10 @@ final class SyncCollectionTest extends TestCase
         string $path = self::HOME,
         ?string $depth = '0',
         ?Server $server = null,
-        ?callable $revisionOf = null,
+        ?IRevisions $revisions = null,
     ): Response {
         $server ??= $this->server();
-        $report = new SyncCollection($server, $revisionOf ?? static fn (): int => 7);
+        $report = new SyncCollection($server, $revisions ?? FixedRevisions::at(7));
 
         return $report(
             new Request(

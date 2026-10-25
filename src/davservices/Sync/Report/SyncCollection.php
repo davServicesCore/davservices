@@ -13,7 +13,6 @@ declare(strict_types=1);
 
 namespace DavServices\Sync\Report;
 
-use Closure;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
@@ -26,6 +25,7 @@ use DavServices\Exception\Forbidden;
 use DavServices\Exception\InsufficientStorage;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
+use DavServices\Sync\IRevisions;
 use DavServices\Sync\Token;
 use DavServices\Xml\Element;
 use DavServices\Xml\MultiStatus;
@@ -156,30 +156,21 @@ final class SyncCollection
     /** What `infinite` becomes: deeper than any tree a backend holds. */
     private const ENDLESS = PHP_INT_MAX;
 
-    /** @var Closure(string): ?int */
-    private readonly Closure $revisionOf;
-
     /**
-     * @param callable(string): ?int $revisionOf Which change the collection at
-     *                                           that path is at, or null where
-     *                                           this server tracks no
-     *                                           revision of it — which is a
-     *                                           collection that cannot be
-     *                                           synchronised. **Required
-     *                                           rather than defaulted**: a
-     *                                           plugin whose default answered
-     *                                           something would look wired
-     *                                           while handing out tokens it
-     *                                           could not keep honest, and
-     *                                           §5's conditional writes rest
-     *                                           on a token that moves when the
-     *                                           collection does
+     * @param IRevisions $revisions Which change a collection is at, or null
+     *                              where this server tracks no revision of it
+     *                              — a collection that cannot be
+     *                              synchronised. **Required rather than
+     *                              defaulted**: a report whose default
+     *                              answered something would hand out tokens it
+     *                              could not keep honest, and §5's conditional
+     *                              writes rest on a token that moves when the
+     *                              collection does
      */
     public function __construct(
         private readonly Server $server,
-        callable $revisionOf,
+        private readonly IRevisions $revisions,
     ) {
-        $this->revisionOf = $revisionOf(...);
     }
 
     /**
@@ -209,7 +200,7 @@ final class SyncCollection
 
         $this->mustNotAskForALimit($asked);
 
-        $revision = ($this->revisionOf)($path);
+        $revision = $this->revisions->revisionOf($path);
 
         if ($revision === null) {
             throw new Forbidden(
