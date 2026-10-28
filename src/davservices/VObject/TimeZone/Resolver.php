@@ -175,10 +175,12 @@ final class Resolver
      * **Which retired names a platform carries is the platform's business.**
      * Debian and Ubuntu moved the time zone database's backward-compatibility
      * names into a separate `tzdata-legacy` package, and their PHP reads
-     * `/usr/share/zoneinfo` rather than a copy of its own — so the same code
-     * is asked about 597 names on one machine and 419 on the next. Nothing is
-     * assumed about which: this answers for every name the database carries,
-     * and null for the rest.
+     * `/usr/share/zoneinfo` rather than a copy of its own, so the package
+     * decides what `DateTimeZone` knows. A build that carries them lists 597
+     * names, 178 of which are backward-only; a build without the package
+     * lists fewer, and how many fewer is that build's business. Nothing here
+     * assumes either: this answers for every name the database carries, and
+     * null for the rest.
      *
      * **And a name is a shortcut rather than the mechanism.** RFC 5545 §3.6.5
      * has the definition travel with the data — "An individual 'VTIMEZONE'

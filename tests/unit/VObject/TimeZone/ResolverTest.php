@@ -79,13 +79,14 @@ final class ResolverTest extends TestCase
      *
      * **Which of them a platform carries is the platform's business**, and
      * that is not a detail: Debian and Ubuntu moved the backward names into a
-     * separate `tzdata-legacy` package, so a build that lists 597 names and
-     * one that lists 419 are both ordinary. Ubuntu's PHP reads
+     * separate `tzdata-legacy` package, and their PHP reads
      * `/usr/share/zoneinfo` rather than a copy of its own, so the package
-     * decides what `DateTimeZone` knows. **Hence a property over whatever the
-     * database has**, which is stronger than two names by hand and true on
-     * either machine — where hard-coded names would have been a test of
-     * `tzdata` wearing this library's clothes.
+     * decides what `DateTimeZone` knows. A build that carries them lists 597
+     * names, 178 of them backward-only; a build without it lists fewer, and
+     * both are ordinary. **Hence a property over whatever the database has**,
+     * which is stronger than two names by hand and true on either machine —
+     * where hard-coded names would have been a test of `tzdata` wearing this
+     * library's clothes.
      *
      * **And nothing a client is owed depends on it**, because §3.6.5 has the
      * definition travel with the data: "An individual 'VTIMEZONE' calendar

@@ -320,19 +320,25 @@ final class GeneratorTest extends TestCase
 
     /**
      * **A zone whose own name is no registry name is written all the same, and
-     * the definition carries itself.** PHP resolves `GMT+0` to a fixed-offset
-     * zone it calls `+00:00` (one of exactly two such names of 597, see
-     * `ResolverTest`), and §3.2.19 defines no naming convention — "This
-     * document does not define a naming convention for time zone
+     * the definition carries itself.** §3.2.19 defines no naming convention —
+     * "This document does not define a naming convention for time zone
      * identifiers" — so the name is written as the zone gives it.
      *
-     * **What makes that safe is the definition beside it:** a reader that
-     * cannot place the name evaluates the observances instead, which is
-     * R-TZ-02, and the round trip here shows it works.
+     * Such a zone is what PHP answers for a database name it holds as a
+     * fixed offset: `GMT+0` comes back as a zone called `+00:00`, the one
+     * asked for under another name. **The case makes the zone directly
+     * rather than through that name**, because which backward-compatibility
+     * names a platform carries is the platform's business — Debian and Ubuntu
+     * keep them in a separate `tzdata-legacy` package — and a case that
+     * constructed one would be testing the packaging.
+     *
+     * **What makes writing such a name safe is the definition beside it:** a
+     * reader that cannot place the name evaluates the observances instead,
+     * which is R-TZ-02, and the round trip here shows it works.
      */
     public function testAZoneWhoseNameIsNoRegistryNameCarriesItself(): void
     {
-        $zone = new DateTimeZone('GMT+0');
+        $zone = new DateTimeZone('+00:00');
         $written = Generator::covering(
             $zone,
             new DateTimeImmutable('2024-01-01T00:00:00Z'),
