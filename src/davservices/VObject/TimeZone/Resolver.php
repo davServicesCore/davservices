@@ -15,6 +15,7 @@ namespace DavServices\VObject\TimeZone;
 
 use DateTimeZone;
 use DavServices\VObject\Component;
+use Exception;
 
 /**
  * Names the zone a `VTIMEZONE` means (RFC 5545 §3.2.19 and §3.6.5, R-TZ-01).
@@ -165,12 +166,26 @@ final class Resolver
     /**
      * The zone of that name where the time zone database has one.
      *
-     * **Asked rather than tried**, `new DateTimeZone` throwing on a name it
-     * does not know, and an exception being no way to ask a question. The
-     * list is the one `ALL_WITH_BC` gives, so that a name the database has
-     * since retired — `Asia/Calcutta` for `Asia/Kolkata`, `Europe/Kiev` for
-     * `Europe/Kyiv` — still names its zone: data written before a rename is
-     * not wrong.
+     * **Two questions, and neither answers the other.** Can a zone be built
+     * from this name at all, and is the name one the database lists?
+     *
+     * Building is not enough, because `new DateTimeZone` also answers for
+     * things that are no identifier: `CEST` builds and keeps `+02:00` *in
+     * January*, so a `TZID` of `CEST` taken at face value is a silent hour's
+     * error every winter. Hence the list, and it is the one `ALL_WITH_BC`
+     * gives so that a name the database has since retired — `Asia/Calcutta`
+     * for `Asia/Kolkata`, `Europe/Kiev` for `Europe/Kyiv` — still names its
+     * zone: data written before a rename is not wrong.
+     *
+     * **And being listed is not enough either.** PHP enumerates
+     * `/usr/share/zoneinfo`, and Ubuntu 26 lists `leapseconds` — a data file
+     * rather than a zone, which `DateTimeZone` then refuses. Letting that
+     * through would turn one unreadable `TZID` into a `500`, where every
+     * other name this class cannot place answers null.
+     *
+     * The building comes first only because that order leaves no branch this
+     * library cannot reach: a miss is a miss on every platform, where a name
+     * that is listed and unbuildable is one that exists on some.
      *
      * **Which retired names a platform carries is the platform's business.**
      * Debian and Ubuntu moved the time zone database's backward-compatibility
@@ -196,10 +211,16 @@ final class Resolver
      */
     private static function known(string $name): ?DateTimeZone
     {
+        try {
+            $found = new DateTimeZone($name);
+        } catch (Exception) {
+            return null;
+        }
+
         if (!in_array($name, DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC), true)) {
             return null;
         }
 
-        return new DateTimeZone($name);
+        return $found;
     }
 }

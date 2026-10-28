@@ -19,6 +19,7 @@ use DavServices\VObject\Component;
 use DavServices\VObject\Property;
 use DavServices\VObject\TimeZone\Aliases;
 use DavServices\VObject\TimeZone\Resolver;
+use Exception;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -106,6 +107,12 @@ final class ResolverTest extends TestCase
         self::assertNotSame([], $names);
 
         foreach ($names as $name) {
+            $owed = self::databaseZone($name);
+
+            if ($owed === null) {
+                continue;
+            }
+
             $zone = self::zone([['TZID', $name]]);
 
             if ($zone === null) {
@@ -115,15 +122,88 @@ final class ResolverTest extends TestCase
             }
 
             foreach ($instants as $instant) {
-                $owed = (new DateTimeZone($name))->getOffset($instant);
-
-                if ($zone->getOffset($instant) !== $owed) {
-                    $wrong[$name] = sprintf('%+d where %+d was owed', $zone->getOffset($instant), $owed);
+                if ($zone->getOffset($instant) !== $owed->getOffset($instant)) {
+                    $wrong[$name] = sprintf(
+                        '%+d where %+d was owed',
+                        $zone->getOffset($instant),
+                        $owed->getOffset($instant),
+                    );
                 }
             }
         }
 
         self::assertSame([], $wrong);
+    }
+
+    /**
+     * **A name that builds but is no identifier is a miss, and that guard is
+     * worth an hour.** `new DateTimeZone('CEST')` succeeds and keeps `+02:00`
+     * — *in January*, Central European Summer Time having no winter. So a
+     * `TZID` of `CEST` resolved by construction alone would put every
+     * appointment of the dark half of the year an hour out, and no client
+     * would be told. An offset is the same lesson in another spelling: PHP
+     * will build `+02:00` and no registry ever named it.
+     *
+     * §3.2.19 asks for an identifier rather than a shorthand: the `TZID`
+     * parameter's "value […] will be equal to the value of the 'TZID'
+     * property for the matching time zone definition", and a definition is
+     * named. **So being buildable is not enough**, which is the second of
+     * {@see Resolver}'s two questions and the one with the quiet failure
+     * behind it.
+     *
+     * @param non-empty-string $written
+     */
+    #[DataProvider('namesThatBuildButNameNoZone')]
+    public function testANameThatBuildsButIsNoIdentifierIsAMiss(string $written): void
+    {
+        // The premise of the case: PHP really does accept it.
+        self::assertNotNull(self::databaseZone($written), $written);
+
+        self::assertNull(self::zone([['TZID', $written]]), $written);
+        self::assertNull(Resolver::forName($written), $written);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function namesThatBuildButNameNoZone(): iterable
+    {
+        yield 'a summer-time abbreviation' => ['CEST'];
+
+        yield 'an offset rather than a name' => ['+02:00'];
+    }
+
+    /**
+     * **And a name the database lists but cannot make a zone of is a miss and
+     * never an exception.** This is what {@see Resolver}'s whole shape rests
+     * on: a `TZID` it does not understand answers null, so the caller decides
+     * (R-TZ-02). A `DateInvalidTimeZoneException` escaping into a `PUT` would
+     * turn one unreadable property into a `500`.
+     *
+     * **The two halves of that are not the same question**, which is the
+     * finding this case exists for: on Ubuntu 26 the list carries
+     * `leapseconds`, a plain data file in `/usr/share/zoneinfo` that PHP
+     * enumerates and then refuses to open as a zone. So a name being listed
+     * is not a promise that a zone can be built from it, and asking the list
+     * is no longer enough on its own.
+     */
+    public function testANameTheDatabaseListsButCannotBuildIsAMissAndNotAThrow(): void
+    {
+        $listed = DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC);
+        $unbuildable = array_values(array_filter(
+            $listed,
+            static fn (string $name): bool => self::databaseZone($name) === null,
+        ));
+
+        foreach ($unbuildable as $name) {
+            self::assertNull(self::zone([['TZID', $name]]), $name);
+            self::assertNull(Resolver::forName($name), $name);
+        }
+
+        // A name of this library's own invention is the unconditional half,
+        // so the case says something on every platform — including those
+        // whose list holds nothing but zones.
+        self::assertNull(Resolver::forName('Nowhere/Special'));
     }
 
     /**
@@ -144,23 +224,46 @@ final class ResolverTest extends TestCase
         $renamed = [];
 
         foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $name) {
+            $owed = self::databaseZone($name);
+
+            if ($owed === null) {
+                continue;
+            }
+
             $under = self::resolve([['TZID', $name]]);
 
-            self::assertSame((new DateTimeZone($name))->getName(), $under, $name);
+            self::assertSame($owed->getName(), $under, $name);
 
             if ($under !== $name) {
-                $renamed[$name] = $under;
+                $renamed[$name] = $owed;
             }
         }
 
         // Where a build carries such a name, the zone is still the right one:
         // the two halves of the lesson, in one case.
-        foreach (array_keys($renamed) as $name) {
+        foreach ($renamed as $name => $owed) {
             self::assertSame(
-                (new DateTimeZone($name))->getOffset(new DateTimeImmutable('2024-07-15')),
+                $owed->getOffset(new DateTimeImmutable('2024-07-15')),
                 self::zone([['TZID', $name]])?->getOffset(new DateTimeImmutable('2024-07-15')),
                 $name,
             );
+        }
+    }
+
+    /**
+     * The zone the database itself makes of that name, or null where it lists
+     * the name and cannot.
+     *
+     * **A case may not ask `new DateTimeZone` without catching**, which is the
+     * same lesson {@see Resolver} has to learn: `/usr/share/zoneinfo` holds
+     * files that are not zones, and PHP lists some of them.
+     */
+    private static function databaseZone(string $name): ?DateTimeZone
+    {
+        try {
+            return new DateTimeZone($name);
+        } catch (Exception) {
+            return null;
         }
     }
 
