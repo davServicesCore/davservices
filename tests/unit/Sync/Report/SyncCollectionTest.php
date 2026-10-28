@@ -592,6 +592,60 @@ final class SyncCollectionTest extends TestCase
     }
 
     /**
+     * **§3.2 asks for "one DAV:response element for each member URL", and a
+     * removal early in the list is no reason to stop reading it.** A client
+     * that deleted one event and wrote another in the same interval is owed
+     * both answers: the `404` for the one, the properties for the other.
+     *
+     * The removal comes first here on purpose, the order being the journal's.
+     * What is still there is looked up in one pass over the changes, and a
+     * pass that ended at the first removal would turn every later change into
+     * a resource the client is told has gone — the one wrong answer it would
+     * act on, by throwing away what it holds.
+     */
+    public function testARemovalEarlyInTheListDoesNotHideWhatChangedAfterIt(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordARemoval('home/gone.ics');
+        $journal->recordAChange('home/one.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal)->body();
+
+        self::assertStringContainsString('/home/gone.ics', $body);
+        self::assertStringContainsString('/home/one.ics', $body);
+        self::assertSame(2, substr_count($body, '<d:response>'));
+        self::assertSame(1, substr_count($body, '<d:propstat>'));
+    }
+
+    /**
+     * **Every changed member the tree still holds carries its properties**,
+     * not the first of them: §3.2 wants a response "for each member URL that
+     * was added, has had its mapped resource changed, or was deleted since the
+     * last synchronization operation".
+     *
+     * Counted rather than looked for, because a changed member left out of the
+     * lookup is not missing from the answer — it is in it as a `404`, and a
+     * client reading that would drop what it correctly holds.
+     */
+    public function testEveryChangedMemberThatIsStillThereCarriesItsProperties(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal)->body();
+
+        self::assertStringContainsString('/home/one.ics', $body);
+        self::assertStringContainsString('/home/two.ics', $body);
+        self::assertSame(2, substr_count($body, '<d:response>'));
+        self::assertSame(2, substr_count($body, '<d:propstat>'));
+    }
+
+    /**
      * **§3.4: an empty token answers everything and no removals**, however
      * much the journal holds. "The server MUST return all member URLs of the
      * collection […] and it MUST NOT return any removed member URLs."
@@ -954,9 +1008,6 @@ final class SyncCollectionTest extends TestCase
         return new Server(new Tree($root), $events);
     }
 
-    /**
-     * The token the answer carries.
-     */
     /**
      * The token the home stands at now, as a client would have been handed it.
      */
