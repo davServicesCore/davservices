@@ -171,6 +171,26 @@ final class Resolver
      * since retired — `Asia/Calcutta` for `Asia/Kolkata`, `Europe/Kiev` for
      * `Europe/Kyiv` — still names its zone: data written before a rename is
      * not wrong.
+     *
+     * **Which retired names a platform carries is the platform's business.**
+     * Debian and Ubuntu moved the time zone database's backward-compatibility
+     * names into a separate `tzdata-legacy` package, and their PHP reads
+     * `/usr/share/zoneinfo` rather than a copy of its own — so the same code
+     * is asked about 597 names on one machine and 419 on the next. Nothing is
+     * assumed about which: this answers for every name the database carries,
+     * and null for the rest.
+     *
+     * **And a name is a shortcut rather than the mechanism.** RFC 5545 §3.6.5
+     * has the definition travel with the data — "An individual 'VTIMEZONE'
+     * calendar component MUST be specified for each unique 'TZID' parameter
+     * value specified in the iCalendar object", which §3.2.19 repeats — so an
+     * object that keeps that MUST is read correctly whatever this answers,
+     * {@see Zones} putting the name first and the definition second (R-TZ-01,
+     * R-TZ-02). A catalogue of the retired names, in the way
+     * {@see Aliases} catalogues Microsoft's, would make the shortcut
+     * platform-independent; of the 178 names a build with them carries, 25
+     * are kept by no current zone at all, so it is a table to be written
+     * carefully rather than quickly.
      */
     private static function known(string $name): ?DateTimeZone
     {

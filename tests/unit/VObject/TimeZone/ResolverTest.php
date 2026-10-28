@@ -69,30 +69,98 @@ final class ResolverTest extends TestCase
     }
 
     /**
-     * **A name the time zone database has retired still names its zone.**
-     * `Asia/Calcutta` became `Asia/Kolkata` and `Europe/Kiev` became
-     * `Europe/Kyiv`; data written before that is not wrong, and a reader that
-     * refused it would be.
+     * **Every name this platform's database carries names the zone the
+     * database gives it** — which is the whole of what a reader can promise,
+     * and why {@see DateTimeZone::ALL_WITH_BC} is the list asked rather than
+     * `ALL`. The backward-compatibility names a build still ships are names
+     * real data was written with: `Asia/Calcutta` before it became
+     * `Asia/Kolkata`, `Europe/Kiev` before `Europe/Kyiv`. Data written before
+     * a rename is not wrong, and a reader that refused it would be.
      *
-     * @param non-empty-string $written
+     * **Which of them a platform carries is the platform's business**, and
+     * that is not a detail: Debian and Ubuntu moved the backward names into a
+     * separate `tzdata-legacy` package, so a build that lists 597 names and
+     * one that lists 419 are both ordinary. Ubuntu's PHP reads
+     * `/usr/share/zoneinfo` rather than a copy of its own, so the package
+     * decides what `DateTimeZone` knows. **Hence a property over whatever the
+     * database has**, which is stronger than two names by hand and true on
+     * either machine — where hard-coded names would have been a test of
+     * `tzdata` wearing this library's clothes.
+     *
+     * **And nothing a client is owed depends on it**, because §3.6.5 has the
+     * definition travel with the data: "An individual 'VTIMEZONE' calendar
+     * component MUST be specified for each unique 'TZID' parameter value
+     * specified in the iCalendar object." §3.2.19 says it a second time. So a
+     * name is a shortcut for data that keeps that MUST and a courtesy to data
+     * that breaks it; where the shortcut is not there, R-TZ-02's path reads
+     * the definition the object carries
+     * ({@see \DavServices\VObject\TimeZone\Zones}).
      */
-    #[DataProvider('theRetiredNames')]
-    public function testARetiredNameStillNamesItsZone(string $written, int $offset): void
+    public function testEveryNameTheDatabaseCarriesNamesTheZoneItGivesIt(): void
     {
-        $zone = self::zone([['TZID', $written]]);
+        $names = DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC);
+        $instants = [new DateTimeImmutable('2024-01-15'), new DateTimeImmutable('2024-07-15')];
+        $wrong = [];
 
-        self::assertNotNull($zone);
-        self::assertSame($offset, $zone->getOffset(new DateTimeImmutable('2024-01-15')));
+        self::assertNotSame([], $names);
+
+        foreach ($names as $name) {
+            $zone = self::zone([['TZID', $name]]);
+
+            if ($zone === null) {
+                $wrong[$name] = 'no zone at all';
+
+                continue;
+            }
+
+            foreach ($instants as $instant) {
+                $owed = (new DateTimeZone($name))->getOffset($instant);
+
+                if ($zone->getOffset($instant) !== $owed) {
+                    $wrong[$name] = sprintf('%+d where %+d was owed', $zone->getOffset($instant), $owed);
+                }
+            }
+        }
+
+        self::assertSame([], $wrong);
     }
 
     /**
-     * @return iterable<string, array{string, int}>
+     * **And it comes back under the database's own spelling, which need not be
+     * the name asked for.** `GMT+0` and `GMT-0` are names a build may carry,
+     * and `DateTimeZone` answers both with a fixed-offset zone it calls
+     * `+00:00` — the zone asked for, under another name.
+     *
+     * So a caller that compared `getName()` against its own `TZID` to decide
+     * whether it got what it asked for would be wrong exactly there.
+     * Comparing the zone is right; comparing the name is not. **What is
+     * asserted is that the resolver renames nothing of its own**: whatever
+     * spelling comes back is the one `DateTimeZone` would have given, so the
+     * surprise belongs to the database and this library adds none.
      */
-    public static function theRetiredNames(): iterable
+    public function testTheSpellingThatComesBackIsTheDatabasesOwn(): void
     {
-        yield 'Asia/Calcutta, now Asia/Kolkata' => ['Asia/Calcutta', 19800];
+        $renamed = [];
 
-        yield 'Europe/Kiev, now Europe/Kyiv' => ['Europe/Kiev', 7200];
+        foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $name) {
+            $under = self::resolve([['TZID', $name]]);
+
+            self::assertSame((new DateTimeZone($name))->getName(), $under, $name);
+
+            if ($under !== $name) {
+                $renamed[$name] = $under;
+            }
+        }
+
+        // Where a build carries such a name, the zone is still the right one:
+        // the two halves of the lesson, in one case.
+        foreach (array_keys($renamed) as $name) {
+            self::assertSame(
+                (new DateTimeZone($name))->getOffset(new DateTimeImmutable('2024-07-15')),
+                self::zone([['TZID', $name]])?->getOffset(new DateTimeImmutable('2024-07-15')),
+                $name,
+            );
+        }
     }
 
     /**
@@ -241,41 +309,6 @@ final class ResolverTest extends TestCase
     {
         self::assertSame('Europe/Berlin', Resolver::forName('W. Europe Standard Time')?->getName());
         self::assertNull(Resolver::forName('Nowhere/Special'));
-    }
-
-    /**
-     * **A name the database keeps as a synonym comes back under PHP's own
-     * spelling of the zone.** `GMT+0` and `GMT-0` are names
-     * `DateTimeZone::listIdentifiers(ALL_WITH_BC)` lists, and `DateTimeZone`
-     * resolves both to a fixed-offset zone it calls `+00:00` — the zone is the
-     * one asked for, the name is not the one given.
-     *
-     * **These two are the whole of it**, of the 597 names the database has,
-     * and they are here because a caller that compared `getName()` against its
-     * own `TZID` to decide whether it got what it asked for would be wrong
-     * exactly here. Comparing the zone is right; comparing the name is not.
-     *
-     * @param non-empty-string $written
-     */
-    #[DataProvider('theSynonymsPhpRenames')]
-    public function testASynonymComesBackUnderPhpsOwnSpelling(string $written): void
-    {
-        $zone = self::zone([['TZID', $written]]);
-
-        self::assertNotNull($zone);
-        self::assertSame(0, $zone->getOffset(new DateTimeImmutable('2024-07-15')));
-        self::assertSame((new DateTimeZone($written))->getName(), $zone->getName());
-        self::assertNotSame($written, $zone->getName());
-    }
-
-    /**
-     * @return iterable<string, array{string}>
-     */
-    public static function theSynonymsPhpRenames(): iterable
-    {
-        yield 'GMT+0' => ['GMT+0'];
-
-        yield 'GMT-0' => ['GMT-0'];
     }
 
     /**
