@@ -19,6 +19,7 @@ use DavServices\VObject\Component;
 use DavServices\VObject\Property;
 use DavServices\VObject\TimeZone\Aliases;
 use DavServices\VObject\TimeZone\Resolver;
+use Exception;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -69,30 +70,201 @@ final class ResolverTest extends TestCase
     }
 
     /**
-     * **A name the time zone database has retired still names its zone.**
-     * `Asia/Calcutta` became `Asia/Kolkata` and `Europe/Kiev` became
-     * `Europe/Kyiv`; data written before that is not wrong, and a reader that
-     * refused it would be.
+     * **Every name this platform's database carries names the zone the
+     * database gives it** — which is the whole of what a reader can promise,
+     * and why {@see DateTimeZone::ALL_WITH_BC} is the list asked rather than
+     * `ALL`. The backward-compatibility names a build still ships are names
+     * real data was written with: `Asia/Calcutta` before it became
+     * `Asia/Kolkata`, `Europe/Kiev` before `Europe/Kyiv`. Data written before
+     * a rename is not wrong, and a reader that refused it would be.
      *
-     * @param non-empty-string $written
+     * **Which of them a platform carries is the platform's business**, and
+     * that is not a detail: Debian and Ubuntu moved the backward names into a
+     * separate `tzdata-legacy` package, and their PHP reads
+     * `/usr/share/zoneinfo` rather than a copy of its own, so the package
+     * decides what `DateTimeZone` knows. A build that carries them lists 597
+     * names, 178 of them backward-only; a build without it lists fewer, and
+     * both are ordinary. **Hence a property over whatever the database has**,
+     * which is stronger than two names by hand and true on either machine —
+     * where hard-coded names would have been a test of `tzdata` wearing this
+     * library's clothes.
+     *
+     * **And nothing a client is owed depends on it**, because §3.6.5 has the
+     * definition travel with the data: "An individual 'VTIMEZONE' calendar
+     * component MUST be specified for each unique 'TZID' parameter value
+     * specified in the iCalendar object." §3.2.19 says it a second time. So a
+     * name is a shortcut for data that keeps that MUST and a courtesy to data
+     * that breaks it; where the shortcut is not there, R-TZ-02's path reads
+     * the definition the object carries
+     * ({@see \DavServices\VObject\TimeZone\Zones}).
      */
-    #[DataProvider('theRetiredNames')]
-    public function testARetiredNameStillNamesItsZone(string $written, int $offset): void
+    public function testEveryNameTheDatabaseCarriesNamesTheZoneItGivesIt(): void
     {
-        $zone = self::zone([['TZID', $written]]);
+        $names = DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC);
+        $instants = [new DateTimeImmutable('2024-01-15'), new DateTimeImmutable('2024-07-15')];
+        $wrong = [];
 
-        self::assertNotNull($zone);
-        self::assertSame($offset, $zone->getOffset(new DateTimeImmutable('2024-01-15')));
+        self::assertNotSame([], $names);
+
+        foreach ($names as $name) {
+            $owed = self::databaseZone($name);
+
+            if ($owed === null) {
+                continue;
+            }
+
+            $zone = self::zone([['TZID', $name]]);
+
+            if ($zone === null) {
+                $wrong[$name] = 'no zone at all';
+
+                continue;
+            }
+
+            foreach ($instants as $instant) {
+                if ($zone->getOffset($instant) !== $owed->getOffset($instant)) {
+                    $wrong[$name] = sprintf(
+                        '%+d where %+d was owed',
+                        $zone->getOffset($instant),
+                        $owed->getOffset($instant),
+                    );
+                }
+            }
+        }
+
+        self::assertSame([], $wrong);
     }
 
     /**
-     * @return iterable<string, array{string, int}>
+     * **A name that builds but is no identifier is a miss, and that guard is
+     * worth an hour.** `new DateTimeZone('CEST')` succeeds and keeps `+02:00`
+     * — *in January*, Central European Summer Time having no winter. So a
+     * `TZID` of `CEST` resolved by construction alone would put every
+     * appointment of the dark half of the year an hour out, and no client
+     * would be told. An offset is the same lesson in another spelling: PHP
+     * will build `+02:00` and no registry ever named it.
+     *
+     * §3.2.19 asks for an identifier rather than a shorthand: the `TZID`
+     * parameter's "value […] will be equal to the value of the 'TZID'
+     * property for the matching time zone definition", and a definition is
+     * named. **So being buildable is not enough**, which is the second of
+     * {@see Resolver}'s two questions and the one with the quiet failure
+     * behind it.
+     *
+     * @param non-empty-string $written
      */
-    public static function theRetiredNames(): iterable
+    #[DataProvider('namesThatBuildButNameNoZone')]
+    public function testANameThatBuildsButIsNoIdentifierIsAMiss(string $written): void
     {
-        yield 'Asia/Calcutta, now Asia/Kolkata' => ['Asia/Calcutta', 19800];
+        // The premise of the case: PHP really does accept it.
+        self::assertNotNull(self::databaseZone($written), $written);
 
-        yield 'Europe/Kiev, now Europe/Kyiv' => ['Europe/Kiev', 7200];
+        self::assertNull(self::zone([['TZID', $written]]), $written);
+        self::assertNull(Resolver::forName($written), $written);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function namesThatBuildButNameNoZone(): iterable
+    {
+        yield 'a summer-time abbreviation' => ['CEST'];
+
+        yield 'an offset rather than a name' => ['+02:00'];
+    }
+
+    /**
+     * **And a name the database lists but cannot make a zone of is a miss and
+     * never an exception.** This is what {@see Resolver}'s whole shape rests
+     * on: a `TZID` it does not understand answers null, so the caller decides
+     * (R-TZ-02). A `DateInvalidTimeZoneException` escaping into a `PUT` would
+     * turn one unreadable property into a `500`.
+     *
+     * **The two halves of that are not the same question**, which is the
+     * finding this case exists for: on Ubuntu 26 the list carries
+     * `leapseconds`, a plain data file in `/usr/share/zoneinfo` that PHP
+     * enumerates and then refuses to open as a zone. So a name being listed
+     * is not a promise that a zone can be built from it, and asking the list
+     * is no longer enough on its own.
+     */
+    public function testANameTheDatabaseListsButCannotBuildIsAMissAndNotAThrow(): void
+    {
+        $listed = DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC);
+        $unbuildable = array_values(array_filter(
+            $listed,
+            static fn (string $name): bool => self::databaseZone($name) === null,
+        ));
+
+        foreach ($unbuildable as $name) {
+            self::assertNull(self::zone([['TZID', $name]]), $name);
+            self::assertNull(Resolver::forName($name), $name);
+        }
+
+        // A name of this library's own invention is the unconditional half,
+        // so the case says something on every platform — including those
+        // whose list holds nothing but zones.
+        self::assertNull(Resolver::forName('Nowhere/Special'));
+    }
+
+    /**
+     * **And it comes back under the database's own spelling, which need not be
+     * the name asked for.** `GMT+0` and `GMT-0` are names a build may carry,
+     * and `DateTimeZone` answers both with a fixed-offset zone it calls
+     * `+00:00` — the zone asked for, under another name.
+     *
+     * So a caller that compared `getName()` against its own `TZID` to decide
+     * whether it got what it asked for would be wrong exactly there.
+     * Comparing the zone is right; comparing the name is not. **What is
+     * asserted is that the resolver renames nothing of its own**: whatever
+     * spelling comes back is the one `DateTimeZone` would have given, so the
+     * surprise belongs to the database and this library adds none.
+     */
+    public function testTheSpellingThatComesBackIsTheDatabasesOwn(): void
+    {
+        $renamed = [];
+
+        foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $name) {
+            $owed = self::databaseZone($name);
+
+            if ($owed === null) {
+                continue;
+            }
+
+            $under = self::resolve([['TZID', $name]]);
+
+            self::assertSame($owed->getName(), $under, $name);
+
+            if ($under !== $name) {
+                $renamed[$name] = $owed;
+            }
+        }
+
+        // Where a build carries such a name, the zone is still the right one:
+        // the two halves of the lesson, in one case.
+        foreach ($renamed as $name => $owed) {
+            self::assertSame(
+                $owed->getOffset(new DateTimeImmutable('2024-07-15')),
+                self::zone([['TZID', $name]])?->getOffset(new DateTimeImmutable('2024-07-15')),
+                $name,
+            );
+        }
+    }
+
+    /**
+     * The zone the database itself makes of that name, or null where it lists
+     * the name and cannot.
+     *
+     * **A case may not ask `new DateTimeZone` without catching**, which is the
+     * same lesson {@see Resolver} has to learn: `/usr/share/zoneinfo` holds
+     * files that are not zones, and PHP lists some of them.
+     */
+    private static function databaseZone(string $name): ?DateTimeZone
+    {
+        try {
+            return new DateTimeZone($name);
+        } catch (Exception) {
+            return null;
+        }
     }
 
     /**
@@ -241,41 +413,6 @@ final class ResolverTest extends TestCase
     {
         self::assertSame('Europe/Berlin', Resolver::forName('W. Europe Standard Time')?->getName());
         self::assertNull(Resolver::forName('Nowhere/Special'));
-    }
-
-    /**
-     * **A name the database keeps as a synonym comes back under PHP's own
-     * spelling of the zone.** `GMT+0` and `GMT-0` are names
-     * `DateTimeZone::listIdentifiers(ALL_WITH_BC)` lists, and `DateTimeZone`
-     * resolves both to a fixed-offset zone it calls `+00:00` — the zone is the
-     * one asked for, the name is not the one given.
-     *
-     * **These two are the whole of it**, of the 597 names the database has,
-     * and they are here because a caller that compared `getName()` against its
-     * own `TZID` to decide whether it got what it asked for would be wrong
-     * exactly here. Comparing the zone is right; comparing the name is not.
-     *
-     * @param non-empty-string $written
-     */
-    #[DataProvider('theSynonymsPhpRenames')]
-    public function testASynonymComesBackUnderPhpsOwnSpelling(string $written): void
-    {
-        $zone = self::zone([['TZID', $written]]);
-
-        self::assertNotNull($zone);
-        self::assertSame(0, $zone->getOffset(new DateTimeImmutable('2024-07-15')));
-        self::assertSame((new DateTimeZone($written))->getName(), $zone->getName());
-        self::assertNotSame($written, $zone->getName());
-    }
-
-    /**
-     * @return iterable<string, array{string}>
-     */
-    public static function theSynonymsPhpRenames(): iterable
-    {
-        yield 'GMT+0' => ['GMT+0'];
-
-        yield 'GMT-0' => ['GMT-0'];
     }
 
     /**
