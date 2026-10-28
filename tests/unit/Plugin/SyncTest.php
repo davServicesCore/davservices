@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\Plugin;
 
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\Method\Delete;
+use DavServices\Dav\Method\Move;
 use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\PropFind;
 use DavServices\Dav\Method\PropPatch;
@@ -29,10 +31,12 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\Sync;
 use DavServices\Sync\IRevisions;
+use DavServices\Sync\Journal;
 use DavServices\Sync\Token;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Tests\Unit\Sync\FixedRevisions;
+use DavServices\Tests\Unit\Sync\MemoryJournalBackend;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 
@@ -269,6 +273,138 @@ final class SyncTest extends TestCase
     }
 
     /**
+     * **§3.2's first duty: "a server needs to keep track of changes to any
+     * member URLs and their mapped resources in a collection".**
+     *
+     * Registering the plugin is what switches that on, so a `PUT` of something
+     * new is in the next answer — §3.5.1: "A member URL MUST be reported as
+     * changed if it has been newly mapped as a member of the target collection
+     * since the request sync-token was generated."
+     */
+    public function testAMemberThatWasPutThereIsReportedAsChanged(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request('PUT', self::COLLECTION . '/new.ics', body: new Body('BEGIN:VCALENDAR')));
+
+        $body = $this->reportOn($server, $held);
+
+        self::assertStringContainsString('/home/new.ics', $body);
+        self::assertStringContainsString('<d:propstat>', $body);
+        self::assertStringNotContainsString('/home/one.ics', $body);
+    }
+
+    /**
+     * And a member written over is reported too, §3.5.1: "A member URL MUST be
+     * reported as changed if its mapped resource's entity tag value […] has
+     * changed since the request sync-token was generated." A `PUT` over
+     * something that is already there raises no bind, so a server listening
+     * only for that would never mention it again.
+     */
+    public function testAMemberWrittenOverIsReportedAsChanged(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request('PUT', self::COLLECTION . '/one.ics', body: new Body('BEGIN:VCALENDAR')));
+
+        self::assertStringContainsString('/home/one.ics', $this->reportOn($server, $held));
+    }
+
+    /**
+     * **§3.5.2: "A member MUST be reported as removed if its mapping under the
+     * target collection has been removed since the request sync-token was
+     * generated."** §3.2 gives it "one DAV:status with a value set to '404 Not
+     * Found'" and no properties.
+     */
+    public function testAMemberThatWasDeletedIsReportedAsRemoved(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request('DELETE', self::COLLECTION . '/one.ics'));
+
+        $body = $this->reportOn($server, $held);
+
+        self::assertStringContainsString('/home/one.ics', $body);
+        self::assertStringContainsString('<d:status>HTTP/1.1 404 Not Found</d:status>', $body);
+        self::assertStringNotContainsString('<d:propstat>', $body);
+    }
+
+    /**
+     * **A `MOVE` is one removal and one change**, which is the two sentences
+     * read together: §3.5.1 counts "member URLs that have been newly mapped as
+     * the result of a COPY, MOVE" as changed, and §3.5.2 counts "members that
+     * have been unmapped as the result of a MOVE" as removed.
+     */
+    public function testAMoveIsAChangeWhereItLandedAndARemovalWhereItLeft(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request(
+            'MOVE',
+            self::COLLECTION . '/one.ics',
+            headers: new Headers(['Destination' => self::COLLECTION . '/moved.ics']),
+        ));
+
+        $body = $this->reportOn($server, $held);
+
+        self::assertStringContainsString('/home/moved.ics', $body);
+        self::assertStringContainsString('<d:propstat>', $body);
+        self::assertStringContainsString('/home/one.ics', $body);
+        self::assertStringContainsString('<d:status>HTTP/1.1 404 Not Found</d:status>', $body);
+    }
+
+    /**
+     * **And a `MOVE` over something is a change there and not a removal**,
+     * which §3.5.1 asks for in as many words: "In the case where a mapping
+     * between a member URL and the target collection was removed, then a new
+     * mapping with the same URI was created, the member URL MUST be reported
+     * as changed and MUST NOT be reported as removed."
+     *
+     * A client told the destination had gone would delete its copy of
+     * something that is there.
+     */
+    public function testAMoveOverAMemberIsAChangeThereAndNotARemoval(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request('PUT', self::COLLECTION . '/new.ics', body: new Body('BEGIN:VCALENDAR')));
+        $server->handle(new Request(
+            'MOVE',
+            self::COLLECTION . '/new.ics',
+            headers: new Headers(['Destination' => self::COLLECTION . '/one.ics']),
+        ));
+
+        $body = $this->reportOn($server, $held);
+
+        self::assertSame(1, substr_count($body, '/home/one.ics'));
+        self::assertStringContainsString('/home/one.ics</d:href><d:propstat>', $body);
+    }
+
+    /**
+     * **§4: the property is "the value of the synchronization token as it
+     * would be returned by a DAV:sync-collection report on that resource at
+     * the same point in time"** — which is the sentence that makes one seam
+     * answer both. After a write, the property and the report still agree,
+     * because there is no second place to ask how far the collection has got.
+     */
+    public function testThePropertyFollowsTheWritesTheJournalRecorded(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request('PUT', self::COLLECTION . '/new.ics', body: new Body('BEGIN:VCALENDAR')));
+
+        $answer = (string) $server->handle(new Request(
+            'PROPFIND',
+            self::COLLECTION,
+            headers: new Headers(['Depth' => '0']),
+            body: new Body('<propfind xmlns="DAV:"><prop><sync-token/></prop></propfind>'),
+        ))->body();
+
+        self::assertStringNotContainsString($held, $answer);
+        self::assertStringContainsString($this->tokenIn($this->reportOn($server, $held)), $answer);
+    }
+
+    /**
      * It announces no compliance class. RFC 6578 defines none — there is no
      * `DAV` header value in it — and what tells a client the report is there is
      * `DAV:supported-report-set`, which §3.2 names in as many words.
@@ -322,6 +458,58 @@ final class SyncTest extends TestCase
     private function plugin(Server $server, ?IRevisions $revisions = null): Sync
     {
         return new Sync($server, $revisions ?? FixedRevisions::at(7));
+    }
+
+    /**
+     * A server keeping a journal, together with the token a client holding the
+     * state before anything happened would have.
+     *
+     * The methods that move something in the tree are registered here rather
+     * than in the fixture, because what is proved is that the plugin hears
+     * them — and a case that recorded the change itself would prove nothing.
+     *
+     * @return array{Server, string}
+     */
+    private function synchronising(): array
+    {
+        $server = $this->server();
+        $journal = new Journal(new MemoryJournalBackend());
+        $report = new Report($server);
+
+        $this->plugin($server, $journal)->register($report);
+        $report->register();
+
+        $server->onMethod('PUT', (new Put($server))(...));
+        $server->onMethod('DELETE', (new Delete($server))(...));
+        $server->onMethod('MOVE', (new Move($server))(...));
+
+        return [$server, (string) Token::for('home', $journal->revisionOf('home'))];
+    }
+
+    /**
+     * What a `DAV:sync-collection` carrying that token answers.
+     */
+    private function reportOn(Server $server, string $token): string
+    {
+        return (string) $server->handle(new Request(
+            'REPORT',
+            self::COLLECTION,
+            headers: new Headers(['Depth' => '0']),
+            body: new Body(sprintf(
+                '<D:sync-collection xmlns:D="DAV:"><D:sync-token>%s</D:sync-token>'
+                . '<D:sync-level>infinite</D:sync-level><D:prop><D:getetag/></D:prop></D:sync-collection>',
+                htmlspecialchars($token, ENT_XML1),
+            )),
+        ))->body();
+    }
+
+    private function tokenIn(string $body): string
+    {
+        if (preg_match('~<d:sync-token>([^<]+)</d:sync-token>~', $body, $found) !== 1) {
+            self::fail('The answer carries no sync-token: ' . $body);
+        }
+
+        return $found[1];
     }
 
     /**

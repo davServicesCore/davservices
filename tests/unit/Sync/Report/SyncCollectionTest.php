@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Sync\Report;
 
+use DateInterval;
+use DateTimeImmutable;
 use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Property\LiveProperties;
@@ -27,17 +29,19 @@ use DavServices\Http\Headers;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Sync\IRevisions;
+use DavServices\Sync\Journal;
 use DavServices\Sync\Report\SyncCollection;
 use DavServices\Sync\Token;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Tests\Unit\Sync\FixedRevisions;
+use DavServices\Tests\Unit\Sync\MemoryJournalBackend;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Test list for `DAV:sync-collection`. R-SYNC-01, P7-01.
+ * Test list for `DAV:sync-collection`. R-SYNC-01, R-SYNC-03, P7-01, P7-02.
  *
  * RFC 6578 §6.1:
  *
@@ -50,7 +54,7 @@ use PHPUnit\Framework\TestCase;
  * > return only those items that are new, have changed, or were deleted since
  * > that token was generated.
  *
- * ## What this chunk answers, and what it refuses
+ * ## What this report answers, and what it refuses
  *
  * **The initial synchronisation**, which §3.4 defines: an empty
  * `DAV:sync-token` means "tell me everything", and the server answers every
@@ -58,12 +62,19 @@ use PHPUnit\Framework\TestCase;
  * keeping any history, and §3.1 names it as the path a client takes first and
  * falls back to.
  *
- * **A token is refused** with §3.2's `DAV:valid-sync-token` precondition,
- * because this chunk keeps no change journal — which is the first reason §3.2
- * itself lists for invalidating one: "Servers might be unable to maintain all
- * of the change data for a collection due to storage or performance reasons".
- * P7-02 brings `Sync\Journal` and makes a token answerable; until then a client
- * does a full synchronisation each time, which is slower and not wrong.
+ * **A subsequent one**, which §3.5 defines: the members that changed carry
+ * their properties, the members that went carry a `404`, and nothing else is
+ * in the answer. Which is which comes from the seam that keeps the history —
+ * `Sync\Journal` in these cases — and a server that keeps none answers every
+ * token with §3.2's `DAV:valid-sync-token`, which is the first reason that
+ * section itself lists for refusing one: "Servers might be unable to maintain
+ * all of the change data for a collection due to storage or performance
+ * reasons". Both servers are conformant, and
+ * {@see \DavServices\Tests\Unit\Sync\FixedRevisions} is the second.
+ *
+ * **A token this server never made for this collection**, which is §3.2's
+ * precondition read literally: "a valid token previously returned by the
+ * server for the collection targeted by the request-URI".
  *
  * **A `DAV:limit` is refused** with §3.7's postcondition, which is §3.12's own
  * example: "If a server is unable to truncate the result at or below the
@@ -71,7 +82,7 @@ use PHPUnit\Framework\TestCase;
  * DAV:number-of-matches-within-limits postcondition error." Honouring a limit
  * means truncating, and truncating is §3.6 — R-SYNC-04, P7-03.
  *
- * Both refusals are the memo's own answers for a server that cannot do the
+ * Every refusal is the memo's own answer for a server that cannot do the
  * thing, rather than silence or a guess.
  */
 #[CoversClass(SyncCollection::class)]
@@ -510,6 +521,330 @@ final class SyncCollectionTest extends TestCase
     }
 
     /**
+     * **§3.2, for a member that changed: "the DAV:response MUST contain at
+     * least one DAV:propstat element and MUST NOT contain any DAV:status
+     * element."**
+     *
+     * So a token this server can answer brings back the changed member and
+     * nothing else — §3.1's whole purpose: "the server will return only those
+     * items that are new, have changed, or were deleted since that token was
+     * generated".
+     */
+    public function testAChangedMemberCarriesItsPropertiesAndNothingElseIsReported(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal)->body();
+
+        self::assertStringContainsString('/home/one.ics', $body);
+        self::assertStringContainsString('<d:getetag>', $body);
+        self::assertStringNotContainsString('/home/two.ics', $body);
+        self::assertSame(1, substr_count($body, '<d:response>'));
+        self::assertSame(1, substr_count($body, '<d:propstat>'));
+    }
+
+    /**
+     * **§3.2, for a member that went: "the DAV:response MUST contain one
+     * DAV:status with a value set to '404 Not Found' and MUST NOT contain any
+     * DAV:propstat element."**
+     *
+     * The status is on the response and not inside a `propstat`, which is the
+     * distinction a client reads to tell "this resource is gone" from "this
+     * resource has no such property".
+     */
+    public function testARemovedMemberCarriesTheStatusTheMemoNamesAndNoProperties(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordARemoval('home/gone.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal)->body();
+
+        self::assertStringContainsString('/home/gone.ics', $body);
+        self::assertStringContainsString('<d:status>HTTP/1.1 404 Not Found</d:status>', $body);
+        self::assertStringNotContainsString('<d:propstat>', $body);
+    }
+
+    /**
+     * **A member the journal recorded as changed but the tree no longer holds
+     * is reported as removed.** The record says what happened and the tree
+     * says what is there, and where they disagree the tree is right: a
+     * `propstat` for a resource that has gone would send the client to fetch
+     * what is not there, and §3.5.2's first sentence is a MUST about the
+     * mapping rather than about the record of it.
+     */
+    public function testAChangedMemberThatIsNoLongerThereIsReportedAsRemoved(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/vanished.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal)->body();
+
+        self::assertStringContainsString('/home/vanished.ics', $body);
+        self::assertStringContainsString('<d:status>HTTP/1.1 404 Not Found</d:status>', $body);
+        self::assertStringNotContainsString('<d:propstat>', $body);
+    }
+
+    /**
+     * **§3.4: an empty token answers everything and no removals**, however
+     * much the journal holds. "The server MUST return all member URLs of the
+     * collection […] and it MUST NOT return any removed member URLs."
+     *
+     * So the initial synchronisation is the tree and never the history — a
+     * server that answered a removal there would tell a client that something
+     * it has never heard of has gone.
+     */
+    public function testAnEmptyTokenAnswersTheTreeAndNeverTheHistory(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+
+        $journal->recordARemoval('home/gone.ics');
+
+        $body = (string) $this->sync(revisions: $journal)->body();
+
+        self::assertStringContainsString('/home/one.ics', $body);
+        self::assertStringNotContainsString('/home/gone.ics', $body);
+
+        // Every response carries a `propstat`, which is the same sentence
+        // counted: a removal is a status on the response itself. The `404`
+        // **inside** a propstat is a property these collections have not got,
+        // and saying so is not saying they are gone.
+        self::assertSame(substr_count($body, '<d:response>'), substr_count($body, '<d:propstat>'));
+    }
+
+    /**
+     * **The token moves on with the state**, and handing the new one straight
+     * back answers nothing: §3.1 has the token "represent the state of the
+     * data being synchronized at that point in time", so a client in step is
+     * owed an empty answer rather than a repetition.
+     */
+    public function testTheTokenItAnswersWithIsTheStateTheAnswerCovers(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+
+        $answered = $this->tokenIn((string) $this->sync(token: $held, revisions: $journal)->body());
+
+        self::assertNotSame($held, $answered);
+
+        $body = (string) $this->sync(token: $answered, revisions: $journal)->body();
+
+        self::assertSame($answered, $this->tokenIn($body));
+        self::assertStringNotContainsString('<d:response>', $body);
+    }
+
+    /**
+     * **§3.3's level scopes the history as well as the tree.** "When the client
+     * specifies the DAV:sync-level XML element with a value of '1', only
+     * appropriate internal member URLs (immediate children) […] are reported."
+     *
+     * And §3.3 says what that costs, which is why it says to use `infinite`:
+     * "clients cannot rely on a series of reports using the DAV:sync-level XML
+     * element value set to '1' at multiple levels to track all changes within
+     * a collection."
+     */
+    public function testALevelOfOneDoesNotReachAChangeFurtherDown(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/inner/deep.ics');
+
+        self::assertStringNotContainsString(
+            '/home/inner/deep.ics',
+            (string) $this->sync(token: $held, level: '1', revisions: $journal)->body(),
+        );
+        self::assertStringContainsString(
+            '/home/inner/deep.ics',
+            (string) $this->sync(token: $held, revisions: $journal)->body(),
+        );
+    }
+
+    /**
+     * **A changed member a client may not see is not named** (R-ACL-06), the
+     * same as on an initial synchronisation. A `404` on a resource nobody may
+     * read is only half the work if the answer still says it is there.
+     *
+     * **A removal is reported all the same**, and §3.5.2 licenses it in as many
+     * words: "A member MAY be reported as removed if the user issuing the
+     * request no longer has access to this member, due to access control
+     * changes." A path with nothing behind it is a path no resolver can be
+     * asked about, and §3.5.2's first sentence is a MUST — a removal dropped
+     * because the resource it named has gone would leave a client holding it
+     * for ever.
+     */
+    public function testAChangedMemberTheClientMayNotSeeIsNotInTheAnswer(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+        $server = $this->server();
+
+        $server->events()->on(ListingMembers::class, static function (ListingMembers $event): void {
+            $event->conceal('home/one.ics', 'home/vanished.ics');
+        });
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+        $journal->recordAChange('home/vanished.ics');
+        $journal->recordARemoval('home/gone.ics');
+
+        $body = (string) $this->syncOf(
+            $this->body($held),
+            server: $server,
+            revisions: $journal,
+        )->body();
+
+        self::assertStringNotContainsString('/home/one.ics', $body);
+        self::assertStringContainsString('/home/two.ics', $body);
+        self::assertStringContainsString('/home/gone.ics', $body);
+
+        // And a member that has gone is reported however a listener would
+        // have answered about it: the question is only ever asked of what is
+        // there, so the two rules do not depend on which `if` comes first.
+        self::assertStringContainsString('/home/vanished.ics', $body);
+    }
+
+    /**
+     * **§3.3: "DAV:sync-token values returned by the server are not specific
+     * to the value of the DAV:sync-level XML element used in the request."**
+     *
+     * So the two levels answer one token, which is what the memo's next
+     * sentence rests on: "clients MAY use a DAV:sync-token value from a
+     * request with one DAV:sync-level XML element value for a similar request
+     * with a different DAV:sync-level XML element value".
+     *
+     * And §3.3 says plainly what that costs, which is why it tells clients to
+     * use `infinite`: a change the level did not reach is behind the token all
+     * the same, so "clients cannot rely on a series of reports using the
+     * DAV:sync-level XML element value set to '1' at multiple levels to track
+     * all changes within a collection".
+     */
+    public function testTheTokenDoesNotDependOnTheLevelItWasAskedAt(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/inner/deep.ics');
+
+        self::assertSame(
+            $this->tokenIn((string) $this->sync(token: $held, level: '1', revisions: $journal)->body()),
+            $this->tokenIn((string) $this->sync(token: $held, revisions: $journal)->body()),
+        );
+    }
+
+    /**
+     * **The whole answer, as §3.9's own example writes it**: a changed member
+     * with one `propstat` for the property it has and another for the one
+     * nobody set, a removed member with a bare status, and the token last.
+     *
+     * The request is §3.9's too, down to the proprietary property in the
+     * `DAV:prop` — which is what shows the `404` on the inside and the `404`
+     * on the outside are different answers rather than one printed twice.
+     */
+    public function testAnswersATokenTheWayTheMemosExampleDoes(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordARemoval('home/gone.ics');
+
+        $request = <<<XML
+            <?xml version="1.0" encoding="utf-8" ?>
+            <D:sync-collection xmlns:D="DAV:">
+              <D:sync-token>{$held}</D:sync-token>
+              <D:sync-level>1</D:sync-level>
+              <D:prop xmlns:R="urn:ns.example.com:boxschema">
+                <D:getetag/>
+                <R:bigbox/>
+              </D:prop>
+            </D:sync-collection>
+            XML;
+
+        $body = (string) $this->syncOf($request, revisions: $journal)->body();
+
+        self::assertStringContainsString('<d:href>/home/one.ics</d:href><d:propstat>', $body);
+        self::assertStringContainsString('<d:getetag>', $body);
+        self::assertStringContainsString('bigbox', $body);
+        self::assertStringContainsString(
+            '<d:href>/home/gone.ics</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>',
+            $body,
+        );
+
+        // §6.4 overrides RFC 4918 §14.16 to put the token last:
+        // `<!ELEMENT multistatus (response*, responsedescription?, sync-token?)>`
+        self::assertStringEndsWith('</d:sync-token></d:multistatus>', trim($body));
+    }
+
+    /**
+     * **A token from before what the journal keeps is refused by name**, which
+     * is R-SYNC-03 reaching the client: the journal raises §3.2's
+     * `DAV:valid-sync-token`, and the report lets it out rather than answering
+     * an emptier truth.
+     */
+    public function testATokenOlderThanTheJournalIsRefusedByName(): void
+    {
+        $moment = '2026-10-27 09:00:00';
+        $journal = new Journal(
+            new MemoryJournalBackend(),
+            new DateInterval('P1D'),
+            function () use (&$moment): DateTimeImmutable {
+                return new DateTimeImmutable($moment);
+            },
+        );
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+
+        $moment = '2026-11-20 09:00:00';
+        $journal->recordAChange('home/two.ics');
+        $journal->clean();
+
+        try {
+            $this->sync(token: $held, revisions: $journal);
+        } catch (Forbidden $refusal) {
+            self::assertSame(403, $refusal->status());
+            self::assertSame(self::VALID_SYNC_TOKEN, $refusal->errorElement());
+
+            return;
+        }
+
+        self::fail('A token older than the journal was answered from.');
+    }
+
+    /**
+     * **And a token made for another collection is refused by the same name**,
+     * however well formed it is: §3.2's precondition is "a valid token
+     * previously returned by the server **for the collection targeted by the
+     * request-URI**". A server that read the number out of somebody else's
+     * token would answer one collection's changes from another's state.
+     */
+    public function testATokenMadeForAnotherCollectionIsRefusedByName(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+
+        $journal->recordAChange('home/one.ics');
+
+        try {
+            $this->sync(token: (string) Token::for('elsewhere', 1), revisions: $journal);
+        } catch (Forbidden $refusal) {
+            self::assertSame(self::VALID_SYNC_TOKEN, $refusal->errorElement());
+
+            return;
+        }
+
+        self::fail('A token made for another collection was answered from.');
+    }
+
+    /**
      * The whole body, as §3.8's own example writes it.
      */
     public function testReadsABodyWrittenTheWayTheMemosExampleIs(): void
@@ -622,6 +957,14 @@ final class SyncCollectionTest extends TestCase
     /**
      * The token the answer carries.
      */
+    /**
+     * The token the home stands at now, as a client would have been handed it.
+     */
+    private function tokenOf(Journal $journal): string
+    {
+        return (string) Token::for('home', $journal->revisionOf('home'));
+    }
+
     private function tokenIn(string $body): string
     {
         if (preg_match('~<d:sync-token>([^<]+)</d:sync-token>~', $body, $found) !== 1) {

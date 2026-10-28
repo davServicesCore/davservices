@@ -13,18 +13,26 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Sync;
 
+use DavServices\Event\EventEmitter;
 use DavServices\Sync\IRevisions;
 
 /**
- * A store that says every collection is at the same change.
+ * A store that says every collection is at the same change and keeps no
+ * history at all.
  *
  * **Enough for the cases that are not about the seam.** What a report does
  * with a revision is the same whichever collection it came from, so a case
  * about the `Depth` header or about §6.1's body has no reason to describe a
  * history — and one that is about the state hands in a different number.
  *
- * {@see none()} is the other half: a collection this server tracks nothing
- * for, which RFC 6578 §4 has no property for and §3.2's report refuses.
+ * It is also the server RFC 6578 §3.2 describes among its reasons for
+ * invalidating a token — one "unable to maintain all of the change data for a
+ * collection" — so every token it is handed is refused and §3.1 has the client
+ * synchronise in full. {@see \DavServices\Sync\Journal} is the other half,
+ * and the cases about an answered token use that.
+ *
+ * {@see none()} is the third: a collection this server tracks nothing for,
+ * which §4 has no property for and §3.2's report refuses outright.
  */
 final class FixedRevisions implements IRevisions
 {
@@ -51,5 +59,21 @@ final class FixedRevisions implements IRevisions
     public function revisionOf(string $collection): ?int
     {
         return $this->revision;
+    }
+
+    /**
+     * Nothing is remembered, which §3.2 permits and §3.2's precondition is the
+     * honest answer to.
+     */
+    public function changesSince(int $revision, string $collection, int $depth): ?array
+    {
+        return null;
+    }
+
+    /**
+     * And a store that remembers nothing has nothing to hear.
+     */
+    public function keepTrack(EventEmitter $events): void
+    {
     }
 }
