@@ -44,6 +44,18 @@ use DavServices\Xml\Element;
  * emptied and its attributes kept, which is one rule in one sentence, so it
  * lives in one place — {@see \DavServices\Plugin\Notifications} — rather than
  * in every store that keeps notifications.
+ *
+ * ## One sentence of §4.2.1 is the store's to keep
+ *
+ * > COPY/MOVE behavior: This property value MUST be preserved in COPY and MOVE
+ * > operations.
+ *
+ * Because the kind comes from the node, a copy answers its own and the
+ * property cannot be lost on the way — as far as this library reaches. What it
+ * cannot do is make a store carry the kind over when it copies a notification:
+ * a store that dropped it would hand back a resource that is no longer a
+ * notification of anything. **That is this interface's half of the bargain**,
+ * said here because there is nowhere else to say it.
  */
 interface INotification
 {
