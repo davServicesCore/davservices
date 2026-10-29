@@ -169,10 +169,16 @@ final class MemoryShareTarget extends MemoryCollection implements IProperties, I
     private static function ownerSaying(string $href): Element
     {
         $owner = new Element('{DAV:}owner');
-        $names = new Element('{DAV:}href');
 
-        $names->appendText($href);
-        $owner->append($names);
+        // §5.1 makes the `DAV:href` optional — `<!ELEMENT owner (href?)>` —
+        // so an empty one is a calendar that has the property and says
+        // nobody with it.
+        if ($href !== '') {
+            $names = new Element('{DAV:}href');
+
+            $names->appendText($href);
+            $owner->append($names);
+        }
 
         return $owner;
     }

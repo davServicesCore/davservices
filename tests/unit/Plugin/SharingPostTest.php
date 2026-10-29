@@ -344,6 +344,41 @@ final class SharingPostTest extends TestCase
     }
 
     /**
+     * **And a calendar whose `DAV:owner` names nobody cannot be shared
+     * either.** RFC 3744 §5.1 makes the address optional —
+     * `<!ELEMENT owner (href?)>` — so the property can be there and say
+     * nothing, and a property that says nothing identifies nobody. §5.5.5
+     * asks for more than the property: it has to "provide a reference to a
+     * principal-URL of the sharer".
+     */
+    public function testACalendarWhoseOwnerNamesNobodyCannotBeShared(): void
+    {
+        $response = $this->share(
+            '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
+            new MemoryShareTarget('work', owner: ''),
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **Nor one owned on another server.** This server cannot establish that
+     * whoever is asking is a principal it does not host, and §5.5.5 wants "a
+     * principal-URL of the sharer" — so an address that
+     * {@see \DavServices\Dav\Server::pathOfUrl()} refuses as another
+     * server's names nobody here.
+     */
+    public function testACalendarOwnedOnAnotherServerCannotBeShared(): void
+    {
+        $response = $this->share(
+            '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
+            new MemoryShareTarget('work', owner: 'http://elsewhere.example.com/principals/alice/'),
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
      * **And somebody who is not the owner is refused**, which is the half
      * that makes the guard worth having: §5.3.2 gives the sharee list to "the
      * sharer of a shared calendar", and a `POST` reaches no seam that
@@ -695,6 +730,51 @@ final class SharingPostTest extends TestCase
         );
 
         self::assertStringContainsString('<cs:invite-noresponse/>', self::theOneNotificationIn($eric));
+    }
+
+    /**
+     * **A sharee on another server is written to nowhere**, and the change
+     * still happens: §5.3.2's "the sharee might not be a user on the same
+     * server" covers an address this server simply does not host, however it
+     * is spelt. {@see \DavServices\Dav\Server::pathOfUrl()} is what decides,
+     * by the same rule a `Destination` header is read with.
+     */
+    public function testAShareeOnAnotherServerIsWrittenToNowhere(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>http://elsewhere.example.com/principals/eric/</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * **And neither is one whose principal is not there at all.** §6.10 has
+     * an element for a sharee who "is not a valid calendar user known to the
+     * server", and it is the *store* that decides to use it: this server
+     * carries out what it was asked and finds nobody to write to.
+     */
+    public function testAShareeWhosePrincipalIsNotThereIsWrittenToNowhere(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>/principals/nobody/</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
     }
 
     /**
