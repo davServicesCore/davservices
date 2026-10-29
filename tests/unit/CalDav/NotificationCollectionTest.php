@@ -75,10 +75,16 @@ final class NotificationCollectionTest extends TestCase
      */
     public function testItCarriesWhatTheCollectionUnderneathAlreadyWas(): void
     {
-        $inner = NotificationCollection::of(new MemoryCollection('inner'));
+        // Three deep, because two would leave the list one item long,
+        // and a list of one cannot show that the whole list is kept.
+        $inner = NotificationCollection::of(NotificationCollection::of(new MemoryCollection('inner')));
 
         self::assertSame(
-            [NotificationCollection::NOTIFICATION, NotificationCollection::NOTIFICATION],
+            [
+                NotificationCollection::NOTIFICATION,
+                NotificationCollection::NOTIFICATION,
+                NotificationCollection::NOTIFICATION,
+            ],
             NotificationCollection::of($inner)->resourceTypes(),
         );
     }
@@ -112,6 +118,13 @@ final class NotificationCollectionTest extends TestCase
         $collection = NotificationCollection::of(new MemoryPropertyCollection('notifications'));
 
         self::assertInstanceOf(IProperties::class, $collection);
+
+        // Asked of the collection half as well, because the variant that
+        // keeps properties hands the store to its parent for everything
+        // else — a constructor that forgot to would answer properties and
+        // nothing at all about the collection.
+        self::assertSame('notifications', $collection->name());
+        self::assertSame([NotificationCollection::NOTIFICATION], $collection->resourceTypes());
         self::assertSame(['{DAV:}displayname'], $collection->propertyNames());
         self::assertSame(
             ['{DAV:}displayname' => 'Contacts'],
@@ -197,6 +210,10 @@ final class NotificationCollectionTest extends TestCase
         self::assertTrue($collection->hasChild('inside'));
         self::assertNull($collection->lastModified());
 
+        $home = (new MemoryCollection('home'))->add($store);
+
         $collection->delete();
+
+        self::assertFalse($home->hasChild('notifications'));
     }
 }

@@ -219,6 +219,11 @@ final class NotificationsTest extends TestCase
         $answer = (string) $this->propPatch($set, $path)->body();
 
         self::assertStringContainsString('cannot-modify-protected-property', $answer);
+
+        // **And with the status that goes with it**, RFC 4918 §16 having
+        // the condition answer a `403`. The name alone would leave a
+        // client told it may not write without being told it was refused.
+        self::assertStringContainsString('<d:status>HTTP/1.1 403 Forbidden</d:status>', $answer);
     }
 
     /**
