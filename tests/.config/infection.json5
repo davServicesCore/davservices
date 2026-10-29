@@ -113,6 +113,21 @@
                 "DavServices\\Backend\\File\\CalendarBackend::put",
             ]
         },
+        // **A worklist that only ever grows downwards has nothing left to do
+        // behind an exhausted entry.** The walk takes entries off the front
+        // and pushes each child collection back with one less depth, so every
+        // entry that has none left sits behind every entry that has some:
+        // when the first of them is reached, the rest of the queue is
+        // exhausted too, and leaving the loop does exactly what skipping each
+        // of them in turn does. Nothing a test can observe tells the two
+        // apart — and the `continue` stays because the end of a depth is a
+        // property of the entry rather than of the walk, which is what makes
+        // the level the request named decide what comes back.
+        "Continue_": {
+            "ignore": [
+                "DavServices\\Sync\\Report\\SyncCollection::membersUnder",
+            ]
+        },
         // **A time zone falls through the range either way, and the skip
         // says why it is skipped.** §9.6.5 has it that the components that
         // come back "MUST NOT […] include VTIMEZONE components", so
@@ -158,6 +173,15 @@
         "GreaterThan": {
             "ignore": [
                 "DavServices\\CalDav\\TimeRange::moved",
+                // **The mutant can only ever assign the number that is
+                // already there.** The walk starts at what the store has
+                // cleaned up to and keeps the highest revision it has seen;
+                // `>=` differs from `>` only for an entry whose revision
+                // equals the one being held, and the body then writes that
+                // same number back. No history — in any order, with any
+                // repetition — tells the two apart, so the comparison is
+                // there to say "a later one replaces it" and nothing else.
+                "DavServices\\Sync\\Journal::revisionOf",
             ]
         },
         "IncrementInteger": {
@@ -190,6 +214,17 @@
                 // a case, which is a test about this implementation rather than
                 // about the promise.
                 "DavServices\\Sync\\Token::keyOf",
+                // **Starting a relative name one character later cannot put a
+                // slash into it or take one out.** The guard asks whether
+                // what lies between the collection and the member holds a
+                // separator — `meeting.ics` does not, `inner/deep.ics` does —
+                // and the only character whose loss changes that answer is
+                // the separator itself, which would mean a member whose
+                // relative name begins with one. `Uri\Path::normalise()`
+                // makes no such path and the events that fill a journal carry
+                // no other kind, so killing this mutant would mean pinning a
+                // path the library refuses to address.
+                "DavServices\\Sync\\Journal::liesWithin",
             ]
         },
         // **The caret cannot change which form of a period is read.** RFC 5545

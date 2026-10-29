@@ -85,16 +85,35 @@ use DavServices\Sync\Token;
  * names in as many words, and announcing something of this library's own
  * invention would be telling a client about a word no memo gives a meaning.
  *
- * ## What is not here yet
+ * ## Where the history comes from
  *
- * **Nothing is reported as changed or removed**, because nothing records
- * changes. Every token a client hands back is refused with §3.2's
+ * §3.2's other duty is the one a client feels: "a server needs to keep track of
+ * changes to any member URLs and their mapped resources in a collection". That
+ * is the same seam's fourth answer — {@see IRevisions::keepTrack()} — and
+ * {@see register()} calls it, rather than leaving it to a deployment to
+ * remember. A history nothing writes to has no symptom: every token would be
+ * answered with "nothing has changed", and a client would believe it.
+ *
+ * A server handed {@see \DavServices\Sync\Journal} therefore reports changes
+ * and removals from the moment it is registered (R-SYNC-03, R-SYNC-05). One
+ * handed an `IRevisions` that keeps no history refuses every token with §3.2's
  * `DAV:valid-sync-token`, which is that section's own first reason for
  * invalidating one — "Servers might be unable to maintain all of the change
  * data for a collection due to storage or performance reasons" — and §3.1 has
- * the client fall back to a full synchronisation, which it does correctly here.
- * `Sync\Journal` (R-SYNC-03, R-SYNC-05) is what makes a token answerable, and
- * truncation (R-SYNC-04) is what makes a `DAV:limit` honourable.
+ * the client fall back to a full synchronisation, which it does correctly.
+ *
+ * ## What is not here yet
+ *
+ * **Truncation** (R-SYNC-04, §3.6), which is what would make a `DAV:limit`
+ * honourable; until then every limit is refused with §3.7's postcondition.
+ *
+ * **§3.3's `403` for a child collection that cannot be synchronised**, which
+ * §3.2 gives a shape of its own: "one DAV:status with a value set to '403
+ * Forbidden', a DAV:error containing DAV:supported-report or
+ * DAV:sync-traversal-supported". It is unreachable for a server with a
+ * journal — a journal knows the state of every collection it is asked about —
+ * and needs a walk that asks about each collection on the way down for one
+ * whose `IRevisions` answers for some collections and not others.
  */
 final class Sync
 {
@@ -144,6 +163,17 @@ final class Sync
         $events->on(PropertiesRequested::class, $this->describe(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
         $events->on(StateTokensRequested::class, $this->nameTheState(...));
+
+        // **And the fourth thing, which is §3.2's first sentence about what a
+        // server has to do:** "a server needs to keep track of changes to any
+        // member URLs and their mapped resources in a collection". Whatever
+        // answers where a collection is also hears it move
+        // ({@see IRevisions::keepTrack()}) — and wiring it here rather than
+        // leaving it to a deployment is what makes a history that nothing
+        // writes to impossible. That failure has no symptom: every token
+        // would be answered with "nothing has changed", and a client would
+        // believe it.
+        $this->revisions->keepTrack($events);
 
         $report->on(self::SYNC_COLLECTION, (new SyncCollection($this->server, $this->revisions))(...));
     }

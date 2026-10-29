@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Sync\Report;
 
+use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Property\Answers;
@@ -23,8 +24,10 @@ use DavServices\Dav\VisibleMembers;
 use DavServices\Exception\BadRequest;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\InsufficientStorage;
+use DavServices\Exception\NotFound;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
+use DavServices\Sync\Change;
 use DavServices\Sync\IRevisions;
 use DavServices\Sync\Token;
 use DavServices\Xml\Element;
@@ -78,14 +81,22 @@ use DavServices\Xml\MultiStatus;
  * member URLs. All types of member (collection or non-collection) MUST be
  * reported." That is the half a server can answer while keeping no history at
  * all, and §3.1 names it as both the first thing a client does and the thing it
- * falls back to.
+ * falls back to. **It is the tree and never the history**: a removal reported
+ * there would tell a client that something it has never heard of has gone.
  *
- * **A token is refused**, with §3.2's `DAV:valid-sync-token` precondition. The
- * first reason that section lists for invalidating one is this chunk's
- * situation exactly: "Servers might be unable to maintain all of the change
- * data for a collection due to storage or performance reasons." R-SYNC-03 and
- * `Sync\Journal` (P7-02) are what make a token answerable; until then a client
- * synchronises in full each time, which is slower and not wrong.
+ * **A subsequent synchronisation**, which §3.5 defines: the members that
+ * changed, with their properties, and the members that went, with a `404`.
+ * Which is which comes from {@see IRevisions::changesSince()} — and a server
+ * that keeps no history answers nothing there, which is §3.2's own first
+ * reason for refusing a token: "Servers might be unable to maintain all of the
+ * change data for a collection due to storage or performance reasons." Such a
+ * server synchronises its clients in full each time, which is slower and not
+ * wrong.
+ *
+ * **A token this server never made for this collection is refused**, with
+ * §3.2's `DAV:valid-sync-token` precondition read literally: "The
+ * DAV:sync-token element value MUST be a valid token previously returned by
+ * the server for the collection targeted by the request-URI."
  *
  * **A `DAV:limit` is refused**, with §3.7's postcondition, which is §3.12's own
  * example down to the status: "If a server is unable to truncate the result at
@@ -208,15 +219,13 @@ final class SyncCollection
             );
         }
 
-        $this->mustBeAStateItCanAnswer($asked, $path);
-
+        $held = $this->stateHeldBy($asked, $path);
         $report = new MultiStatus();
 
-        foreach ($this->membersUnder($path, $node, $depth) as $member => $child) {
-            $report->addProperties(
-                $this->server->hrefOf($member, $child),
-                Answers::about($this->server->events(), $member, $child, PropFindForm::Named, $names)->byStatus(),
-            );
+        if ($held === null) {
+            $this->describeEveryMember($report, $path, $node, $depth, $names);
+        } else {
+            $this->describeWhatChanged($report, $path, $held, $depth, $names);
         }
 
         $report->addSyncToken((string) Token::for($path, $revision));
@@ -293,16 +302,27 @@ final class SyncCollection
     }
 
     /**
-     * §3.2's precondition, for the token the client sent.
+     * Which state the client says it holds, or null where it holds none.
      *
      * **An empty element is no token and no violation**, §3.1 making it the
-     * request for a full listing. Anything else is a state this server cannot
-     * answer from, there being no journal yet (R-SYNC-03, P7-02).
+     * request for a full listing: "That is done by the client sending an empty
+     * token value to the server. This indicates to the server that a full
+     * listing is required."
+     *
+     * Anything else has to be a token this server made **for this
+     * collection**, which is §3.2's precondition read literally: "a valid
+     * token previously returned by the server for the collection targeted by
+     * the request-URI". {@see Token} carries both halves, so a token from
+     * another server, from another collection, or of no shape at all is
+     * refused here — and whether the state it names is one the history still
+     * reaches is {@see IRevisions::changesSince()}'s to say, that being where
+     * what has been forgotten is known.
      *
      * @throws BadRequest If the body carries no `DAV:sync-token` at all
-     * @throws Forbidden If it carries one this server cannot answer
+     * @throws Forbidden If it carries one this server never made for this
+     *                   collection
      */
-    private function mustBeAStateItCanAnswer(Element $asked, string $path): void
+    private function stateHeldBy(Element $asked, string $path): ?int
     {
         $element = $asked->child(self::TOKEN) ?? throw new BadRequest(
             'A DAV:sync-collection carries a DAV:sync-token, empty for a full synchronisation: RFC 6578 §6.1 and §3.1.',
@@ -310,15 +330,179 @@ final class SyncCollection
         $raw = $element->text();
 
         if ($raw === '') {
-            return;
+            return null;
         }
 
-        throw new Forbidden(
-            sprintf(
-                'This server keeps no change history yet, so "%s" is no state it can report from: the DAV:valid-sync-token precondition of RFC 6578 §3.2.',
-                $raw,
-            ),
+        $token = Token::of($raw);
+
+        if ($token === null || !$token->isFor($path)) {
+            throw new Forbidden(
+                sprintf(
+                    'No token this server returned for that collection reads "%s": the DAV:valid-sync-token precondition of RFC 6578 §3.2.',
+                    $raw,
+                ),
+                self::VALID_SYNC_TOKEN,
+            );
+        }
+
+        return $token->change();
+    }
+
+    /**
+     * §3.4's initial synchronisation: every member, and no removals.
+     *
+     * > The server MUST return all member URLs of the collection (taking
+     * > account of the DAV:sync-level XML element value as per Section 3.3, and
+     * > optional truncation of the result set as per Section 3.6) and it MUST
+     * > NOT return any removed member URLs. All types of member (collection or
+     * > non-collection) MUST be reported.
+     *
+     * **It is the tree and never the history**, however much of one this
+     * server keeps: a removal reported here would tell a client that something
+     * it has never heard of has gone.
+     *
+     * @param list<string> $names What the `DAV:prop` asked for
+     */
+    private function describeEveryMember(
+        MultiStatus $report,
+        string $path,
+        ICollection $node,
+        int $depth,
+        array $names,
+    ): void {
+        foreach ($this->membersUnder($path, $node, $depth) as $member => $child) {
+            $this->describe($report, $member, $child, $names);
+        }
+    }
+
+    /**
+     * §3.5's subsequent synchronisation: what has become of each member.
+     *
+     * **The history says which members are owed an answer, and the tree says
+     * what to say about each.** A removal needs nothing from the tree — §3.2
+     * gives it "one DAV:status with a value set to '404 Not Found'" and
+     * nothing else — so a client that deleted five hundred events is answered
+     * without five hundred lookups of what is no longer there.
+     *
+     * **Where the two disagree, the tree is right.** A member the history
+     * calls changed but the tree no longer holds is answered as removed: a
+     * `propstat` would send the client to fetch what is not there, and
+     * §3.5.2's first sentence is a MUST about the mapping rather than about
+     * the record of it.
+     *
+     * **Only the members that are still there are asked about** (R-ACL-06).
+     * Concealment keeps a client from being told that something exists, so it
+     * is asked of the things that do — §3.5.1's "A member URL MAY be reported
+     * as changed if the user issuing the request was granted access to this
+     * member URL" is the same question from the other side. A removal names a
+     * path and says only that nothing is there, which is what a `GET` would
+     * answer any client; §3.5.2 licenses it in as many words — "A member MAY
+     * be reported as removed if the user issuing the request no longer has
+     * access to this member" — and dropping one because its resource has gone
+     * would leave a client holding it for ever.
+     *
+     * @param int $held The state the client says it is in
+     * @param list<string> $names What the `DAV:prop` asked for
+     *
+     * @throws Forbidden If this server cannot report from that state (§3.2)
+     */
+    private function describeWhatChanged(
+        MultiStatus $report,
+        string $path,
+        int $held,
+        int $depth,
+        array $names,
+    ): void {
+        $changes = $this->revisions->changesSince($held, $path, $depth) ?? throw new Forbidden(
+            'This server keeps no change history, so no token it ever returned is a state it can report from: the DAV:valid-sync-token precondition of RFC 6578 §3.2.',
             self::VALID_SYNC_TOKEN,
+        );
+
+        $present = $this->whatIsStillThere($changes);
+        $listing = $this->server->events()->emit(new ListingMembers($path, array_keys($present)));
+        $visible = array_flip($listing->visible());
+
+        foreach ($changes as $member => $change) {
+            $child = $present[$member] ?? null;
+
+            if ($child === null) {
+                $report->addStatus($this->server->href($member), 404);
+
+                continue;
+            }
+
+            if (isset($visible[$member])) {
+                $this->describe($report, $member, $child, $names);
+            }
+        }
+    }
+
+    /**
+     * Which of the changed members the tree still holds, with their nodes.
+     *
+     * **Looked up before the concealment question rather than after**, because
+     * concealment is a question about what exists: a path with nothing behind
+     * it is one no resolver can answer about, and a member that has gone is
+     * answered by §3.2's `404` whatever the answer would have been. Asking
+     * first and looking up afterwards would have had the two rules decided by
+     * which `if` came first.
+     *
+     * A removal needs no lookup at all — §3.2 gives it a status and nothing
+     * else — so a client that deleted five hundred events costs five hundred
+     * fewer questions than it looks.
+     *
+     * @param array<string, Change> $changes
+     *
+     * @return array<string, INode>
+     */
+    private function whatIsStillThere(array $changes): array
+    {
+        $present = [];
+
+        foreach ($changes as $member => $change) {
+            if ($change !== Change::Changed) {
+                continue;
+            }
+
+            $child = $this->nodeAt($member);
+
+            if ($child !== null) {
+                $present[$member] = $child;
+            }
+        }
+
+        return $present;
+    }
+
+    /**
+     * The node at that path, or null where nothing is there any more.
+     */
+    private function nodeAt(string $member): ?INode
+    {
+        try {
+            return $this->server->tree()->node($member);
+        } catch (NotFound) {
+            return null;
+        }
+    }
+
+    /**
+     * One member that is there, with the properties the body named.
+     *
+     * §3.2: the response "MUST contain at least one DAV:propstat element and
+     * MUST NOT contain any DAV:status element". The properties come from
+     * {@see Answers}, which is also what puts a property nobody has at a
+     * `404` **inside** the `propstat` — and that distinction matters more here
+     * than anywhere else, §3.2 reserving a status on the *response* for a
+     * member that has gone.
+     *
+     * @param list<string> $names What the `DAV:prop` asked for
+     */
+    private function describe(MultiStatus $report, string $member, INode $child, array $names): void
+    {
+        $report->addProperties(
+            $this->server->hrefOf($member, $child),
+            Answers::about($this->server->events(), $member, $child, PropFindForm::Named, $names)->byStatus(),
         );
     }
 
@@ -370,10 +554,15 @@ final class SyncCollection
 
                 // §3.3: "all appropriate member URLs […] are reported, provided
                 // child collections themselves also support the
-                // DAV:sync-collection report." Which child collections do not
-                // is §3.3's own `403` case, and it arrives with the journal
-                // that can tell them apart (P7-02); until then every
-                // collection this server holds is walked.
+                // DAV:sync-collection report." A child collection that does
+                // not is §3.3's own `403` case, which is still to come: it is
+                // unreachable for a server with a journal, a journal knowing
+                // the state of every collection it is asked about, and for one
+                // whose `IRevisions` answers for some collections and not
+                // others it needs this walk to ask about each collection on
+                // the way down — and §3.3's "The 403 response MUST be sent
+                // once, when the collection is first reported to the client"
+                // decides when. Until then every collection here is walked.
                 if ($child instanceof ICollection) {
                     $pending[] = [$member, $child, $left - 1];
                 }
