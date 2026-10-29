@@ -15,17 +15,20 @@ namespace DavServices\Tests\Unit\CalDav;
 
 use DavServices\CalDav\IShareable;
 use DavServices\CalDav\Sharee;
-use DavServices\Dav\IResourceType;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 
 /**
  * A collection a calendar can be made of that knows about sharing.
  *
- * It is also an {@see IResourceType} because a store is usually both — it says
- * what it is *and* whom it is shared with — and because the two lists have to
- * be told apart where {@see \DavServices\CalDav\Calendar} puts them together.
+ * **And nothing else about itself**, which is the ordinary shape: a store that
+ * keeps events has no resource type of its own to declare, and
+ * {@see \DavServices\CalDav\Calendar} takes a shorter way through for one.
+ * {@see TypedShareable} is the other shape, and the two are kept apart because
+ * a mutation run on 29.10.2026 showed that shorter way able to return the
+ * first of its list rather than the list — which is where a derived
+ * `CS:shared-owner` would go missing.
  */
-final class MemoryShareable extends MemoryCollection implements IResourceType, IShareable
+class MemoryShareable extends MemoryCollection implements IShareable
 {
     /** @var list<Sharee> */
     private readonly array $sharees;
@@ -33,29 +36,16 @@ final class MemoryShareable extends MemoryCollection implements IResourceType, I
     /** @var list<string> */
     private readonly array $modes;
 
-    /** @var list<string> */
-    private readonly array $kinds;
-
     /**
      * @param list<Sharee> $sharees Whom this calendar is shared with
      * @param list<string> $modes What §5.2.3 allows on it
-     * @param list<string> $kinds What it was before any of this
      */
-    public function __construct(string $name, array $sharees = [], array $modes = [], array $kinds = [])
+    public function __construct(string $name, array $sharees = [], array $modes = [])
     {
         parent::__construct($name);
 
         $this->sharees = $sharees;
         $this->modes = $modes;
-        $this->kinds = $kinds;
-    }
-
-    /**
-     * @return list<string>
-     */
-    public function resourceTypes(): array
-    {
-        return $this->kinds;
     }
 
     /**

@@ -57,6 +57,26 @@ namespace DavServices\CalDav;
  * which is nearly every `PROPFIND`. A store for which the list is expensive
  * should keep it cheap to ask for.
  *
+ * ## Two sentences of §5.2 are the store's to keep
+ *
+ * §5.2.2 and §5.2.3 each end with the same one:
+ *
+ * > COPY/MOVE behavior: This property value MUST be preserved in COPY and MOVE
+ * > operations.
+ *
+ * Because both values come from the node at the path, a copy answers its own
+ * and neither property can be lost on the way out — as far as this library
+ * reaches. What it cannot do is make a store carry the sharee list and the
+ * allowed modes over when it copies or moves a calendar. A store that dropped
+ * the list on a `MOVE` would unshare a calendar by moving it, and the sharees
+ * would be told nothing, because §5.3.2 is the only thing that sends a
+ * notification. **That is this interface's half of the bargain**, said here
+ * because there is nowhere else to say it.
+ *
+ * Note what the sentence asks for on a `COPY`: the copy is shared with the
+ * same people. That is the memo's decision rather than this library's, and a
+ * store that keeps to it is granting those people access to the copy as well.
+ *
  * ## Publishing is named here and defined nowhere
  *
  * {@see CAN_BE_PUBLISHED} exists because §5.2.3's grammar admits it and

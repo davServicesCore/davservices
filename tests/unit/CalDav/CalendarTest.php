@@ -119,6 +119,12 @@ final class CalendarTest extends TestCase
      *
      * A server keeping the element as a second fact would have two answers to
      * one question and a way for them to drift apart. Derived, they cannot.
+     *
+     * **The store here says nothing about its own kind**, which is both the
+     * ordinary shape and the one a mutation run on 29.10.2026 found untested:
+     * such a store takes the shorter way out of `resourceTypes()`, and a
+     * version of it that returned the first of the list rather than the list
+     * dropped the element with nothing going red.
      */
     public function testACalendarWithAShareeSaysItIsSharedByItsOwner(): void
     {
@@ -180,11 +186,12 @@ final class CalendarTest extends TestCase
      */
     public function testTheSharedTypeComesBesideWhatTheStoreAlreadyWas(): void
     {
-        $calendar = Calendar::of(new MemoryShareable(
+        $calendar = Calendar::of(new TypedShareable(
             'work',
             [new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted)],
             [],
-            [self::ONE_OF_OURS, self::ANOTHER_OF_OURS],
+            self::ONE_OF_OURS,
+            self::ANOTHER_OF_OURS,
         ));
 
         self::assertSame(
