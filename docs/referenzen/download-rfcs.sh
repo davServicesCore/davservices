@@ -55,6 +55,7 @@ done <<'LIST'
 2426|vCard 3.0
 2425|MIME Directory Profile
 6578|Collection Synchronization
+5323|SEARCH (DASL) — definiert DAV:limit und die 507-Gestalt
 6764|Diensterkennung
 8615|Well-Known URIs
 4331|Quota and Size Properties

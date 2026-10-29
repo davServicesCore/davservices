@@ -24,6 +24,7 @@ use DavServices\Event\EventEmitter;
 use DavServices\Event\IEvent;
 use DavServices\Exception\Forbidden;
 use DavServices\Sync\Change;
+use DavServices\Sync\Changes;
 use DavServices\Sync\Journal;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -91,6 +92,7 @@ use PHPUnit\Framework\TestCase;
  */
 #[CoversClass(Journal::class)]
 #[CoversClass(Change::class)]
+#[CoversClass(Changes::class)]
 final class JournalTest extends TestCase
 {
     private const COLLECTION = 'calendars/work';
@@ -111,7 +113,7 @@ final class JournalTest extends TestCase
 
         self::assertSame(
             [self::COLLECTION . '/meeting.ics' => Change::Changed],
-            $journal->changesSince($before, self::COLLECTION, 1),
+            $journal->changesSince($before, self::COLLECTION, 1)->members(),
         );
     }
 
@@ -129,7 +131,7 @@ final class JournalTest extends TestCase
 
         self::assertSame(
             [self::COLLECTION . '/meeting.ics' => Change::Removed],
-            $journal->changesSince($before, self::COLLECTION, 1),
+            $journal->changesSince($before, self::COLLECTION, 1)->members(),
         );
     }
 
@@ -155,7 +157,10 @@ final class JournalTest extends TestCase
             $kind === 'changed' ? $journal->recordAChange($member) : $journal->recordARemoval($member);
         }
 
-        self::assertSame([$member => $reported], $journal->changesSince($before, self::COLLECTION, 1));
+        self::assertSame(
+            [$member => $reported],
+            $journal->changesSince($before, self::COLLECTION, 1)->members(),
+        );
     }
 
     /**
@@ -186,7 +191,7 @@ final class JournalTest extends TestCase
         $journal->recordARemoval($member);
         $journal->recordAChange($member);
 
-        self::assertCount(1, $journal->changesSince($before, self::COLLECTION, 1));
+        self::assertCount(1, $journal->changesSince($before, self::COLLECTION, 1)->members());
     }
 
     /**
@@ -214,7 +219,7 @@ final class JournalTest extends TestCase
                 'calendars/home/lunch.ics' => Change::Changed,
                 'calendars/work' => Change::Removed,
             ],
-            $journal->changesSince($before, 'calendars', Journal::EVERY_DEPTH),
+            $journal->changesSince($before, 'calendars', Journal::EVERY_DEPTH)->members(),
         );
     }
 
@@ -237,7 +242,7 @@ final class JournalTest extends TestCase
                 'calendars/work' => Change::Changed,
                 'calendars/work/meeting.ics' => Change::Changed,
             ],
-            $journal->changesSince($before, 'calendars', Journal::EVERY_DEPTH),
+            $journal->changesSince($before, 'calendars', Journal::EVERY_DEPTH)->members(),
         );
     }
 
@@ -260,7 +265,10 @@ final class JournalTest extends TestCase
         $journal->recordAChange(self::COLLECTION . '/inner/deep.ics');
         $journal->recordAChange(self::COLLECTION . '/inner/deeper/bottom.ics');
 
-        self::assertSame($reported, array_keys($journal->changesSince($before, self::COLLECTION, $depth)));
+        self::assertSame(
+            $reported,
+            array_keys($journal->changesSince($before, self::COLLECTION, $depth)->members()),
+        );
     }
 
     /**
@@ -296,7 +304,7 @@ final class JournalTest extends TestCase
 
         self::assertSame(
             [self::COLLECTION . '/meeting.ics'],
-            array_keys($journal->changesSince($before, self::COLLECTION, Journal::EVERY_DEPTH)),
+            array_keys($journal->changesSince($before, self::COLLECTION, Journal::EVERY_DEPTH)->members()),
         );
     }
 
@@ -312,7 +320,7 @@ final class JournalTest extends TestCase
 
         $journal->recordAChange('calendars/work2/meeting.ics');
 
-        self::assertSame([], $journal->changesSince($before, self::COLLECTION, Journal::EVERY_DEPTH));
+        self::assertSame([], $journal->changesSince($before, self::COLLECTION, Journal::EVERY_DEPTH)->members());
     }
 
     /**
@@ -328,7 +336,7 @@ final class JournalTest extends TestCase
 
         $journal->recordAChange(self::COLLECTION);
 
-        self::assertSame([], $journal->changesSince($before, self::COLLECTION, Journal::EVERY_DEPTH));
+        self::assertSame([], $journal->changesSince($before, self::COLLECTION, Journal::EVERY_DEPTH)->members());
     }
 
     /**
@@ -364,6 +372,195 @@ final class JournalTest extends TestCase
     }
 
     /**
+     * **An answer that was not cut short covers the collection's current
+     * state, and that is §4 rather than convenience.** The property says "the
+     * value of the synchronization token as it would be returned by a
+     * DAV:sync-collection report on that resource at the same point in time",
+     * so the token of a complete answer is where the collection stands — not
+     * where its last *reported* change stands.
+     *
+     * The two differ, and this case is built on the difference: a change
+     * deeper than the level asked for moves the collection on without
+     * appearing in the answer. §3.3 settles which of the two the token is —
+     * "DAV:sync-token values returned by the server are not specific to the
+     * value of the DAV:sync-level XML element".
+     */
+    public function testAnAnswerThatFitsCoversTheCollectionsCurrentState(): void
+    {
+        $journal = $this->journal();
+        $before = $journal->revisionOf(self::COLLECTION);
+
+        $journal->recordAChange(self::COLLECTION . '/meeting.ics');
+        $journal->recordAChange(self::COLLECTION . '/inner/deeper.ics');
+
+        $answer = $journal->changesSince($before, self::COLLECTION, 1);
+
+        self::assertSame([self::COLLECTION . '/meeting.ics'], array_keys($answer->members()));
+        self::assertFalse($answer->wasCutShort());
+        self::assertSame($journal->revisionOf(self::COLLECTION), $answer->upTo());
+    }
+
+    /**
+     * **§3.6's own example, at the journal.** "Assume the last DAV:sync-token
+     * used by the client was 'http://example.com/sync/10', and since then 15
+     * additional changes to different resources have occurred. […] if the
+     * server chooses to limit responses to at most 10 changes, then it would
+     * return only 10 DAV:response elements and a DAV:sync-token with value
+     * 'http://example.com/sync/20'."
+     *
+     * The numbers are the memo's because the store counts the way the memo's
+     * example does — one revision per entry, each greater than the last
+     * ({@see \DavServices\Sync\IJournalBackend::append()}). So ten changes
+     * reach revision 10, fifteen more reach 25, and a page of ten ends at 20.
+     */
+    public function testAnAnswerCutShortCoversOnlyTheChangesItCarries(): void
+    {
+        $journal = $this->journal();
+
+        for ($i = 1; $i <= 10; ++$i) {
+            $journal->recordAChange(self::COLLECTION . '/before-' . $i . '.ics');
+        }
+
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        for ($i = 1; $i <= 15; ++$i) {
+            $journal->recordAChange(self::COLLECTION . '/after-' . $i . '.ics');
+        }
+
+        $answer = $journal->changesSince($held, self::COLLECTION, 1, 10);
+
+        self::assertSame(10, $held);
+        self::assertCount(10, $answer->members());
+        self::assertTrue($answer->wasCutShort());
+        self::assertSame(20, $answer->upTo());
+    }
+
+    /**
+     * **And the rest comes back with the token that was handed over**, which
+     * is what the state it covers is for: "That allows the client to use the
+     * returned DAV:sync-token to fetch the next set of changes. In this way,
+     * the client can effectively 'page' through the entire set of changes in a
+     * consistent manner."
+     */
+    public function testWhatWasCutShortIsWhatTheNextAskingBringsBack(): void
+    {
+        $journal = $this->journal();
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        for ($i = 1; $i <= 15; ++$i) {
+            $journal->recordAChange(self::COLLECTION . '/after-' . $i . '.ics');
+        }
+
+        $first = $journal->changesSince($held, self::COLLECTION, 1, 10);
+        $rest = $journal->changesSince($first->upTo(), self::COLLECTION, 1, 10);
+
+        self::assertCount(5, $rest->members());
+        self::assertFalse($rest->wasCutShort());
+        self::assertSame([], array_intersect(array_keys($first->members()), array_keys($rest->members())));
+    }
+
+    /**
+     * **A page is the oldest changes and not any subset**, and that is forced
+     * rather than chosen. RFC 5323 §2.3.1 would allow any: "the partial
+     * results returned MAY be any subset of the result set that would have
+     * satisfied the original query." RFC 6578 §3.6 takes that back, because
+     * the token has to describe the page — "the DAV:sync-token value returned
+     * in the response MUST represent the correct state for the partial set of
+     * changes returned" — and no single revision describes a page with a hole
+     * in it.
+     *
+     * So a member that changed again belongs where it changed **last**, and
+     * the page that does not reach it leaves it out whole.
+     */
+    public function testThePageIsTheOldestChangesAndNotAnySubset(): void
+    {
+        $journal = $this->journal();
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        $journal->recordAChange(self::COLLECTION . '/one.ics');
+        $journal->recordAChange(self::COLLECTION . '/two.ics');
+        $journal->recordAChange(self::COLLECTION . '/one.ics');
+
+        $first = $journal->changesSince($held, self::COLLECTION, 1, 1);
+
+        self::assertSame([self::COLLECTION . '/two.ics'], array_keys($first->members()));
+        self::assertSame(2, $first->upTo());
+        self::assertSame(
+            [self::COLLECTION . '/one.ics'],
+            array_keys($journal->changesSince($first->upTo(), self::COLLECTION, 1, 1)->members()),
+        );
+    }
+
+    /**
+     * **A page of nothing covers the state the client already held.** §5.17 of
+     * RFC 5323 has `DAV:nresults` as "a requested maximum number of
+     * DAV:response elements" and its value as an unsigned integer, so nothing
+     * is a number a client may ask for — and §3.6's rule then answers itself:
+     * the state of an empty page is where the client was.
+     *
+     * It makes no progress, and that is the client's own doing rather than a
+     * refusal this server may make: §3.7 fails a request only where the server
+     * "is unable to truncate the result at or below the requested number", and
+     * nothing is at or below nothing.
+     */
+    public function testALimitOfNothingCoversTheStateTheClientAlreadyHeld(): void
+    {
+        $journal = $this->journal();
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        $journal->recordAChange(self::COLLECTION . '/one.ics');
+
+        $answer = $journal->changesSince($held, self::COLLECTION, 1, 0);
+
+        self::assertSame([], $answer->members());
+        self::assertTrue($answer->wasCutShort());
+        self::assertSame($held, $answer->upTo());
+    }
+
+    /**
+     * A limit beyond the changes cuts nothing, and the answer says so: §3.6's
+     * `507` is for a result set that "is truncated", which this one is not.
+     */
+    public function testALimitBeyondTheChangesCutsNothing(): void
+    {
+        $journal = $this->journal();
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        $journal->recordAChange(self::COLLECTION . '/one.ics');
+
+        $answer = $journal->changesSince($held, self::COLLECTION, 1, 1000);
+
+        self::assertCount(1, $answer->members());
+        self::assertFalse($answer->wasCutShort());
+    }
+
+    /**
+     * **And an answer that fills the limit exactly was not cut short**, which
+     * is the boundary §3.6 draws by its own words: the `507` and the partial
+     * token are for a result set that "is truncated", and one that carries
+     * every change there was is not truncated by fitting.
+     *
+     * The difference shows twice over. A client told there was more would come
+     * back for nothing — and it would come back with a token naming the last
+     * change rather than the collection, which is a state behind where the
+     * collection stands.
+     */
+    public function testAnAnswerThatFillsTheLimitExactlyIsNotCutShort(): void
+    {
+        $journal = $this->journal();
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        $journal->recordAChange(self::COLLECTION . '/one.ics');
+        $journal->recordAChange(self::COLLECTION . '/two.ics');
+
+        $answer = $journal->changesSince($held, self::COLLECTION, 1, 2);
+
+        self::assertCount(2, $answer->members());
+        self::assertFalse($answer->wasCutShort());
+        self::assertSame($journal->revisionOf(self::COLLECTION), $answer->upTo());
+    }
+
+    /**
      * **§3.2's other duty, the one a client feels:** "a server needs to keep
      * track of changes to any member URLs and their mapped resources in a
      * collection […] This includes noting the addition of new member URLs, the
@@ -396,7 +593,10 @@ final class JournalTest extends TestCase
         $journal->keepTrack($events);
         $events->emit($happened);
 
-        self::assertSame([$member => $recorded], $journal->changesSince($before, self::COLLECTION, 1));
+        self::assertSame(
+            [$member => $recorded],
+            $journal->changesSince($before, self::COLLECTION, 1)->members(),
+        );
     }
 
     /**
@@ -454,7 +654,7 @@ final class JournalTest extends TestCase
 
         self::assertSame(
             [self::COLLECTION . '/meeting.ics' => Change::Changed],
-            $journal->changesSince($before, self::COLLECTION, 1),
+            $journal->changesSince($before, self::COLLECTION, 1)->members(),
         );
     }
 
@@ -535,7 +735,7 @@ final class JournalTest extends TestCase
 
         self::assertSame(
             [self::COLLECTION . '/meeting.ics' => Change::Changed],
-            $journal->changesSince($before, self::COLLECTION, 1),
+            $journal->changesSince($before, self::COLLECTION, 1)->members(),
         );
     }
 
@@ -574,7 +774,7 @@ final class JournalTest extends TestCase
         $journal->clean();
         $journal->clean();
 
-        self::assertCount(1, $journal->changesSince($before, self::COLLECTION, 1));
+        self::assertCount(1, $journal->changesSince($before, self::COLLECTION, 1)->members());
     }
 
     /**
@@ -593,7 +793,7 @@ final class JournalTest extends TestCase
 
         self::assertSame(
             [],
-            $journal->changesSince($journal->revisionOf(self::COLLECTION), self::COLLECTION, 1),
+            $journal->changesSince($journal->revisionOf(self::COLLECTION), self::COLLECTION, 1)->members(),
         );
     }
 

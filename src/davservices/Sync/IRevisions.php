@@ -72,6 +72,14 @@ use DavServices\Exception\Forbidden;
 interface IRevisions
 {
     /**
+     * No limit on how many members an answer may name.
+     *
+     * §3.6's limiting is a MAY, so this is what a server that does not take
+     * the offer asks for.
+     */
+    public const EVERYTHING = PHP_INT_MAX;
+
+    /**
      * Which change this collection is at, or null where none is tracked.
      *
      * **Null is not an error and not zero.** A collection this server keeps no
@@ -112,20 +120,39 @@ interface IRevisions
      * collection is removed, the server MUST NOT report the removal of any
      * members of the removed collection."
      *
+     * **However many were asked for, and no more** (§3.6, R-SYNC-04). The cut
+     * is made here rather than by the caller because this is where the history
+     * is: a store asked for ten changes out of a million need not carry the
+     * million across the seam first. What comes back then says which state it
+     * covers, so that asking again with it brings back exactly what was left
+     * out — see {@see Changes}.
+     *
      * @param int $revision The state the client holds
      * @param string $collection The collection's path inside the tree
      * @param int $depth §3.3's level: 1 for the immediate children,
      *                   {@see Journal::EVERY_DEPTH} for every depth. The
      *                   collection itself is never one of its own members
+     * @param int $atMost How many members the answer may name, or
+     *                    {@see EVERYTHING} for no limit. **A default that is
+     *                    simply true rather than one that hides a wiring
+     *                    error:** §3.6 has the limiting as a MAY ("A server
+     *                    MAY limit the number of member URLs in a response"),
+     *                    so a store that answers everything is a conforming
+     *                    store
      *
      * @throws Forbidden If the revision is one this server can no longer
      *                   report from, or never handed out: §3.2's
      *                   `DAV:valid-sync-token`
      *
-     * @return array<string, Change>|null What became of each member, by path,
-     *                                    in the order it happened
+     * @return Changes|null What became of each member, and which state that
+     *                      answers for
      */
-    public function changesSince(int $revision, string $collection, int $depth): ?array;
+    public function changesSince(
+        int $revision,
+        string $collection,
+        int $depth,
+        int $atMost = self::EVERYTHING,
+    ): ?Changes;
 
     /**
      * Hears what the server does, so that there is a history to answer from.

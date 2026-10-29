@@ -98,17 +98,21 @@ use DavServices\Xml\MultiStatus;
  * DAV:sync-token element value MUST be a valid token previously returned by
  * the server for the collection targeted by the request-URI."
  *
- * **A `DAV:limit` is refused**, with §3.7's postcondition, which is §3.12's own
- * example down to the status: "If a server is unable to truncate the result at
- * or below the requested number, then it MUST fail the request with a
- * DAV:number-of-matches-within-limits postcondition error." Honouring a limit
- * means truncating, and truncation is §3.6 — R-SYNC-04, P7-03.
+ * **An answer may be cut short**, which is §3.6 and R-SYNC-04: the page, a
+ * token naming the state that page covers, and one more `DAV:response` saying
+ * `507` about the collection itself. Both of §3.6's causes are served — the
+ * client's `DAV:limit` and this server's own number — and the smaller of the
+ * two decides, since an answer at or below both satisfies each.
  *
- * **Every limit is refused, including one this answer would fit inside.** §3.7
- * asks whether the server can truncate, not whether a particular answer is
- * short enough; a server that accepted the easy ones would answer the same
- * request differently depending on how much happened to be in the collection,
- * and a client could not tell which it had been given.
+ * **A first synchronisation is the one answer that cannot be cut**, and §3.6's
+ * own rule about the token is why: no `DAV:sync-token` names part of a
+ * listing, so there would be nothing for the client to come back with. A
+ * `DAV:limit` on one is therefore refused with §3.7's postcondition —
+ * "If a server is unable to truncate the result at or below the requested
+ * number, then it MUST fail the request with a
+ * DAV:number-of-matches-within-limits postcondition error" — which is the very
+ * case that sentence is for. {@see mustNotCutAFirstListing()} has the whole
+ * argument, including what a cursor would cost.
  *
  * ## Which collections can be synchronised
  *
@@ -150,6 +154,8 @@ final class SyncCollection
 
     private const LIMIT = '{DAV:}limit';
 
+    private const NRESULTS = '{DAV:}nresults';
+
     private const PROP = '{DAV:}prop';
 
     private const VALID_SYNC_TOKEN = '{DAV:}valid-sync-token';
@@ -180,6 +186,7 @@ final class SyncCollection
     public function __construct(
         private readonly Server $server,
         private readonly IRevisions $revisions,
+        private readonly int $atMost = IRevisions::EVERYTHING,
     ) {
     }
 
@@ -208,8 +215,6 @@ final class SyncCollection
         $depth = self::levelIn($asked);
         $names = self::namesIn($asked);
 
-        $this->mustNotAskForALimit($asked);
-
         $revision = $this->revisions->revisionOf($path);
 
         if ($revision === null) {
@@ -219,18 +224,54 @@ final class SyncCollection
             );
         }
 
+        // **The token is asked about before the limit is**, because §3.2's
+        // `DAV:valid-sync-token` is a *precondition* and §3.7's
+        // `DAV:number-of-matches-within-limits` a *postcondition*: one is
+        // about whether the request can be acted on at all, the other about
+        // what came of acting on it. A client holding a token this server
+        // cannot answer is owed that answer whatever else its body asked for.
         $held = $this->stateHeldBy($asked, $path);
         $report = new MultiStatus();
 
         if ($held === null) {
+            $this->mustNotCutAFirstListing($asked);
             $this->describeEveryMember($report, $path, $node, $depth, $names);
-        } else {
-            $this->describeWhatChanged($report, $path, $held, $depth, $names);
+            $report->addSyncToken((string) Token::for($path, $revision));
+
+            return self::sent($report, $this->server);
         }
 
-        $report->addSyncToken((string) Token::for($path, $revision));
+        $changed = $this->revisions->changesSince(
+            $held,
+            $path,
+            $depth,
+            $this->limitIn($asked),
+        ) ?? throw new Forbidden(
+            'This server keeps no change history, so no token it ever returned is a state it can report from: the DAV:valid-sync-token precondition of RFC 6578 §3.2.',
+            self::VALID_SYNC_TOKEN,
+        );
 
-        return (new Response(207, body: $this->server->writer()->write($report->toElement())))
+        $this->describeWhatChanged($report, $path, $changed->members(), $names);
+
+        // §3.6: "the DAV:sync-token value returned in the response MUST
+        // represent the correct state for the partial set of changes
+        // returned." Which state that is, is the one place that knows both
+        // the changes and where they stop — see {@see Changes}.
+        $report->addSyncToken((string) Token::for($path, $changed->upTo()));
+
+        if ($changed->wasCutShort()) {
+            $this->sayThereWasMore($report, $path, $node);
+        }
+
+        return self::sent($report, $this->server);
+    }
+
+    /**
+     * The document, as §3.2 asks for it: a `207` carrying a `DAV:multistatus`.
+     */
+    private static function sent(MultiStatus $report, Server $server): Response
+    {
+        return (new Response(207, body: $server->writer()->write($report->toElement())))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');
     }
 
@@ -285,19 +326,114 @@ final class SyncCollection
     }
 
     /**
-     * §3.7's postcondition.
+     * §3.7's postcondition, for the one answer that cannot be cut.
      *
-     * @throws InsufficientStorage If the body asks for a limit
+     * **A first listing is the tree and not the history**, and §3.6's rule
+     * about the token is what makes it uncuttable: "the DAV:sync-token value
+     * returned in the response MUST represent the correct state for the
+     * partial set of changes returned." For a page of *changes* a revision
+     * says that exactly. For the first ten of sixty members there is no such
+     * revision — a token naming the state would bring back only what has
+     * changed since, and the other fifty would never be mentioned again. The
+     * client would be left believing it had the collection.
+     *
+     * A cursor in the token would answer it, §3.2 letting a server put what it
+     * likes in one, but a cursor into a listing needs the listing to come back
+     * in the same order next time, and {@see ICollection::children()} promises
+     * no order at all. **A paging that rests on a promise nobody made is worse
+     * than a refusal**, because it loses members quietly.
+     *
+     * So this server is "unable to truncate the result at or below the
+     * requested number", which is the very case §3.7 names, and it fails the
+     * request the way that sentence says to. Its own limit it simply does not
+     * apply here: §3.6's limiting is a MAY, and §3.4's "the server MUST return
+     * all member URLs of the collection" is then answered whole.
+     *
+     * @throws InsufficientStorage If a first listing is asked to be cut short
      */
-    private function mustNotAskForALimit(Element $asked): void
+    private function mustNotCutAFirstListing(Element $asked): void
     {
         if ($asked->child(self::LIMIT) === null) {
             return;
         }
 
         throw new InsufficientStorage(
-            'This server cannot truncate a synchronisation answer, so it cannot hold one to a DAV:limit: the DAV:number-of-matches-within-limits postcondition of RFC 6578 §3.7.',
+            'A first synchronisation answers the collection rather than its history, and no DAV:sync-token names part of a listing, so this server cannot hold one to a DAV:limit: the DAV:number-of-matches-within-limits postcondition of RFC 6578 §3.7.',
             self::WITHIN_LIMITS,
+        );
+    }
+
+    /**
+     * How many members an answer may name: the smaller of the two limits.
+     *
+     * **Both are real, and §3.6 names both causes** — a server limits "to
+     * limit the amount of work expended in processing a request, or as the
+     * result of an explicit limit set by the client". The client's binds
+     * because §3.7 has the server fail what it cannot hold "at or below the
+     * requested number"; this server's binds because that limiting is its own
+     * MAY. An answer at or below both satisfies each.
+     *
+     * **`DAV:limit` is read as the grammar that defines it.** RFC 5323 §5.17:
+     * `<!ELEMENT limit (nresults) >` and
+     * `<!ELEMENT nresults (#PCDATA)> <!-- only digits -->`, with "The value of
+     * this element is an unsigned integer". A body that says something else is
+     * one this server will not guess a number out of.
+     *
+     * **And §5.17's "The server MAY disregard this limit" does not reach
+     * here.** RFC 6578 §3.7 takes that offer back for this report: a server
+     * either holds the answer to the number or fails the request by name.
+     *
+     * @throws BadRequest If the `DAV:limit` is not one §5.17 defines
+     */
+    private function limitIn(Element $asked): int
+    {
+        $limit = $asked->child(self::LIMIT);
+
+        if ($limit === null) {
+            return $this->atMost;
+        }
+
+        $wanted = $limit->child(self::NRESULTS)?->text() ?? throw new BadRequest(
+            'A DAV:limit carries a DAV:nresults: RFC 5323 §5.17 has it as "limit (nresults)".',
+        );
+
+        if (preg_match('~^[0-9]+$~', $wanted) !== 1) {
+            throw new BadRequest(sprintf(
+                'A DAV:nresults is an unsigned integer (RFC 5323 §5.17), not "%s".',
+                $wanted,
+            ));
+        }
+
+        return min($this->atMost, (int) $wanted);
+    }
+
+    /**
+     * §3.6's word for the collection when its answer was cut short.
+     *
+     * > If the result set is truncated, the response MUST use status code 207
+     * > (Multi-Status), return a DAV:multistatus response body, and indicate a
+     * > status of 507 (Insufficient Storage) for the request-URI. That
+     * > DAV:response element SHOULD include a DAV:error element with the
+     * > DAV:number-of-matches-within-limits precondition.
+     *
+     * The collection stands where RFC 5323 §2.3.1 — the section §3.6 is built
+     * on — puts the search arbiter: it is what the client asked about. It is
+     * named with its trailing slash, RFC 4918 §5.2 asking for one wherever a
+     * server produces the URL of a collection.
+     *
+     * **This response is one more and not one of the limited ones**, which
+     * §3.6's example settles: the server returns "only 10 DAV:response
+     * elements […] together with an additional DAV:response element for the
+     * request-URI with a status code of 507". Counting it would quietly make
+     * every page one change shorter than the client asked for.
+     */
+    private function sayThereWasMore(MultiStatus $report, string $path, ICollection $node): void
+    {
+        $report->addStatus(
+            $this->server->hrefOf($path, $node),
+            507,
+            self::WITHIN_LIMITS,
+            'There is more than this answer carries: ask again with the DAV:sync-token it gave you.',
         );
     }
 
@@ -401,23 +537,16 @@ final class SyncCollection
      * access to this member" — and dropping one because its resource has gone
      * would leave a client holding it for ever.
      *
-     * @param int $held The state the client says it is in
+     * @param array<string, Change> $changes What became of each member, as
+     *                                       much of it as this answer carries
      * @param list<string> $names What the `DAV:prop` asked for
-     *
-     * @throws Forbidden If this server cannot report from that state (§3.2)
      */
     private function describeWhatChanged(
         MultiStatus $report,
         string $path,
-        int $held,
-        int $depth,
+        array $changes,
         array $names,
     ): void {
-        $changes = $this->revisions->changesSince($held, $path, $depth) ?? throw new Forbidden(
-            'This server keeps no change history, so no token it ever returned is a state it can report from: the DAV:valid-sync-token precondition of RFC 6578 §3.2.',
-            self::VALID_SYNC_TOKEN,
-        );
-
         $present = $this->whatIsStillThere($changes);
         $listing = $this->server->events()->emit(new ListingMembers($path, array_keys($present)));
         $visible = array_flip($listing->visible());
@@ -517,10 +646,12 @@ final class SyncCollection
      * read, and a list of what is still to do is that shape.
      *
      * **And it hands back what it found rather than yielding it**, because
-     * nothing here stops early: a `DAV:limit` is refused outright (§3.7), and
-     * §3.2 wants a response for every member URL. A generator whose laziness
-     * nobody uses is an array that is harder to read — and P7-03's truncation,
-     * which *will* stop early, can ask for laziness back when it has a reason.
+     * nothing here stops early. The truncation that *does* stop early never
+     * reaches this walk: a first listing is the one answer that cannot be cut
+     * ({@see mustNotCutAFirstListing()}), and a page of changes is cut where
+     * the changes are. So the laziness this shape gave up is still laziness
+     * nobody wants, and a generator whose laziness nobody uses is an array
+     * that is harder to read.
      *
      * Both shapes also happen to be the ones that do not crash the measuring
      * device: Xdebug's branch coverage segfaulted on this walk while it was a
