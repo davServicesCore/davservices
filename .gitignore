@@ -27,9 +27,11 @@ composer.lock
 # bin/build-manifest.php writes this into the repository root during a release.
 /MANIFEST.json
 
-# docs/referenzen/download-rfcs.sh fetches 26 specification texts on demand.
-# The PDFs next to it are committed; the plain-text copies are not.
+# docs/referenzen/download-rfcs.sh fetches 27 specification texts on demand,
+# and download-extensions.sh the vendor documents that have no RFC. The PDFs
+# next to them are committed; the plain-text copies are not.
 /docs/referenzen/rfc/
+/docs/referenzen/extensions/
 
 # The example server keeps what somebody stored in it while trying the
 # library out. None of it belongs to the project.
