@@ -36,6 +36,7 @@ use DavServices\Sync\Journal;
 use DavServices\Sync\Token;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Dav\MemoryPropertyCollection;
 use DavServices\Tests\Unit\Sync\FixedRevisions;
 use DavServices\Tests\Unit\Sync\MemoryJournalBackend;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -601,6 +602,38 @@ final class SyncTest extends TestCase
     }
 
     /**
+     * **And nothing else is protected here**, which is the half that says what
+     * the two guards above are *for*. §4 protects its token and §4.1 of the
+     * extension protects the tag; every other property on a calendar belongs
+     * to whoever keeps it.
+     *
+     * Without this case a plugin that refused **every** `PROPPATCH` would pass
+     * all of the above and make a calendar unwritable — which is what the
+     * mutation round demonstrated: `$a === X || $a === Y` negated to
+     * `!($a === X) || !($a === Y)` is true for every name, since no name is
+     * both.
+     */
+    public function testNoOtherPropertyIsProtectedHere(): void
+    {
+        $server = $this->server();
+
+        $this->plugin($server)->register(new Report($server));
+
+        $answer = (string) $server->handle(new Request(
+            'PROPPATCH',
+            self::CALENDAR,
+            headers: new Headers(['Content-Type' => 'application/xml']),
+            body: new Body(
+                '<propertyupdate xmlns="DAV:"><set><prop><displayname>Work</displayname></prop></set>'
+                . '</propertyupdate>',
+            ),
+        ))->body();
+
+        self::assertStringNotContainsString('cannot-modify-protected-property', $answer);
+        self::assertStringContainsString('200 OK', $answer);
+    }
+
+    /**
      * **§4.1, the sentence that asks for more than monotonicity:** "each
      * change MUST result in a value that is different from any other used with
      * that collection URI." Not merely different from the one before — unique
@@ -828,7 +861,7 @@ final class SyncTest extends TestCase
     private function server(): Server
     {
         $home = (new MemoryCollection('home'))->add(new MemoryFile('one.ics', 'BEGIN:VCALENDAR'));
-        $calendar = Calendar::of((new MemoryCollection('calendar'))->add(
+        $calendar = Calendar::of((new MemoryPropertyCollection('calendar'))->add(
             new MemoryFile('kept.ics', 'BEGIN:VCALENDAR'),
         ));
         $events = new EventEmitter();
