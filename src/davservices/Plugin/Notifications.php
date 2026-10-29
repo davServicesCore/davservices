@@ -179,29 +179,33 @@ final class Notifications
      * the collection sees it change rather than losing one and gaining
      * another.
      *
+     * **Nothing is reported back**, because there is nothing a caller could
+     * do about it: a principal §4.1.1 calls "not enabled for notification
+     * messages on the server" has nowhere for one to go, and §5.3.2's MUST
+     * reaches no further than the mechanism §4 provides. A caller told so
+     * would have the same nothing to do with the news.
+     *
      * @param string $uid What the message is about, which §6.16 makes an
      *                    identifier of the server's own choosing — it becomes
      *                    the resource's name, so it has to be usable as one
-     *
-     * @return bool Whether there was anywhere to put it. False is §4.1.1's
-     *              principal who is "not enabled for notification messages",
-     *              and it is not a failure: §5.3.2's MUST reaches no further
-     *              than the mechanism §4 provides
      */
-    public function deposit(Principal $principal, string $uid, Element $type): bool
+    public function deposit(Principal $principal, string $uid, Element $type): void
     {
         $path = Path::join($this->at, $principal->name());
 
         if (!$this->server->tree()->exists($path)) {
-            return false;
+            return;
         }
 
         $collection = $this->server->tree()->node($path);
 
         if (!$collection instanceof ICollection) {
-            return false;
+            return;
         }
 
+        // The name carries the identifier so that a second message about one
+        // invitation finds the first. `.xml` is this library's own, no part
+        // of §4 having anything to say about what a notification is called.
         $name = $uid . '.xml';
 
         if ($collection->hasChild($name)) {
@@ -209,9 +213,6 @@ final class Notifications
         }
 
         $collection->createFile($name, $this->server->writer()->write($this->messageAbout($type)));
-        $this->server->tree()->forget($path);
-
-        return true;
     }
 
     /**

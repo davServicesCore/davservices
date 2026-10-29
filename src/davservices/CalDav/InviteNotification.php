@@ -96,15 +96,6 @@ final class InviteNotification
 
     private const HREF = '{DAV:}href';
 
-    /**
-     * How many hexadecimal digits of the digest make the identifier.
-     *
-     * The same length {@see \DavServices\Sync\Token} uses for the same kind
-     * of thing, and for the same reason: long enough that two invitations of
-     * one deployment will not collide, short enough to read in a log.
-     */
-    private const DIGITS = 32;
-
     private function __construct(
         private readonly string $state,
         private readonly Sharee $sharee,
@@ -161,11 +152,22 @@ final class InviteNotification
      * What §6.16 identifies the invitation by.
      *
      * Derived from the calendar and the sharee, so that the same invitation
-     * keeps the same identifier however many times it is spoken about.
+     * keeps the same identifier however many times it is spoken about, and so
+     * that no two invitations share one.
+     *
+     * **The separator earns its place**: without it a calendar at `/a` shared
+     * to `b/c` and one at `/ab` shared to `/c` would run together into the
+     * same string, and §6.16 asks for "a unique identifier".
+     *
+     * The whole digest is used. {@see \DavServices\Sync\Token} keeps a
+     * shortened one because a sync token goes into a header somebody reads;
+     * nothing reads this but a client matching §6.23's `CS:in-reply-to`
+     * against it, and cutting it shorter would be a decision the memo gives
+     * no reason for.
      */
     public function uid(): string
     {
-        return substr(hash('sha256', $this->calendar . "\0" . $this->sharee->href()), 0, self::DIGITS);
+        return hash('sha256', $this->calendar . "\0" . $this->sharee->href());
     }
 
     /**

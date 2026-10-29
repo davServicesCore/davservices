@@ -362,6 +362,47 @@ final class SharingPostTest extends TestCase
     }
 
     /**
+     * **Nor one whose owner is nothing but blank space.** The property is
+     * there, it has a `DAV:href`, and the address in it is no address — which
+     * §5.5.5 does not meet either: it wants "a reference to a principal-URL
+     * of the sharer".
+     */
+    public function testACalendarWhoseOwnerIsBlankCannotBeShared(): void
+    {
+        $response = $this->share(
+            '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
+            new MemoryShareTarget('work', owner: ' '),
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **And nobody may share a calendar that nobody owns.** This is the case
+     * the two guards exist for together: with no owner the sharer is nobody,
+     * with nobody asking the asker is nobody, and a server that compared them
+     * without first insisting that somebody is asking would find them equal
+     * and let an unauthenticated client give itself access.
+     *
+     * A mutation round on 29.10.2026 is what found it: taking the `throw` out
+     * of the first guard changed nothing any case could see, because every
+     * calendar in them had an owner.
+     */
+    public function testNobodyMayShareACalendarThatNobodyOwns(): void
+    {
+        $calendar = new MemoryShareTarget('work', owner: null);
+
+        $response = $this->share(
+            '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
+            $calendar,
+            asking: null,
+        );
+
+        self::assertSame(403, $response->status());
+        self::assertSame([], $calendar->sharees());
+    }
+
+    /**
      * **Nor one owned on another server.** This server cannot establish that
      * whoever is asking is a principal it does not host, and §5.5.5 wants "a
      * principal-URL of the sharer" — so an address that
@@ -550,7 +591,7 @@ final class SharingPostTest extends TestCase
             '<cs:dtstamp>2026-10-29T19:30:00Z</cs:dtstamp><cs:invite-notification>',
             $document,
         );
-        self::assertMatchesRegularExpression('~<cs:uid>[0-9a-f]{32}</cs:uid>~', $document);
+        self::assertMatchesRegularExpression('~<cs:uid>[0-9a-f]{64}</cs:uid>~', $document);
         self::assertStringContainsString(
             '</cs:uid><d:href>/principals/eric/</d:href>'
             . '<cs:invite-noresponse/>'
@@ -590,6 +631,93 @@ final class SharingPostTest extends TestCase
             '<cs:invite-deleted/><cs:access><cs:read/></cs:access>',
             self::theOneNotificationIn($eric),
         );
+    }
+
+    /**
+     * **The resource is named after the invitation**, so that a second
+     * message about one invitation finds the first — and so that two messages
+     * about two different invitations in one collection do not land on each
+     * other. §4 says nothing about what a notification is called; the `.xml`
+     * is this library's own and the identifier is §6.16's.
+     */
+    public function testTheNotificationIsNamedAfterTheInvitation(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith($eric, '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>', new MemoryShareTarget('work'));
+
+        $children = $eric->children();
+        $notification = $children[0] ?? self::fail('nothing was deposited');
+
+        self::assertMatchesRegularExpression('~^[0-9a-f]{64}\.xml$~', $notification->name());
+    }
+
+    /**
+     * **A sharee who needs no message does not stop the next one getting
+     * theirs.** §5.3.2 owes a notification to "any sharees whose status is
+     * changed", and the list is walked rather than cut short at the first
+     * sharee there is nothing to say to.
+     */
+    public function testAShareeWhoNeedsNoMessageDoesNotStopTheNext(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $unchanged = new Sharee('mailto:wilfredo@example.com', SharingAccess::Read, InviteStatus::Accepted);
+
+        $this->shareWith(
+            $eric,
+            '<CS:set><D:href>mailto:wilfredo@example.com</D:href><CS:read/></CS:set>'
+            . '<CS:set>' . self::ERIC_HERE . '<CS:read-write/></CS:set>',
+            new MemoryShareTarget('work', sharees: [
+                $unchanged,
+                new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted),
+            ]),
+        );
+
+        self::assertStringContainsString('<cs:read-write/>', self::theOneNotificationIn($eric));
+    }
+
+    /**
+     * And the same where somebody is taken off the list behind a sharee who
+     * stays on it: the removals are walked too.
+     */
+    public function testAShareeWhoStaysDoesNotStopTheNextBeingToldTheyAreGone(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            '<CS:remove>' . self::ERIC_HERE . '</CS:remove>',
+            new MemoryShareTarget('work', sharees: [
+                new Sharee('mailto:wilfredo@example.com', SharingAccess::Read, InviteStatus::Accepted),
+                new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted),
+            ]),
+        );
+
+        self::assertStringContainsString('<cs:invite-deleted/>', self::theOneNotificationIn($eric));
+    }
+
+    /**
+     * **An email address is not a path, however much it looks like one.**
+     * §5.3.2's three forms are different address spaces, and
+     * `mailto:principals/eric` is an address in the second — a server that
+     * stripped the scheme would write into the notification collection of
+     * whoever happened to live at that path, on the strength of an email
+     * address that only resembled it.
+     */
+    public function testAnEmailAddressIsNotReadAsAPath(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>mailto:principals/eric</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
     }
 
     /**
