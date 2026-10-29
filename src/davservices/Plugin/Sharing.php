@@ -13,13 +13,28 @@ declare(strict_types=1);
 
 namespace DavServices\Plugin;
 
+use Closure;
 use DavServices\CalDav\Calendar;
+use DavServices\CalDav\InviteStatus;
 use DavServices\CalDav\IShareable;
+use DavServices\CalDav\IShareTarget;
 use DavServices\CalDav\Sharee;
+use DavServices\CalDav\SharingAccess;
+use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\INode;
+use DavServices\Dav\Method\Post;
+use DavServices\Dav\Property\Answers;
+use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
+use DavServices\Exception\BadRequest;
+use DavServices\Exception\DavException;
+use DavServices\Exception\Forbidden;
+use DavServices\Http\Request;
+use DavServices\Http\Response;
+use DavServices\Uri\MalformedPath;
 use DavServices\Xml\Element;
 
 /**
@@ -119,6 +134,21 @@ final class Sharing
      */
     private const MODES = [IShareable::CAN_BE_SHARED, IShareable::CAN_BE_PUBLISHED];
 
+    /**
+     * §6.26's root element, which is what a share `POST` carries.
+     */
+    private const SHARE = '{http://calendarserver.org/ns/}share';
+
+    private const SET = '{http://calendarserver.org/ns/}set';
+
+    private const REMOVE = '{http://calendarserver.org/ns/}remove';
+
+    /**
+     * RFC 3744 §5.1's property, which §5.5.5 makes the one thing that says
+     * who the sharer is.
+     */
+    private const OWNER = '{DAV:}owner';
+
     private const USER = '{http://calendarserver.org/ns/}user';
 
     private const COMMON_NAME = '{http://calendarserver.org/ns/}common-name';
@@ -136,18 +166,26 @@ final class Sharing
     }
 
     /**
-     * Switches the two properties on.
+     * Switches the two properties on, and §5.3.2's `POST` where there is a
+     * method for it to hang on.
      *
-     * **No method and no report**, which is what makes this half of §5 worth
-     * having on its own: everything here is read with the `PROPFIND` a client
-     * already sends.
+     * **The properties need no method at all**, which is what made them worth
+     * having on their own: they are read with the `PROPFIND` a client already
+     * sends. The `POST` is a different matter — RFC 4918 §9.5 defines no
+     * behaviour for it, so a server owes none, and a deployment that wants
+     * the properties without the change simply does not hand one over.
+     *
+     * @param Post|null $post The `POST` method to hang §5.3.2's `CS:share`
+     *                        on, where the application has one
      */
-    public function register(): void
+    public function register(?Post $post = null): void
     {
         $events = $this->server->events();
 
         $events->on(PropertiesRequested::class, $this->describe(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
+
+        $post?->on(self::SHARE, $this->share(...));
     }
 
     /**
@@ -290,6 +328,258 @@ final class Sharing
         $element->appendText($text);
 
         return $element;
+    }
+
+    /**
+     * §5.3.2's `POST`: the sharer changes who the calendar is shared with.
+     *
+     * > The sharer of a shared calendar is able to manipulate the sharee list
+     * > by issuing a POST request targeted at the calendar collection
+     * > resource.
+     *
+     * Four things are asked before anything changes, and the order is the
+     * order of the sentence: is this a calendar, is its list one a client may
+     * change, who is asking, and are they the sharer.
+     *
+     * **The whole document is read before any of it is carried out.** §5.3.2
+     * says nothing about a document whose third instruction is bad, and the
+     * only answer that cannot surprise a sharer is "nothing happened": a
+     * server that applied the first two would leave a calendar shared with
+     * somebody the sharer never saw confirmed.
+     *
+     * @throws Forbidden If this is no calendar, if its list is not a client's
+     *                   to change, or if whoever is asking is not the sharer
+     * @throws BadRequest If the document asks for nothing, or for something
+     *                    §6.27 and §6.28 do not allow
+     */
+    private function share(Request $request, Element $document): Response
+    {
+        $path = $this->server->path($request);
+        $node = $this->server->tree()->node($path);
+
+        if (!$node instanceof Calendar) {
+            throw new Forbidden('A CS:share belongs on a calendar collection (§5.3.2), and this is none.');
+        }
+
+        $store = $node->collection();
+
+        if (!$store instanceof IShareTarget) {
+            throw new Forbidden('This calendar does not let a client change its sharee list (§5.5.2).');
+        }
+
+        // §6.15 makes `CS:organizer` a required child of the notification
+        // every change owes, so a server that does not know who is asking
+        // could not write one — quite apart from §5.3.2 giving the list to
+        // the sharer alone.
+        $asking = $this->server->events()->emit(new CurrentPrincipalRequested($request))->principal();
+
+        if ($asking === null) {
+            throw new Forbidden('§5.3.2 gives the sharee list to the sharer, and nobody here has said who they are.');
+        }
+
+        // **A calendar that names no owner fails this comparison as well**,
+        // which is §5.5.5's "The DAV:owner WebDAV property MUST be present on
+        // a shared calendar" met by arithmetic rather than by a second guard:
+        // no owner is nobody to be.
+        if ($this->sharerOf($path, $node, $request) !== $asking) {
+            throw new Forbidden('Only the principal that DAV:owner names may change the sharee list (§5.5.5).');
+        }
+
+        foreach (self::instructionsIn($document, $store->sharees()) as $instruction) {
+            $instruction($store);
+        }
+
+        // §5.3.2.1 and §5.3.2.2 both answer `200 OK` with `Cache-Control:
+        // no-cache` and no body. There is nothing to say that the sharee list
+        // does not say, and a client that wants it reads `CS:invite`.
+        return (new Response(200))->withHeader('Cache-Control', 'no-cache');
+    }
+
+    /**
+     * Who §5.5.5 says the sharer is, as a path inside this tree.
+     *
+     * Read through {@see Answers} rather than from the node, because that is
+     * the one way this server finds out what it says about a property: it is
+     * where a dead property store is reached, and where access control gets
+     * the first word. A plugin that asked the node directly would read a
+     * value this server would not hand over.
+     *
+     * Null wherever that leads nowhere — no property, no `DAV:href` in it, or
+     * an address on another server. Each of those is a calendar whose sharer
+     * this server cannot name, and the caller treats them alike.
+     */
+    private function sharerOf(string $path, INode $node, Request $request): ?string
+    {
+        $owner = Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::OWNER])
+            ->byStatus()[200][self::OWNER] ?? null;
+
+        if (!$owner instanceof Element) {
+            return null;
+        }
+
+        $href = trim($owner->child(self::HREF)?->text() ?? '');
+
+        if ($href === '') {
+            return null;
+        }
+
+        try {
+            return $this->server->pathOfUrl($href, $request);
+        } catch (DavException | MalformedPath) {
+            return null;
+        }
+    }
+
+    /**
+     * What the document asks for, as a list of things to do.
+     *
+     * **A list rather than a tally of changes already made**, so that the
+     * whole of it is understood before any of it happens — and in the order
+     * the instructions arrive, because §6.26's `(set | remove)*` is a
+     * sequence and two instructions about one sharee can only mean what their
+     * order says.
+     *
+     * An element that is neither is passed over: reading tolerates the
+     * unknown here as it does everywhere else in this library, and a document
+     * that asks for nothing this server understands is caught by the count
+     * rather than by guessing what was meant.
+     *
+     * @param list<Sharee> $already Who the calendar is shared with now, which
+     *                              is what says whether a `CS:set` is an
+     *                              addition or an update
+     *
+     * @throws BadRequest If nothing in it is an instruction
+     *
+     * @return list<Closure(IShareTarget): void>
+     */
+    private static function instructionsIn(Element $document, array $already): array
+    {
+        $instructions = [];
+
+        foreach ($document->children() as $element) {
+            if ($element->name() === self::SET) {
+                $instructions[] = self::toShare($element, $already);
+            }
+
+            if ($element->name() === self::REMOVE) {
+                $instructions[] = self::toStopSharing($element);
+            }
+        }
+
+        if ($instructions === []) {
+            throw new BadRequest(
+                '§5.3.2: a CS:share has to contain one or more CS:set or CS:remove elements.',
+            );
+        }
+
+        return $instructions;
+    }
+
+    /**
+     * One `CS:set` (§6.27), read and ready to be carried out.
+     *
+     * The state is not the client's to say — §6.27's grammar carries none —
+     * so a sharee who is already on the list arrives with the state they are
+     * already in (§6.8: "the sharing invite is an update for one they
+     * previously accepted"), and a new one with §6.6's "has never replied".
+     *
+     * @param list<Sharee> $already
+     *
+     * @return Closure(IShareTarget): void
+     */
+    private static function toShare(Element $set, array $already): Closure
+    {
+        $href = self::addressIn($set);
+
+        $sharee = new Sharee(
+            $href,
+            self::accessIn($set),
+            self::howTheyAnswered($href, $already),
+            self::textIn($set, self::COMMON_NAME),
+            self::textIn($set, self::SUMMARY),
+        );
+
+        return static function (IShareTarget $target) use ($sharee): void {
+            $target->shareWith($sharee);
+        };
+    }
+
+    /**
+     * One `CS:remove` (§6.28), which carries an address and nothing else.
+     *
+     * @return Closure(IShareTarget): void
+     */
+    private static function toStopSharing(Element $remove): Closure
+    {
+        $href = self::addressIn($remove);
+
+        return static function (IShareTarget $target) use ($href): void {
+            $target->stopSharingWith($href);
+        };
+    }
+
+    /**
+     * The address an instruction is about, in whichever of §5.3.2's three
+     * forms it arrived.
+     *
+     * @throws BadRequest If there is none, which both grammars begin with
+     */
+    private static function addressIn(Element $instruction): string
+    {
+        $href = trim($instruction->child(self::HREF)?->text() ?? '');
+
+        if ($href === '') {
+            throw new BadRequest(
+                '§6.27 and §6.28 both begin with a DAV:href, and this instruction names nobody.',
+            );
+        }
+
+        return $href;
+    }
+
+    /**
+     * Which of §5.5.1's two levels a `CS:set` grants.
+     *
+     * @throws BadRequest If it names neither, or both
+     */
+    private static function accessIn(Element $set): SharingAccess
+    {
+        $read = $set->child(SharingAccess::Read->value) !== null;
+        $readWrite = $set->child(SharingAccess::ReadWrite->value) !== null;
+
+        // One condition for both ways of failing a choice of one: neither
+        // names a level, and both name two. **Guessing is the thing not to
+        // do here** — of the two, one grants more than may have been meant.
+        if ($read === $readWrite) {
+            throw new BadRequest('§6.27 lets a CS:set name one of CS:read and CS:read-write, not neither and not both.');
+        }
+
+        return $read ? SharingAccess::Read : SharingAccess::ReadWrite;
+    }
+
+    /**
+     * How this sharee answered already, or §6.6's "never replied" where they
+     * are nobody the calendar knows yet.
+     *
+     * @param list<Sharee> $already
+     */
+    private static function howTheyAnswered(string $href, array $already): InviteStatus
+    {
+        foreach ($already as $sharee) {
+            if ($sharee->href() === $href) {
+                return $sharee->status();
+            }
+        }
+
+        return InviteStatus::NoResponse;
+    }
+
+    /**
+     * What an optional child of a `CS:set` says, or null where it is absent.
+     */
+    private static function textIn(Element $set, string $name): ?string
+    {
+        return $set->child($name)?->text();
     }
 
     /**
