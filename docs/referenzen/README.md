@@ -132,7 +132,7 @@ In davServices ist WebDAV **das Fundament** — CalDAV und CardDAV sind Aufsätz
 | [6578](https://www.rfc-editor.org/rfc/rfc6578.txt) | Collection Synchronization | MUSS |
 | [3253](https://www.rfc-editor.org/rfc/rfc3253.txt) | Versioning (DeltaV) | **nur** §3.6, die Definition von `REPORT` |
 | [5842](https://www.rfc-editor.org/rfc/rfc5842.txt) | BIND — mehrere URLs auf dieselbe Ressource | nicht umgesetzt, zur Kenntnis |
-| [5323](https://www.rfc-editor.org/rfc/rfc5323.txt) | SEARCH (DASL) | nicht umgesetzt, zur Kenntnis |
+| [5323](https://www.rfc-editor.org/rfc/rfc5323.txt) | SEARCH (DASL) | **nur** §5.17 (`DAV:limit`, das RFC 6578 §3.7 übernimmt) und §2.3.1/§2.3.4 (die Gestalt des `507`); die Methode `SEARCH` selbst nicht umgesetzt |
 
 ## Was man wissen muss
 

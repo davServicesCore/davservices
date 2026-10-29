@@ -95,6 +95,16 @@ final class SyncCollectionTest extends TestCase
     private const WITHIN_LIMITS = '{DAV:}number-of-matches-within-limits';
 
     /**
+     * What an answer that was cut short says about the collection itself.
+     *
+     * **Spelt out rather than looked for as a number**, because the token
+     * carries a hash and a hash carries any three digits you care to name:
+     * a bare `507` was found in `…8150773…` while nothing had been
+     * truncated at all.
+     */
+    private const CUT_SHORT = '<d:status>HTTP/1.1 507 Insufficient Storage</d:status>';
+
+    /**
      * **§3.4's initial synchronisation**: "the server MUST return all member
      * URLs of the collection […] and it MUST NOT return any removed member
      * URLs. All types of member (collection or non-collection) MUST be
@@ -418,6 +428,283 @@ final class SyncCollectionTest extends TestCase
         $this->expectException(InsufficientStorage::class);
 
         $this->sync(limit: '<limit><nresults>1000</nresults></limit>');
+    }
+
+    /**
+     * **And the server's own limit leaves a first listing whole**, for the
+     * same reason the client's is refused: §3.6's limiting is a MAY ("A server
+     * MAY limit the number of member URLs in a response"), and this server
+     * does not take the offer where it could not name the result. §3.4's MUST
+     * is then answered in full — "the server MUST return all member URLs of
+     * the collection".
+     */
+    public function testTheServersOwnLimitLeavesAFirstListingWhole(): void
+    {
+        $body = (string) $this->sync(atMost: 1)->body();
+
+        self::assertSame(6, substr_count($body, '<d:response>'));
+        self::assertStringNotContainsString(self::CUT_SHORT, $body);
+    }
+
+    /**
+     * **§3.6's shape for an answer that was cut short.** "If the result set is
+     * truncated, the response MUST use status code 207 (Multi-Status), return
+     * a DAV:multistatus response body, and indicate a status of 507
+     * (Insufficient Storage) for the request-URI. That DAV:response element
+     * SHOULD include a DAV:error element with the
+     * DAV:number-of-matches-within-limits precondition."
+     *
+     * The collection stands where RFC 5323 §2.3.1 puts the search arbiter, and
+     * is named with its trailing slash (RFC 4918 §5.2).
+     */
+    public function testAnAnswerCutShortSaysSoForTheCollectionItself(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+
+        $answer = $this->sync(token: $held, revisions: $journal, atMost: 1);
+        $body = (string) $answer->body();
+
+        self::assertSame(207, $answer->status());
+        self::assertStringContainsString(
+            '<d:href>/home/</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status>',
+            $body,
+        );
+        self::assertStringContainsString('<d:number-of-matches-within-limits/>', $body);
+    }
+
+    /**
+     * **The `507` is one response more and not one of the limited ones.**
+     * RFC 5323 §5.17 has `DAV:nresults` as "a requested maximum number of
+     * DAV:response elements to be returned in the response body", which would
+     * make the `507` count — and §3.6's example settles that it does not: the
+     * server "would return only 10 DAV:response elements […] together with an
+     * **additional** DAV:response element for the request-URI with a status
+     * code of 507".
+     */
+    public function testTheResponseThatSaysThereWasMoreIsOneMoreAndNotOneOfThem(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal, atMost: 1)->body();
+
+        self::assertSame(2, substr_count($body, '<d:response>'));
+        self::assertSame(1, substr_count($body, '<d:propstat>'));
+    }
+
+    /**
+     * **§3.6's own example, end to end.** "Assume the last DAV:sync-token used
+     * by the client was 'http://example.com/sync/10', and since then 15
+     * additional changes to different resources have occurred. […] if the
+     * server chooses to limit responses to at most 10 changes, then it would
+     * return only 10 DAV:response elements and a DAV:sync-token with value
+     * 'http://example.com/sync/20', together with an additional DAV:response
+     * element for the request-URI with a status code of 507. Subsequently, the
+     * client can reissue the request with the DAV:sync-token value returned
+     * from the server and fetch the remaining 5 changes."
+     *
+     * Every number in that paragraph is asserted here, the journal counting
+     * the way the example does — one revision per entry, each greater than the
+     * last.
+     */
+    public function testAnAnswerCutShortCarriesTheNumbersTheMemosExampleDoes(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+
+        for ($i = 1; $i <= 10; ++$i) {
+            $journal->recordAChange('home/before-' . $i . '.ics');
+        }
+
+        $held = $this->tokenOf($journal);
+
+        for ($i = 1; $i <= 15; ++$i) {
+            $journal->recordAChange('home/after-' . $i . '.ics');
+        }
+
+        $first = (string) $this->sync(token: $held, revisions: $journal, atMost: 10)->body();
+
+        self::assertSame($held, (string) Token::for('home', 10));
+        self::assertSame(11, substr_count($first, '<d:response>'));
+        self::assertStringContainsString(self::CUT_SHORT, $first);
+        self::assertSame((string) Token::for('home', 20), $this->tokenIn($first));
+
+        $rest = (string) $this->sync(token: $this->tokenIn($first), revisions: $journal, atMost: 10)->body();
+
+        self::assertSame(5, substr_count($rest, '<d:response>'));
+        self::assertStringNotContainsString(self::CUT_SHORT, $rest);
+        self::assertSame((string) Token::for('home', 25), $this->tokenIn($rest));
+    }
+
+    /**
+     * An answer that fits says nothing about more, because §3.6's `507` is for
+     * a result set that "is truncated" and this one is not. The token is then
+     * where the collection stands, as every other complete answer's is.
+     */
+    public function testAnAnswerWithinTheLimitSaysNothingAboutMore(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal, atMost: 10)->body();
+
+        self::assertStringNotContainsString(self::CUT_SHORT, $body);
+        self::assertSame($this->tokenOf($journal), $this->tokenIn($body));
+    }
+
+    /**
+     * **A client's limit is honoured where the server has none of its own**,
+     * which is §3.6's second cause: a server limits "to limit the amount of
+     * work expended in processing a request, **or as the result of an explicit
+     * limit set by the client**".
+     */
+    public function testAClientsLimitIsHonouredWhereTheServerHasNone(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+
+        $body = (string) $this->sync(
+            token: $held,
+            limit: '<limit><nresults>1</nresults></limit>',
+            revisions: $journal,
+        )->body();
+
+        self::assertSame(1, substr_count($body, '<d:propstat>'));
+        self::assertStringContainsString(self::CUT_SHORT, $body);
+    }
+
+    /**
+     * **The smaller of the two decides.** §3.7 has the server fail a request
+     * it cannot hold "at or below the requested number", so a client's smaller
+     * number binds it; §3.6's own limit is a MAY, so the server's smaller
+     * number is its to apply. Either way the answer is at or below both.
+     *
+     * @param string $limit What the body asks for
+     * @param int $atMost What this server would allow anyway
+     * @param int $reported How many members may be named
+     */
+    #[DataProvider('theTwoLimitsAndWhatTheyLeave')]
+    public function testTheSmallerOfTheTwoLimitsDecides(string $limit, int $atMost, int $reported): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+        $journal->recordAChange('home/inner/deep.ics');
+
+        $body = (string) $this->sync(
+            token: $held,
+            limit: $limit,
+            revisions: $journal,
+            atMost: $atMost,
+        )->body();
+
+        self::assertSame($reported, substr_count($body, '<d:propstat>'));
+    }
+
+    /**
+     * @return iterable<string, array{string, int, int}>
+     */
+    public static function theTwoLimitsAndWhatTheyLeave(): iterable
+    {
+        yield 'the client asks for less' => ['<limit><nresults>1</nresults></limit>', 3, 1];
+
+        yield 'the server allows less' => ['<limit><nresults>3</nresults></limit>', 1, 1];
+
+        yield 'both say the same' => ['<limit><nresults>2</nresults></limit>', 2, 2];
+
+        yield 'neither binds' => ['<limit><nresults>9</nresults></limit>', 9, 3];
+    }
+
+    /**
+     * **§5.17's grammar, read as a grammar.** `<!ELEMENT limit (nresults) >`
+     * puts the child outside any optional group, and
+     * `<!ELEMENT nresults (#PCDATA)> <!-- only digits -->` with "The value of
+     * this element is an unsigned integer" says what may be in it. Anything
+     * else is a body this server cannot act on, and a `400` says so rather
+     * than a server guessing a number.
+     *
+     * @param string $limit The `DAV:limit` the body carries
+     */
+    #[DataProvider('theLimitsThatAreNoLimit')]
+    public function testALimitThatIsNoUnsignedIntegerIsRefused(string $limit): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+
+        $this->expectException(BadRequest::class);
+
+        $this->sync(token: $this->tokenOf($journal), limit: $limit, revisions: $journal);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function theLimitsThatAreNoLimit(): iterable
+    {
+        yield 'no nresults at all' => ['<limit/>'];
+
+        yield 'something else inside' => ['<limit><nothing/></limit>'];
+
+        yield 'nothing in the nresults' => ['<limit><nresults/></limit>'];
+
+        yield 'a negative number' => ['<limit><nresults>-1</nresults></limit>'];
+
+        yield 'not a number' => ['<limit><nresults>lots</nresults></limit>'];
+
+        yield 'a number with a fraction' => ['<limit><nresults>1.5</nresults></limit>'];
+    }
+
+    /**
+     * **A member nobody may see fills its place in the page all the same**,
+     * and that is a difference from {@see \DavServices\Dav\Method\PropFind}
+     * worth knowing about: there the limit counts members reported, here it
+     * counts changes taken from the history.
+     *
+     * It is allowed, because §5.17 asks for "a requested maximum number of
+     * DAV:response elements" and a page that names fewer is at or below that
+     * maximum. And it is the only place the count can live if a store is to
+     * stop reading early — the concealment question is asked about members
+     * that have already been read.
+     *
+     * The client still comes on: the token covers the page whether or not
+     * every member of it could be shown.
+     */
+    public function testAConcealedMemberFillsItsPlaceInThePage(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+
+        $server = $this->server();
+
+        $server->events()->on(ListingMembers::class, static function (ListingMembers $event): void {
+            $event->conceal('home/one.ics');
+        });
+
+        $body = (string) $this->syncOf(
+            $this->body($held, limit: '<limit><nresults>1</nresults></limit>'),
+            server: $server,
+            revisions: $journal,
+        )->body();
+
+        self::assertStringNotContainsString('one.ics', $body);
+        self::assertStringNotContainsString('two.ics', $body);
+        self::assertStringContainsString(self::CUT_SHORT, $body);
+        self::assertSame((string) Token::for('home', 1), $this->tokenIn($body));
     }
 
     /**
@@ -935,12 +1222,14 @@ final class SyncCollectionTest extends TestCase
         ?string $depth = '0',
         string $path = self::HOME,
         ?IRevisions $revisions = null,
+        int $atMost = IRevisions::EVERYTHING,
     ): Response {
         return $this->syncOf(
             $this->body($token, $level, $properties, $limit),
             $path,
             $depth,
             revisions: $revisions,
+            atMost: $atMost,
         );
     }
 
@@ -966,9 +1255,10 @@ final class SyncCollectionTest extends TestCase
         ?string $depth = '0',
         ?Server $server = null,
         ?IRevisions $revisions = null,
+        int $atMost = IRevisions::EVERYTHING,
     ): Response {
         $server ??= $this->server();
-        $report = new SyncCollection($server, $revisions ?? FixedRevisions::at(7));
+        $report = new SyncCollection($server, $revisions ?? FixedRevisions::at(7), $atMost);
 
         return $report(
             new Request(

@@ -405,6 +405,47 @@ final class SyncTest extends TestCase
     }
 
     /**
+     * **How much a report will answer at once is the deployment's to set**
+     * (R-SYNC-04), and §3.6 has it as the server's own choice: "A server MAY
+     * limit the number of member URLs in a response, for example, to limit the
+     * amount of work expended in processing a request."
+     *
+     * So the plugin takes the number and hands it down. **Off by default**,
+     * because a MAY not taken is a conforming server and §3.4's "the server
+     * MUST return all member URLs of the collection" is the answer a client
+     * gets for nothing.
+     */
+    public function testHowMuchIsAnsweredAtOnceIsTheServersToSet(): void
+    {
+        [$server, $held] = $this->synchronising(atMost: 1);
+
+        $server->handle(new Request('PUT', self::COLLECTION . '/one.ics', body: new Body('BEGIN:VCALENDAR')));
+        $server->handle(new Request('PUT', self::COLLECTION . '/two.ics', body: new Body('BEGIN:VCALENDAR')));
+
+        $answer = $this->reportOn($server, $held);
+
+        self::assertSame(1, substr_count($answer, '<d:propstat>'));
+        self::assertStringContainsString('<d:status>HTTP/1.1 507 Insufficient Storage</d:status>', $answer);
+    }
+
+    /**
+     * And without one set, nothing is cut: the same two writes come back
+     * together.
+     */
+    public function testWithNoLimitSetNothingIsCut(): void
+    {
+        [$server, $held] = $this->synchronising();
+
+        $server->handle(new Request('PUT', self::COLLECTION . '/one.ics', body: new Body('BEGIN:VCALENDAR')));
+        $server->handle(new Request('PUT', self::COLLECTION . '/two.ics', body: new Body('BEGIN:VCALENDAR')));
+
+        $answer = $this->reportOn($server, $held);
+
+        self::assertSame(2, substr_count($answer, '<d:propstat>'));
+        self::assertStringNotContainsString('<d:status>HTTP/1.1 507 Insufficient Storage</d:status>', $answer);
+    }
+
+    /**
      * It announces no compliance class. RFC 6578 defines none — there is no
      * `DAV` header value in it — and what tells a client the report is there is
      * `DAV:supported-report-set`, which §3.2 names in as many words.
@@ -455,9 +496,12 @@ final class SyncTest extends TestCase
         ));
     }
 
-    private function plugin(Server $server, ?IRevisions $revisions = null): Sync
-    {
-        return new Sync($server, $revisions ?? FixedRevisions::at(7));
+    private function plugin(
+        Server $server,
+        ?IRevisions $revisions = null,
+        int $atMost = IRevisions::EVERYTHING,
+    ): Sync {
+        return new Sync($server, $revisions ?? FixedRevisions::at(7), $atMost);
     }
 
     /**
@@ -470,13 +514,13 @@ final class SyncTest extends TestCase
      *
      * @return array{Server, string}
      */
-    private function synchronising(): array
+    private function synchronising(int $atMost = IRevisions::EVERYTHING): array
     {
         $server = $this->server();
         $journal = new Journal(new MemoryJournalBackend());
         $report = new Report($server);
 
-        $this->plugin($server, $journal)->register($report);
+        $this->plugin($server, $journal, $atMost)->register($report);
         $report->register();
 
         $server->onMethod('PUT', (new Put($server))(...));

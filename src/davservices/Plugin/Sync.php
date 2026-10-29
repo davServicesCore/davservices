@@ -32,6 +32,7 @@ use DavServices\Sync\Token;
  * what moved.
  *
  *     $sync = new Sync($server, $yourRevisions);
+ *     $sync = new Sync($server, $yourRevisions, atMost: 500);   // §3.6
  *
  *     $sync->register($report);
  *
@@ -104,9 +105,6 @@ use DavServices\Sync\Token;
  *
  * ## What is not here yet
  *
- * **Truncation** (R-SYNC-04, §3.6), which is what would make a `DAV:limit`
- * honourable; until then every limit is refused with §3.7's postcondition.
- *
  * **§3.3's `403` for a child collection that cannot be synchronised**, which
  * §3.2 gives a shape of its own: "one DAV:status with a value set to '403
  * Forbidden', a DAV:error containing DAV:supported-report or
@@ -130,10 +128,19 @@ final class Sync
      * @param IRevisions $revisions Which change a collection is at, or null
      *                              where this server keeps no synchronisation
      *                              state for it
+     * @param int $atMost How many members one answer may name before it is cut
+     *                    short with §3.6's `507` (R-SYNC-04), or
+     *                    {@see IRevisions::EVERYTHING} for no limit. **Off
+     *                    unless someone sets it**, because §3.6 has the
+     *                    limiting as a MAY and §3.4's "the server MUST return
+     *                    all member URLs of the collection" is what a client
+     *                    is owed otherwise. A first synchronisation is never
+     *                    cut: see {@see \DavServices\Sync\Report\SyncCollection}
      */
     public function __construct(
         private readonly Server $server,
         private readonly IRevisions $revisions,
+        private readonly int $atMost = IRevisions::EVERYTHING,
     ) {
     }
 
@@ -175,7 +182,10 @@ final class Sync
         // believe it.
         $this->revisions->keepTrack($events);
 
-        $report->on(self::SYNC_COLLECTION, (new SyncCollection($this->server, $this->revisions))(...));
+        $report->on(
+            self::SYNC_COLLECTION,
+            (new SyncCollection($this->server, $this->revisions, $this->atMost))(...),
+        );
     }
 
     /**
