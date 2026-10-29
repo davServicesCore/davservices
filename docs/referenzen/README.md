@@ -24,11 +24,17 @@ Davor steht, was für alle drei gilt; danach Gremien und Sichtbarkeit.
 |---|---|
 | `rfc4918.pdf` | WebDAV-Kern, zum Lesen und Annotieren |
 | `rfc4791.pdf` | CalDAV, zum Lesen und Annotieren |
-| `download-rfcs.sh` | Holt 26 Spezifikationen als Text nach `rfc/` |
+| `download-rfcs.sh` | Holt 27 Spezifikationen als Text nach `rfc/` |
+| `download-extensions.sh` | Holt die Herstellerschriften ohne RFC nach `extensions/` |
 
 ```bash
 ./download-rfcs.sh
+./download-extensions.sh
 ```
+
+**Beide Ordner sind in `.gitignore`.** Die Textfassung ist maßgeblich und
+jederzeit wieder zu holen; sie mitzuliefern hieße, fremde Dokumente zu
+verteilen.
 
 ---
 
@@ -77,9 +83,18 @@ Alle drei Protokolle setzen dasselbe Rechtemodell voraus.
 |---|---|
 | Wie funktioniert `sync-collection`? | §3 |
 | Wann liefere ich `DAV:valid-sync-token`? | §3.2 |
-| Wie kürze ich eine zu große Antwort? | §3.6 |
+| Wie kürze ich eine zu große Antwort? | §3.6, und §5.17 von RFC 5323 für `DAV:limit` |
+| Woher kommt `CS:getctag`? | aus keinem RFC — siehe unten |
 
 **Was man wissen muss:** Der Sync-Token ist für den Client undurchsichtig — er darf beliebig aufgebaut sein, muss aber je Kollektion eindeutig und monoton sein. Ein Client mit zu altem Token muss `403` mit `DAV:valid-sync-token` erhalten; dann führt er einen Vollabgleich durch. Antwortet man stattdessen mit einer leeren Liste, hält er die Kollektion für unverändert und bemerkt Löschungen nie.
+
+### `CS:getctag` hat keinen RFC
+
+**Die maßgebliche Schrift ist eine Herstellerschrift**, und das ist nachgesehen, nicht angenommen: `caldav-ctag-03`, „Calendar Collection Entity Tag (CTag) in CalDAV", C. Daboo, Apple, 27.05.2015 — eine Calendar-Server-Erweiterung, die nie ein IETF-Dokument wurde. `download-extensions.sh` holt sie nach `extensions/`.
+
+**Sie hebt sich selbst auf**, und zwar in ihrer eigenen Kurzfassung: „The feature defined by this specification is now deprecated in favor of support for the WebDAV Sync REPORT as defined by [RFC6578]." Im gleichen Absatz steht aber auch, wie ein Server sie trotzdem tragen darf — „by simply using the DAV:sync-token property value for the getctag property value, in order to provide backwards compatibility with old clients" —, und genau so tut davServices es. R-SYNC-06 verlangt die Eigenschaft „zusätzlich", nicht anders.
+
+**Ein Satz zeigt in die Gegenrichtung von RFC 6578 §4**: §4.1 der Erweiterung hat `getctag` „SHOULD be returned by a PROPFIND DAV:allprop request", RFC 6578 §4 hat `DAV:sync-token` „SHOULD NOT". Zwei SOLL-Sätze über dieselbe Zahl, jeder für die Eigenschaft befolgt, über die er geschrieben ist.
 
 ## Diensterkennung
 

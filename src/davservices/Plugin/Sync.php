@@ -13,10 +13,12 @@ declare(strict_types=1);
 
 namespace DavServices\Plugin;
 
+use DavServices\CalDav\Calendar;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Event\StateTokensRequested;
 use DavServices\Dav\ICollection;
+use DavServices\Dav\IResourceType;
 use DavServices\Dav\Method\Report;
 use DavServices\Dav\Server;
 use DavServices\Sync\IRevisions;
@@ -24,7 +26,7 @@ use DavServices\Sync\Report\SyncCollection;
 use DavServices\Sync\Token;
 
 /**
- * Collection synchronisation (RFC 6578, R-SYNC-01, R-SYNC-02).
+ * Collection synchronisation (RFC 6578, R-SYNC-01, R-SYNC-02, R-SYNC-06).
  *
  * **This is how a client with a thousand events asks what changed.** Without
  * it, keeping in step means listing the whole collection and comparing entity
@@ -48,6 +50,12 @@ use DavServices\Sync\Token;
  *   report on that resource at the same point in time";
  * - **the token in an `If` header** (§5): "Servers MUST support use of
  *   DAV:sync-token values in If request headers."
+ *
+ * And a fourth thing that memo does not ask for: **`CS:getctag` on a calendar
+ * collection** (R-SYNC-06), which is the question §3.2's report answers, under
+ * the name clients asked it by before the report existed. There is no RFC for
+ * it — {@see nameTheTag()} says where its wording comes from, and why the one
+ * number answers both names.
  *
  * ## Why the third one matters most to a client
  *
@@ -125,6 +133,13 @@ final class Sync
     private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
 
     /**
+     * The tag of Apple's `caldav-ctag-03` §4.1 (R-SYNC-06).
+     *
+     * No RFC defines it; {@see nameTheTag()} says where it comes from.
+     */
+    public const GETCTAG = '{http://calendarserver.org/ns/}getctag';
+
+    /**
      * @param IRevisions $revisions Which change a collection is at, or null
      *                              where this server keeps no synchronisation
      *                              state for it
@@ -168,6 +183,7 @@ final class Sync
         $events = $this->server->events();
 
         $events->on(PropertiesRequested::class, $this->describe(...));
+        $events->on(PropertiesRequested::class, $this->nameTheTag(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
         $events->on(StateTokensRequested::class, $this->nameTheState(...));
 
@@ -223,6 +239,82 @@ final class Sync
     }
 
     /**
+     * Answers `CS:getctag` on a calendar collection (R-SYNC-06).
+     *
+     * **There is no RFC for this property, and that was checked rather than
+     * assumed.** The namespace is Apple's, and so is the specification:
+     * `caldav-ctag-03`, "Calendar Collection Entity Tag (CTag) in CalDAV",
+     * C. Daboo, 27 May 2015, a Calendar Server extension that never became an
+     * IETF document. Its §4.1 is the whole definition, and every decision here
+     * is one of its sentences.
+     *
+     * **The value is §4's token, which the extension itself asks for.** Its
+     * abstract deprecates it in favour of RFC 6578 and then says how to keep
+     * it: "servers MAY continue to support this specification by simply using
+     * the DAV:sync-token property value for the getctag property value, in
+     * order to provide backwards compatibility with old clients." So one
+     * number answers both names — and that is the honest arrangement rather
+     * than the cheap one, because a server whose tag and token named different
+     * states would be a server whose answers about one collection disagree.
+     *
+     * §4.1's other sentences, each in one line of code:
+     *
+     * - "This property MUST be defined on a calendar or scheduling Inbox or
+     *   Outbox collection resource" — hence the question about the resource
+     *   type. **Asked of the resource type and not of a class**, because that
+     *   is what a calendar collection *is*: RFC 4791 §4.2 has one as a
+     *   collection whose `DAV:resourcetype` carries `CALDAV:calendar`, so a
+     *   deployment's own calendar is one too. *Scheduling Inbox and Outbox
+     *   collections are not here because this library has none* — RFC 6638's
+     *   scheduling is not implemented, and a property for a collection that
+     *   cannot exist is not a gap.
+     * - "It MUST be protected" — {@see guardChangingProperties()}.
+     * - "SHOULD be returned by a PROPFIND DAV:allprop request" — hence
+     *   {@see \DavServices\Dav\PropFindResult::wants()} here where the token
+     *   uses `wasNamed()`. **Two SHOULDs pointing opposite ways over the same
+     *   number**: RFC 6578 §4 has its token "SHOULD NOT be returned by a
+     *   PROPFIND DAV:allprop request", and each is followed for the property
+     *   it is written about. The extension cites §12.14.1 of RFC 2518 for that
+     *   sentence, a memo RFC 4918 obsoletes and whose `allprop` meant *all*;
+     *   §9.1 of RFC 4918 no longer asks for every live property there, so this
+     *   is a SHOULD honoured rather than one compelled.
+     * - "guaranteed to be unique over the lifetime of any calendar […] at a
+     *   specific URI" (§3.1) and "each change MUST result in a value that is
+     *   different from any other used with that collection URI" (§4.1) — a
+     *   revision that only ever grows gives that, and {@see Token} carries the
+     *   collection as well, so no two collections share a value either.
+     *
+     * **§3.1's MUST comes for free, and that is the point of using the
+     * token:** "Whenever a calendar resource is added to, modified or deleted
+     * from the calendar collection, the value of the CS:getctag property MUST
+     * change." The journal hears those three through the same events it hears
+     * for the report ({@see \DavServices\Sync\IRevisions::keepTrack()}), so
+     * there is no second mechanism to keep in step with the first.
+     */
+    private function nameTheTag(PropertiesRequested $event): void
+    {
+        $result = $event->result();
+
+        if (!$result->wants(self::GETCTAG)) {
+            return;
+        }
+
+        $node = $event->node();
+
+        if (!$node instanceof IResourceType || !in_array(Calendar::CALENDAR, $node->resourceTypes(), true)) {
+            return;
+        }
+
+        $revision = $this->revisions->revisionOf($result->path());
+
+        if ($revision === null) {
+            return;
+        }
+
+        $result->set(self::GETCTAG, (string) Token::for($result->path(), $revision));
+    }
+
+    /**
      * §4: "Protected: MUST be protected because this value is created and
      * controlled by the server."
      *
@@ -236,7 +328,7 @@ final class Sync
         $result = $event->result();
 
         foreach (array_keys($result->mutations()) as $name) {
-            if ($name === self::TOKEN) {
+            if ($name === self::TOKEN || $name === self::GETCTAG) {
                 $result->set($name, 403, self::CANNOT_MODIFY_PROTECTED);
             }
         }

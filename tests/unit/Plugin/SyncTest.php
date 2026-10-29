@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Plugin;
 
+use DavServices\CalDav\Calendar;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\Method\Delete;
 use DavServices\Dav\Method\Move;
@@ -35,9 +36,11 @@ use DavServices\Sync\Journal;
 use DavServices\Sync\Token;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Dav\MemoryPropertyCollection;
 use DavServices\Tests\Unit\Sync\FixedRevisions;
 use DavServices\Tests\Unit\Sync\MemoryJournalBackend;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -62,6 +65,8 @@ use PHPUnit\Framework\TestCase;
 final class SyncTest extends TestCase
 {
     private const COLLECTION = '/home';
+
+    private const CALENDAR = '/calendar';
 
     /**
      * §3.2: the report is answered where it is registered. What it answers is
@@ -405,6 +410,262 @@ final class SyncTest extends TestCase
     }
 
     /**
+     * **`CS:getctag`, and the specification that defines it is Apple's own.**
+     * There is no RFC: `caldav-ctag-03` (C. Daboo, Apple, 27 May 2015) is a
+     * Calendar Server extension, and §4.1 of it is the whole definition —
+     *
+     * > Name: getctag
+     * > Namespace: http://calendarserver.org/ns/
+     * > Purpose: Specifies a "synchronization" token used to indicate when the
+     * > contents of a calendar or scheduling Inbox or Outbox collection have
+     * > changed.
+     *
+     * — which R-SYNC-06 asks for "zusätzlich", beside §4's own token.
+     */
+    public function testACalendarCarriesTheTagTheExtensionDefines(): void
+    {
+        $answer = (string) $this->propFind($this->asking('<T:getctag/>'), self::CALENDAR)->body();
+
+        self::assertStringContainsString('http://calendarserver.org/ns/', $answer);
+        self::assertNotSame('', $this->tagIn($answer));
+        self::assertStringNotContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * **And its value is the token itself, which the specification asks for in
+     * as many words.** Its abstract, deprecating itself in favour of RFC 6578:
+     *
+     * > Whilst most modern clients do support the WebDAV Sync REPORT, servers
+     * > MAY continue to support this specification by simply using the
+     * > DAV:sync-token property value for the getctag property value, in order
+     * > to provide backwards compatibility with old clients.
+     *
+     * So the two names answer one number, and that is not a shortcut: a server
+     * whose tag and token named different states would be one whose answers
+     * about the same collection disagree, which is the trap §4 of RFC 6578
+     * closes for the property and the report with "at the same point in time".
+     */
+    public function testTheTagIsTheTokenItself(): void
+    {
+        $answer = (string) $this->propFind(
+            $this->asking('<T:getctag/><D:sync-token/>'),
+            self::CALENDAR,
+        )->body();
+
+        self::assertSame($this->tokenIn($answer), $this->tagIn($answer));
+    }
+
+    /**
+     * **The tag comes back for `allprop` and the token does not**, which is
+     * the one place the two part company. §4.1 of the extension: it "SHOULD be
+     * returned by a PROPFIND DAV:allprop request". §4 of RFC 6578, about its
+     * own property: "It SHOULD NOT be returned by a PROPFIND DAV:allprop
+     * request."
+     *
+     * Two SHOULDs pointing opposite ways over the same number, and each is
+     * followed for the property it is written about.
+     */
+    public function testTheTagComesBackForAllpropAndTheTokenDoesNot(): void
+    {
+        $answer = (string) $this->propFind(
+            '<propfind xmlns="DAV:"><allprop/></propfind>',
+            self::CALENDAR,
+        )->body();
+
+        self::assertStringContainsString('getctag', $answer);
+        self::assertStringNotContainsString('sync-token', $answer);
+    }
+
+    /**
+     * **A collection that is no calendar carries no tag**, §4.1's conformance
+     * naming where it belongs: "This property MUST be defined on a calendar or
+     * scheduling Inbox or Outbox collection resource."
+     *
+     * The question is asked of the resource type rather than of a PHP class,
+     * because that is what a calendar collection *is*: RFC 4791 §4.2 has one
+     * as a collection whose `DAV:resourcetype` carries `CALDAV:calendar`.
+     */
+    public function testACollectionThatIsNoCalendarCarriesNoTag(): void
+    {
+        $answer = (string) $this->propFind($this->asking('<T:getctag/>'), self::COLLECTION)->body();
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * And neither does a file: §4.1 says "collection resource", and a tag on
+     * an event would tell a client to poll the thing it already has an
+     * `ETag` for.
+     */
+    public function testAFileCarriesNoTag(): void
+    {
+        $answer = (string) $this->propFind(
+            $this->asking('<T:getctag/>'),
+            self::CALENDAR . '/kept.ics',
+        )->body();
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * **A calendar this server tracks no revision of carries no tag either.**
+     * §3.1 of the extension has the value "guaranteed to be unique over the
+     * lifetime" of the collection, and nothing can promise that about a
+     * collection whose changes nobody records — the same reason §4's token is
+     * withheld there.
+     */
+    public function testACalendarWithNoRevisionCarriesNoTag(): void
+    {
+        $answer = (string) $this->propFind(
+            $this->asking('<T:getctag/>'),
+            self::CALENDAR,
+            FixedRevisions::none(),
+        )->body();
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * **§3.1's MUST, in all three of its cases:** "Whenever a calendar
+     * resource is added to, modified or deleted from the calendar collection,
+     * the value of the CS:getctag property MUST change."
+     *
+     * @param string $method What the client does
+     * @param string $member Where it does it
+     * @param string|null $body What it sends, or nothing for a `DELETE`
+     */
+    #[DataProvider('whatChangesACalendar')]
+    public function testTheTagChangesWhenTheCalendarsContentsChange(
+        string $method,
+        string $member,
+        ?string $body,
+    ): void {
+        [$server] = $this->synchronising();
+
+        $before = $this->tagOn($server, self::CALENDAR);
+
+        $server->handle(new Request(
+            $method,
+            self::CALENDAR . $member,
+            body: $body === null ? null : new Body($body),
+        ));
+
+        self::assertNotSame($before, $this->tagOn($server, self::CALENDAR));
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string|null}>
+     */
+    public static function whatChangesACalendar(): iterable
+    {
+        yield 'a resource added' => ['PUT', '/added.ics', 'BEGIN:VCALENDAR'];
+
+        yield 'a resource modified' => ['PUT', '/kept.ics', 'BEGIN:VCALENDAR'];
+
+        yield 'a resource deleted' => ['DELETE', '/kept.ics', null];
+    }
+
+    /**
+     * And it stands still while nothing happens — the other half of R-SYNC-06,
+     * which asks that the value change *genau* on a change of contents. A tag
+     * that moved on its own would send every client back for the whole
+     * collection, which is the cost this property exists to avoid.
+     */
+    public function testTheTagStandsStillWhileNothingHappens(): void
+    {
+        [$server] = $this->synchronising();
+
+        self::assertSame($this->tagOn($server, self::CALENDAR), $this->tagOn($server, self::CALENDAR));
+    }
+
+    /**
+     * **§4.1: "It MUST be protected".** A client that could write the tag
+     * could tell the server that nothing had changed.
+     */
+    public function testTheTagIsProtected(): void
+    {
+        $server = $this->server();
+
+        $this->plugin($server)->register(new Report($server));
+
+        $answer = (string) $server->handle(new Request(
+            'PROPPATCH',
+            self::CALENDAR,
+            headers: new Headers(['Content-Type' => 'application/xml']),
+            body: new Body(
+                '<propertyupdate xmlns="DAV:" xmlns:T="http://calendarserver.org/ns/">'
+                . '<set><prop><T:getctag>mine</T:getctag></prop></set></propertyupdate>',
+            ),
+        ))->body();
+
+        self::assertStringContainsString('cannot-modify-protected-property', $answer);
+    }
+
+    /**
+     * **And nothing else is protected here**, which is the half that says what
+     * the two guards above are *for*. §4 protects its token and §4.1 of the
+     * extension protects the tag; every other property on a calendar belongs
+     * to whoever keeps it.
+     *
+     * Without this case a plugin that refused **every** `PROPPATCH` would pass
+     * all of the above and make a calendar unwritable — which is what the
+     * mutation round demonstrated: `$a === X || $a === Y` negated to
+     * `!($a === X) || !($a === Y)` is true for every name, since no name is
+     * both.
+     */
+    public function testNoOtherPropertyIsProtectedHere(): void
+    {
+        $server = $this->server();
+
+        $this->plugin($server)->register(new Report($server));
+
+        $answer = (string) $server->handle(new Request(
+            'PROPPATCH',
+            self::CALENDAR,
+            headers: new Headers(['Content-Type' => 'application/xml']),
+            body: new Body(
+                '<propertyupdate xmlns="DAV:"><set><prop><displayname>Work</displayname></prop></set>'
+                . '</propertyupdate>',
+            ),
+        ))->body();
+
+        self::assertStringNotContainsString('cannot-modify-protected-property', $answer);
+        self::assertStringContainsString('200 OK', $answer);
+    }
+
+    /**
+     * **§4.1, the sentence that asks for more than monotonicity:** "each
+     * change MUST result in a value that is different from any other used with
+     * that collection URI." Not merely different from the one before — unique
+     * over the collection's whole life, which §3.1 repeats as "guaranteed to
+     * be unique over the lifetime".
+     *
+     * So a series of changes is a series of values with no repeat in it, which
+     * a counter that only ever grows satisfies and a hash of the contents
+     * would not.
+     */
+    public function testNoTagIsEverUsedTwiceForTheSameCalendar(): void
+    {
+        [$server] = $this->synchronising();
+        $seen = [$this->tagOn($server, self::CALENDAR)];
+
+        foreach (['one', 'two', 'three'] as $name) {
+            $server->handle(new Request(
+                'PUT',
+                self::CALENDAR . '/' . $name . '.ics',
+                body: new Body('BEGIN:VCALENDAR'),
+            ));
+
+            $seen[] = $this->tagOn($server, self::CALENDAR);
+        }
+
+        $server->handle(new Request('DELETE', self::CALENDAR . '/one.ics'));
+        $seen[] = $this->tagOn($server, self::CALENDAR);
+
+        self::assertSame($seen, array_values(array_unique($seen)));
+    }
+
+    /**
      * **How much a report will answer at once is the deployment's to set**
      * (R-SYNC-04), and §3.6 has it as the server's own choice: "A server MAY
      * limit the number of member URLs in a response, for example, to limit the
@@ -557,16 +818,57 @@ final class SyncTest extends TestCase
     }
 
     /**
+     * A `PROPFIND` body naming properties in both namespaces, so that a case
+     * can ask for the tag and the token in one request and compare them.
+     */
+    private function asking(string $properties): string
+    {
+        return sprintf(
+            '<D:propfind xmlns:D="DAV:" xmlns:T="http://calendarserver.org/ns/"><D:prop>%s</D:prop></D:propfind>',
+            $properties,
+        );
+    }
+
+    /**
+     * The tag an answer carries, whichever prefix the writer chose for the
+     * extension's namespace.
+     */
+    private function tagIn(string $body): string
+    {
+        if (preg_match('~<[^>]*:getctag[^>]*>([^<]+)</[^>]*:getctag>~', $body, $found) !== 1) {
+            self::fail('The answer carries no getctag: ' . $body);
+        }
+
+        return $found[1];
+    }
+
+    /**
+     * The tag that server answers for that collection now.
+     */
+    private function tagOn(Server $server, string $path): string
+    {
+        return $this->tagIn((string) $server->handle(new Request(
+            'PROPFIND',
+            $path,
+            headers: new Headers(['Depth' => '0']),
+            body: new Body($this->asking('<T:getctag/>')),
+        ))->body());
+    }
+
+    /**
      * A home with one file in it.
      */
     private function server(): Server
     {
         $home = (new MemoryCollection('home'))->add(new MemoryFile('one.ics', 'BEGIN:VCALENDAR'));
+        $calendar = Calendar::of((new MemoryPropertyCollection('calendar'))->add(
+            new MemoryFile('kept.ics', 'BEGIN:VCALENDAR'),
+        ));
         $events = new EventEmitter();
 
         $events->on(PropertiesRequested::class, (new LiveProperties())(...));
 
-        $server = new Server(new Tree((new MemoryCollection(''))->add($home)), $events);
+        $server = new Server(new Tree((new MemoryCollection(''))->add($home)->add($calendar)), $events);
 
         $server->onMethod('PROPFIND', (new PropFind($server))(...));
         $server->onMethod('PROPPATCH', (new PropPatch($server))(...));
