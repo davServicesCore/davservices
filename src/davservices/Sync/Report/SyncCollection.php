@@ -413,11 +413,12 @@ final class SyncCollection
         int $depth,
         array $names,
     ): void {
-        $changes = $this->revisions->changesSince($held, $path, $depth) ?? throw new Forbidden(
+        $answer = $this->revisions->changesSince($held, $path, $depth) ?? throw new Forbidden(
             'This server keeps no change history, so no token it ever returned is a state it can report from: the DAV:valid-sync-token precondition of RFC 6578 §3.2.',
             self::VALID_SYNC_TOKEN,
         );
 
+        $changes = $answer->members();
         $present = $this->whatIsStillThere($changes);
         $listing = $this->server->events()->emit(new ListingMembers($path, array_keys($present)));
         $visible = array_flip($listing->visible());

@@ -249,20 +249,26 @@ final class Journal implements IRevisions
      * @param string $collection The request-URI's path
      * @param int $depth How far the `DAV:sync-level` reaches: 1 for the
      *                   immediate children, {@see self::EVERY_DEPTH} for all
+     * @param int $atMost How many members may be named, or
+     *                    {@see IRevisions::EVERYTHING} for all of them
      *
      * @throws Forbidden If the revision is older than what is still kept
      *                   (§3.2's `DAV:valid-sync-token`, R-SYNC-03)
      *
-     * @return array<string, Change> What became of each member, by path, in the
-     *                               order the changes happened
+     * @return Changes What became of each member, oldest change first, and the
+     *                 state that answer covers
      */
-    public function changesSince(int $revision, string $collection, int $depth): array
-    {
+    public function changesSince(
+        int $revision,
+        string $collection,
+        int $depth,
+        int $atMost = self::EVERYTHING,
+    ): Changes {
         $this->mustStillKnowWhatFollowed($revision);
 
         $found = [];
 
-        foreach ($this->entries->since($revision, $collection) as [, $member, $change]) {
+        foreach ($this->entries->since($revision, $collection) as [$at, $member, $change]) {
             if (!self::liesWithin($member, $collection, $depth)) {
                 continue;
             }
@@ -271,12 +277,61 @@ final class Journal implements IRevisions
             // reported**, which is §3.5's rule from both its sides at once.
             // Unsetting first is what keeps the order the order of the
             // changes: a member that moved again belongs where it moved last.
+            // §3.6's paging rests on that order — see below.
             unset($found[$member]);
 
-            $found[$member] = $change;
+            $found[$member] = [$at, $change];
         }
 
-        return self::withoutWhatARemovedCollectionTookWithIt($found);
+        return $this->pageOf(
+            self::withoutWhatARemovedCollectionTookWithIt($found),
+            $collection,
+            $revision,
+            $atMost,
+        );
+    }
+
+    /**
+     * As much of that history as was asked for, and the state it covers.
+     *
+     * **The page is the oldest changes**, and §3.6 leaves no other choice:
+     * "the DAV:sync-token value returned in the response MUST represent the
+     * correct state for the partial set of changes returned", and no single
+     * revision describes a page with a hole in it. RFC 5323 §2.3.1 would have
+     * allowed any subset — "the partial results returned MAY be any subset of
+     * the result set" — and this memo takes that back by asking the token to
+     * describe what came. So the cut is a cut across history and never a
+     * handful out of it, which is what lets the next asking pick up exactly
+     * where this one stopped.
+     *
+     * **A complete answer covers the collection, not its newest reported
+     * change**, because §4 has the property and the report agree "at the same
+     * point in time" and §3.3 has the token not depend on the level: a change
+     * deeper than the level asked for moves the collection on without
+     * appearing here.
+     *
+     * @param array<string, array{int, Change}> $found
+     * @param int $revision The state the caller holds, which is what a page
+     *                      carrying nothing covers
+     */
+    private function pageOf(array $found, string $collection, int $revision, int $atMost): Changes
+    {
+        $wasCutShort = count($found) > $atMost;
+        $page = $wasCutShort ? array_slice($found, 0, $atMost, true) : $found;
+
+        $members = [];
+        $ends = $revision;
+
+        foreach ($page as $member => [$at, $change]) {
+            $members[$member] = $change;
+            $ends = $at;
+        }
+
+        return new Changes(
+            $members,
+            $wasCutShort ? $ends : $this->revisionOf($collection),
+            $wasCutShort,
+        );
     }
 
     /**
@@ -342,15 +397,15 @@ final class Journal implements IRevisions
      * its collection removed has two entries, and only the collection's
      * removal is the client's business.
      *
-     * @param array<string, Change> $found
+     * @param array<string, array{int, Change}> $found
      *
-     * @return array<string, Change>
+     * @return array<string, array{int, Change}>
      */
     private static function withoutWhatARemovedCollectionTookWithIt(array $found): array
     {
         $gone = [];
 
-        foreach ($found as $member => $change) {
+        foreach ($found as $member => [, $change]) {
             if ($change === Change::Removed) {
                 $gone[] = $member;
             }
@@ -362,14 +417,14 @@ final class Journal implements IRevisions
 
         $kept = [];
 
-        foreach ($found as $member => $change) {
+        foreach ($found as $member => $entry) {
             foreach ($gone as $collection) {
                 if ($member !== $collection && self::liesUnder($member, $collection)) {
                     continue 2;
                 }
             }
 
-            $kept[$member] = $change;
+            $kept[$member] = $entry;
         }
 
         return $kept;

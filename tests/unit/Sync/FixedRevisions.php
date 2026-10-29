@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\Sync;
 
 use DavServices\Event\EventEmitter;
+use DavServices\Sync\Changes;
 use DavServices\Sync\IRevisions;
 
 /**
@@ -65,8 +66,12 @@ final class FixedRevisions implements IRevisions
      * Nothing is remembered, which §3.2 permits and §3.2's precondition is the
      * honest answer to.
      */
-    public function changesSince(int $revision, string $collection, int $depth): ?array
-    {
+    public function changesSince(
+        int $revision,
+        string $collection,
+        int $depth,
+        int $atMost = self::EVERYTHING,
+    ): ?Changes {
         return null;
     }
 
