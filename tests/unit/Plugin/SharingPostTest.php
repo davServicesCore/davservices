@@ -378,6 +378,24 @@ final class SharingPostTest extends TestCase
     }
 
     /**
+     * **But an owner written across several lines is still the owner.** A
+     * `DAV:owner` whose `DAV:href` arrives pretty-printed carries the
+     * newlines and the indentation with it, and RFC 4918's own examples are
+     * printed exactly that way — so a server that compared the text as it
+     * stood would refuse the sharer of every store that formats its
+     * properties.
+     */
+    public function testAnOwnerWrittenAcrossSeveralLinesIsStillTheOwner(): void
+    {
+        $calendar = new MemoryShareTarget('work', owner: "\n            /principals/alice/\n        ");
+
+        $response = $this->share('<CS:set>' . self::ERIC . '<CS:read/></CS:set>', $calendar);
+
+        self::assertSame(200, $response->status());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
      * **And nobody may share a calendar that nobody owns.** This is the case
      * the two guards exist for together: with no owner the sharer is nobody,
      * with nobody asking the asker is nobody, and a server that compared them
