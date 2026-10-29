@@ -14,7 +14,9 @@ declare(strict_types=1);
 namespace DavServices\Plugin;
 
 use Closure;
+use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
+use DavServices\CalDav\InviteNotification;
 use DavServices\CalDav\InviteStatus;
 use DavServices\CalDav\IShareable;
 use DavServices\CalDav\IShareTarget;
@@ -36,6 +38,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
 use DavServices\Xml\Element;
+use InvalidArgumentException;
 
 /**
  * What a client may read about a shared calendar (R-CAL-20).
@@ -149,6 +152,12 @@ final class Sharing
      */
     private const OWNER = '{DAV:}owner';
 
+    /**
+     * What §6.18's `CS:common-name` is filled from, where the sharer's
+     * principal has one.
+     */
+    private const DISPLAY_NAME = '{DAV:}displayname';
+
     private const USER = '{http://calendarserver.org/ns/}user';
 
     private const COMMON_NAME = '{http://calendarserver.org/ns/}common-name';
@@ -161,8 +170,16 @@ final class Sharing
 
     private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
 
-    public function __construct(private readonly Server $server)
-    {
+    /**
+     * @param Notifications|null $notifications Where §5.3.2's notifications
+     *                                          are deposited. Needed only for
+     *                                          the `POST`, and then it is
+     *                                          needed: see {@see register()}
+     */
+    public function __construct(
+        private readonly Server $server,
+        private readonly ?Notifications $notifications = null,
+    ) {
     }
 
     /**
@@ -175,8 +192,20 @@ final class Sharing
      * behaviour for it, so a server owes none, and a deployment that wants
      * the properties without the change simply does not hand one over.
      *
+     * **And a `POST` needs somewhere for its notifications to go.** §5.3.2
+     * makes a notification part of every sharing change rather than an extra
+     * — §3 gives it as the whole flow, "If the request succeeds, a
+     * notification is sent to the sharee" — so a server that moved a sharee
+     * list and told nobody would leave the sharee never knowing they had
+     * been invited. That is said out loud here, at wiring time, rather than
+     * discovered later from a message that never arrived.
+     *
      * @param Post|null $post The `POST` method to hang §5.3.2's `CS:share`
      *                        on, where the application has one
+     *
+     * @throws InvalidArgumentException If a `POST` is to be answered and this
+     *                                  plugin was given no notifications to
+     *                                  deposit into
      */
     public function register(?Post $post = null): void
     {
@@ -185,7 +214,19 @@ final class Sharing
         $events->on(PropertiesRequested::class, $this->describe(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
 
-        $post?->on(self::SHARE, $this->share(...));
+        if ($post === null) {
+            return;
+        }
+
+        $notifications = $this->notifications ?? throw new InvalidArgumentException(
+            'A share POST owes a notification for every change it makes (§5.3.2), so it needs a notification plugin to deposit one with.',
+        );
+
+        $post->on(self::SHARE, fn (Request $request, Element $document): Response => $this->share(
+            $request,
+            $document,
+            $notifications,
+        ));
     }
 
     /**
@@ -352,7 +393,7 @@ final class Sharing
      * @throws BadRequest If the document asks for nothing, or for something
      *                    §6.27 and §6.28 do not allow
      */
-    private function share(Request $request, Element $document): Response
+    private function share(Request $request, Element $document, Notifications $notifications): Response
     {
         $path = $this->server->path($request);
         $node = $this->server->tree()->node($path);
@@ -385,14 +426,203 @@ final class Sharing
             throw new Forbidden('Only the principal that DAV:owner names may change the sharee list (§5.5.5).');
         }
 
-        foreach (self::instructionsIn($document, $store->sharees()) as $instruction) {
+        $before = $store->sharees();
+
+        foreach (self::instructionsIn($document, $before) as $instruction) {
             $instruction($store);
         }
+
+        $this->tellWhoeverItConcerns(
+            $notifications,
+            $request,
+            $this->server->hrefOf($path, $node),
+            $asking,
+            $before,
+            $store->sharees(),
+        );
 
         // §5.3.2.1 and §5.3.2.2 both answer `200 OK` with `Cache-Control:
         // no-cache` and no body. There is nothing to say that the sharee list
         // does not say, and a client that wants it reads `CS:invite`.
         return (new Response(200))->withHeader('Cache-Control', 'no-cache');
+    }
+
+    /**
+     * §5.3.2's MUST: everyone whose standing changed is told, and nobody
+     * else.
+     *
+     * > In each case the server MUST send a notification message to any
+     * > sharees whose status is changed (added, modified or removed) […] The
+     * > server SHOULD NOT send notification messages to sharees whose status
+     * > is unchanged.
+     *
+     * **Worked out from the list before and the list after**, rather than
+     * from what the request asked for. A store that declined a change quietly
+     * therefore causes no message about something that is not so, and one
+     * that made a different change from the one asked for sends a message
+     * about what it really did.
+     *
+     * @param string $where The sharer's calendar, as §6.17 wants it
+     * @param string $asking The sharer, as a path inside this tree
+     * @param list<Sharee> $before
+     * @param list<Sharee> $after
+     */
+    private function tellWhoeverItConcerns(
+        Notifications $notifications,
+        Request $request,
+        string $where,
+        string $asking,
+        array $before,
+        array $after,
+    ): void {
+        [$sharer, $sharerIsCalled] = $this->sharerIn($asking);
+
+        foreach ($after as $sharee) {
+            $was = self::onTheList($sharee->href(), $before);
+
+            if ($was !== null && self::nothingAMessageWouldSayDiffers($was, $sharee)) {
+                continue;
+            }
+
+            $this->tell(
+                $notifications,
+                $request,
+                $sharee->href(),
+                InviteNotification::aboutAChange($sharee, $where, $sharer, $sharerIsCalled),
+            );
+        }
+
+        foreach ($before as $sharee) {
+            if (self::onTheList($sharee->href(), $after) !== null) {
+                continue;
+            }
+
+            $this->tell(
+                $notifications,
+                $request,
+                $sharee->href(),
+                InviteNotification::aboutARemoval($sharee, $where, $sharer, $sharerIsCalled),
+            );
+        }
+    }
+
+    /**
+     * Leaves one message where its sharee will find it, where there is a
+     * message to leave and somebody on this server to leave it for.
+     */
+    private function tell(
+        Notifications $notifications,
+        Request $request,
+        string $href,
+        ?InviteNotification $notice,
+    ): void {
+        if ($notice === null) {
+            return;
+        }
+
+        $sharee = $this->principalAt($href, $request);
+
+        if ($sharee === null) {
+            return;
+        }
+
+        $notifications->deposit($sharee, $notice->uid(), $notice->toElement());
+    }
+
+    /**
+     * **Whether a message about this change would say anything new.**
+     *
+     * What counts as a change is what §6.15 carries: the state, the access
+     * and the summary. A new common name is therefore not one — the
+     * notification has no `CS:common-name` for the sharee at all, so a
+     * message about it would be the same message again, and §5.3.2's "SHOULD
+     * NOT send notification messages to sharees whose status is unchanged"
+     * covers it.
+     */
+    private static function nothingAMessageWouldSayDiffers(Sharee $was, Sharee $is): bool
+    {
+        return $was->status() === $is->status()
+            && $was->access() === $is->access()
+            && $was->summary() === $is->summary();
+    }
+
+    /**
+     * The entry for this address in a list, or null where it is on none.
+     *
+     * @param list<Sharee> $sharees
+     */
+    private static function onTheList(string $href, array $sharees): ?Sharee
+    {
+        foreach ($sharees as $sharee) {
+            if ($sharee->href() === $href) {
+                return $sharee;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The sharer as §6.18 wants them: an address, and a name where anything
+     * knows one.
+     *
+     * A principal that is not in the tree is still named by address — this
+     * server has just taken its word for who is asking, and a dangling
+     * `DAV:owner` is a deployment's problem rather than a reason to refuse a
+     * change that has already been made.
+     *
+     * @return array{string, string|null}
+     */
+    private function sharerIn(string $asking): array
+    {
+        if (!$this->server->tree()->exists($asking)) {
+            return [$this->server->href($asking), null];
+        }
+
+        $node = $this->server->tree()->node($asking);
+        $name = Answers::about($this->server->events(), $asking, $node, PropFindForm::Named, [self::DISPLAY_NAME])
+            ->byStatus()[200][self::DISPLAY_NAME] ?? null;
+
+        return [$this->server->hrefOf($asking, $node), is_string($name) ? $name : null];
+    }
+
+    /**
+     * The principal a sharee's address names on this server, or null where it
+     * names none.
+     *
+     * §5.3.2 lets the address be one of three things, and only the first can
+     * be delivered to: "either a principal-URL for a sharee hosted on the
+     * same server, a calendar user address or email address. In the case of
+     * the later two, the sharee might not be a user on the same server -
+     * though in that case **how invitations are sent or access enabled is out
+     * of scope** for this specification."
+     *
+     * A scheme of its own is what tells the second and third from the first.
+     * `http` and `https` are let through because a principal-URL may be
+     * absolute, and {@see Server::pathOfUrl()} is what then decides whether
+     * it is this server's.
+     */
+    private function principalAt(string $href, Request $request): ?Principal
+    {
+        $scheme = parse_url($href, PHP_URL_SCHEME);
+
+        if ($scheme !== null && !in_array($scheme, ['http', 'https'], true)) {
+            return null;
+        }
+
+        try {
+            $path = $this->server->pathOfUrl($href, $request);
+        } catch (DavException | MalformedPath) {
+            return null;
+        }
+
+        if (!$this->server->tree()->exists($path)) {
+            return null;
+        }
+
+        $node = $this->server->tree()->node($path);
+
+        return $node instanceof Principal ? $node : null;
     }
 
     /**

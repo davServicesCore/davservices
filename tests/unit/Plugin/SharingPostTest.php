@@ -13,10 +13,13 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\Plugin;
 
+use DateTimeImmutable;
 use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
+use DavServices\CalDav\InviteNotification;
 use DavServices\CalDav\InviteStatus;
 use DavServices\CalDav\IShareable;
+use DavServices\CalDav\NotificationCollection;
 use DavServices\CalDav\Sharee;
 use DavServices\CalDav\SharingAccess;
 use DavServices\Dav\Acl\PrincipalInfo;
@@ -32,11 +35,14 @@ use DavServices\Http\Body;
 use DavServices\Http\Headers;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
+use DavServices\Plugin\Notifications;
 use DavServices\Plugin\Sharing;
 use DavServices\Tests\Unit\CalDav\MemoryShareable;
 use DavServices\Tests\Unit\CalDav\MemoryShareTarget;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
+use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Xml\Writer;
+use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -87,11 +93,24 @@ use PHPUnit\Framework\TestCase;
  * somebody the sharer never saw confirmed.
  */
 #[CoversClass(Sharing::class)]
+#[CoversClass(InviteNotification::class)]
+#[CoversClass(Notifications::class)]
 final class SharingPostTest extends TestCase
 {
     private const NS = 'http://calendarserver.org/ns/';
 
+    /**
+     * §5.3.2's second form of address: "a calendar user address or email
+     * address", which may be somebody this server has never heard of.
+     */
     private const ERIC = '<D:href>mailto:eric@example.com</D:href>';
+
+    /**
+     * And its first: "a principal-URL for a sharee hosted on the same
+     * server", which is the only one this server can deliver a notification
+     * to.
+     */
+    private const ERIC_HERE = '<D:href>/principals/eric/</D:href>';
 
     /**
      * **§5.3.2: a `CS:set` adds the sharee**, with everything §6.27 lets the
@@ -449,6 +468,475 @@ final class SharingPostTest extends TestCase
     }
 
     /**
+     * **§5.3.2's MUST: whoever is affected is told.**
+     *
+     * > In each case the server MUST send a notification message to any
+     * > sharees whose status is changed (added, modified or removed),
+     * > indicating to them a change in status for the shared calendar. […]
+     * > This is accomplished by sending a CS:invite-notification
+     * > (Section 6.15) notification to each sharee.
+     *
+     * Asserted as one string from the uid onwards, because §6.15's grammar is
+     * a sequence and the order is half of what is being asserted:
+     *
+     *     <!ELEMENT invite-notification (
+     *                 uid, DAV:href,
+     *                 (invite-noresponse | invite-deleted |
+     *                 invite-accepted | invite-declined),
+     *                 access, hosturl, organizer,
+     *                 summary?,
+     *                 CALDAV:supported-calendar-component-set?>
+     *
+     * The uid itself is a digest, so it is matched for its shape; what it is
+     * derived from is {@see \DavServices\CalDav\InviteNotification}'s business.
+     *
+     * And it arrives wrapped as §6.24 and §6.25 require — a `CS:notification`
+     * whose first child is a `CS:dtstamp`, which is why the clock is a fixed
+     * one here.
+     */
+    public function testAddingAShareeLeavesThemTheWholeOfTheMemosNotification(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            '<CS:set>' . self::ERIC_HERE . '<CS:summary>Shared workspace</CS:summary><CS:read-write/></CS:set>',
+            new MemoryShareTarget('work'),
+        );
+
+        $document = self::theOneNotificationIn($eric);
+
+        // §6.24: `<!ELEMENT notification (CS:dtstamp, (invite-notification |
+        // invite-reply)>`. The root carries the namespace declarations, which
+        // is {@see Writer}'s business and not this case's, so the sequence is
+        // what is asserted rather than the whole opening tag.
+        self::assertStringContainsString('<cs:notification ', $document);
+        self::assertStringContainsString(
+            '<cs:dtstamp>2026-10-29T19:30:00Z</cs:dtstamp><cs:invite-notification>',
+            $document,
+        );
+        self::assertMatchesRegularExpression('~<cs:uid>[0-9a-f]{32}</cs:uid>~', $document);
+        self::assertStringContainsString(
+            '</cs:uid><d:href>/principals/eric/</d:href>'
+            . '<cs:invite-noresponse/>'
+            . '<cs:access><cs:read-write/></cs:access>'
+            . '<cs:hosturl><d:href>/calendars/work/</d:href></cs:hosturl>'
+            . '<cs:organizer><d:href>/principals/alice</d:href>'
+            . '<cs:common-name>Alice</cs:common-name></cs:organizer>'
+            . '<cs:summary>Shared workspace</cs:summary>'
+            . '</cs:invite-notification></cs:notification>',
+            $document,
+        );
+    }
+
+    /**
+     * **And whoever is taken off is told that it is gone**, with §6.7's
+     * element: "this element is used to indicate to the sharee that a shared
+     * calendar has been unshared by the sharer."
+     *
+     * **With the access they had**, because §6.15's grammar makes `access`
+     * required even in this message — so the old entry is what the notice is
+     * built from, and a server that had already forgotten it could not write
+     * a conforming document.
+     */
+    public function testTakingAShareeOffTellsThemTheCalendarIsGone(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            '<CS:remove>' . self::ERIC_HERE . '</CS:remove>',
+            new MemoryShareTarget('work', sharees: [
+                new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted),
+            ]),
+        );
+
+        self::assertStringContainsString(
+            '<cs:invite-deleted/><cs:access><cs:read/></cs:access>',
+            self::theOneNotificationIn($eric),
+        );
+    }
+
+    /**
+     * **§5.3.2: "The server SHOULD NOT send notification messages to sharees
+     * whose status is unchanged."** A `CS:set` that asks for what is already
+     * so is no change, and a sharee told about it again would be asked to
+     * look at something that had not happened.
+     */
+    public function testAShareeWhoseStatusDidNotChangeIsNotToldAgain(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            '<CS:set>' . self::ERIC_HERE . '<CS:summary>Shared workspace</CS:summary><CS:read/></CS:set>',
+            new MemoryShareTarget('work', sharees: [
+                new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted, 'Eric York', 'Shared workspace'),
+            ]),
+        );
+
+        self::assertSame([], $eric->children());
+    }
+
+    /**
+     * **And a real change is told about**, which is the half that keeps the
+     * case above from passing on a plugin that notifies nobody ever.
+     *
+     * What counts as a change is **what a notification carries**: §6.15 holds
+     * the state, the access and the summary, so a difference in any of those
+     * is a difference the sharee is being told about.
+     */
+    #[DataProvider('changesWorthTelling')]
+    public function testAChangeWorthTellingIsTold(string $instruction): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            $instruction,
+            new MemoryShareTarget('work', sharees: [
+                new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted, 'Eric York', 'Shared workspace'),
+            ]),
+        );
+
+        self::assertStringContainsString('<cs:invite-accepted/>', self::theOneNotificationIn($eric));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function changesWorthTelling(): iterable
+    {
+        yield 'the access' => [
+            '<CS:set>' . self::ERIC_HERE . '<CS:summary>Shared workspace</CS:summary><CS:read-write/></CS:set>',
+        ];
+
+        yield 'the summary' => [
+            '<CS:set>' . self::ERIC_HERE . '<CS:summary>Our week</CS:summary><CS:read/></CS:set>',
+        ];
+    }
+
+    /**
+     * **But a new common name is nothing to tell them about**, and §6.15's
+     * grammar is the reason: the notification carries no `CS:common-name` for
+     * the sharee at all, so there is nothing in the message that would
+     * differ. It is a change to what the *sharer* sees in `CS:invite`.
+     */
+    public function testANewCommonNameIsNothingToTellTheShareeAbout(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            '<CS:set>' . self::ERIC_HERE . '<CS:common-name>E. York</CS:common-name>'
+            . '<CS:summary>Shared workspace</CS:summary><CS:read/></CS:set>',
+            $calendar = new MemoryShareTarget('work', sharees: [
+                new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted, 'Eric York', 'Shared workspace'),
+            ]),
+        );
+
+        self::assertSame([], $eric->children());
+        self::assertSame('E. York', self::only($calendar)->commonName());
+    }
+
+    /**
+     * **A sharee who is nobody on this server is written to nowhere**, and
+     * §5.3.2 says as much: "the sharee might not be a user on the same server
+     * - though in that case how invitations are sent or access enabled is out
+     * of scope for this specification."
+     *
+     * The change still happens and the answer is still `200`: out of scope is
+     * not a failure.
+     */
+    #[DataProvider('addressesOfTheirOwn')]
+    public function testAShareeWhoIsNobodyHereIsWrittenToNowhere(string $address): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>' . $address . '</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * §5.3.2's other two forms, each with a scheme of its own.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function addressesOfTheirOwn(): iterable
+    {
+        yield 'an email address' => ['mailto:eric@example.com'];
+        yield 'a calendar user address' => ['urn:uuid:4c4c4c4c-eric'];
+    }
+
+    /**
+     * **But an absolute principal-URL on this server is one of ours.** §5.3.2
+     * calls the first form "a principal-URL for a sharee hosted on the same
+     * server", and nothing says it has to arrive as a path — so `http` and
+     * `https` are let through and {@see \DavServices\Dav\Server::pathOfUrl()}
+     * decides whose server it names, by the same rule a `Destination` header
+     * is read with.
+     */
+    public function testAnAbsolutePrincipalUrlOnThisServerIsOneOfOurs(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareWith(
+            $eric,
+            '<CS:set><D:href>http://calendar.example.com/principals/eric/</D:href><CS:read/></CS:set>',
+            new MemoryShareTarget('work'),
+        );
+
+        self::assertStringContainsString('<cs:invite-noresponse/>', self::theOneNotificationIn($eric));
+    }
+
+    /**
+     * And a sharer whose own principal is not in the tree is named by address
+     * alone: this server has just taken somebody's word for who is asking,
+     * and a dangling `DAV:owner` is a deployment's problem rather than a
+     * reason to undo a change that has already been made.
+     */
+    public function testASharerWhoseOwnPrincipalIsMissingIsNamedByAddressAlone(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $this->shareOn(
+            $this->server(
+                new MemoryShareTarget('work', owner: '/principals/ghost/'),
+                asking: 'principals/ghost',
+                ericsNotifications: NotificationCollection::of($eric),
+            ),
+            '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>',
+        );
+
+        self::assertStringContainsString(
+            '<cs:organizer><d:href>/principals/ghost</d:href></cs:organizer>',
+            self::theOneNotificationIn($eric),
+        );
+    }
+
+    /**
+     * **And neither is one with no notification collection**, which §4.1.1
+     * calls a calendar user "not enabled for notification messages on the
+     * server". There is nowhere to put it, and §5.3.2's MUST cannot reach
+     * further than the mechanism §4 provides.
+     */
+    public function testAShareeWithNoNotificationCollectionIsWrittenToNowhere(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>/principals/wilfredo/</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * **Nor somewhere that is no collection at all.** A deployment that put
+     * something else where a notification collection belongs gets no
+     * notification rather than a failed share: §5.3.2's change is what the
+     * sharer asked for, and the message is what this server owes on top of
+     * it.
+     */
+    public function testSomewhereThatIsNoCollectionIsNoPlaceForANotification(): void
+    {
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareOn(
+            $this->server($calendar, ericsNotifications: new MemoryFile('eric', 'not a collection')),
+            '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>',
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * **A sharee the store calls invalid is written to nowhere either**, and
+     * §6.15's grammar is why: its state is one of four elements and
+     * `CS:invite-invalid` is not among them. §6.10 says what the state means
+     * — "the corresponding sharee is not a valid calendar user known to the
+     * server" — so there is nobody to send anything to, and the entry stands
+     * on the calendar to tell the sharer so.
+     */
+    public function testAShareeTheStoreCallsInvalidIsWrittenToNowhere(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget(
+            'work',
+            whenShared: static fn (Sharee $sharee): Sharee => new Sharee(
+                $sharee->href(),
+                $sharee->access(),
+                InviteStatus::Invalid,
+            ),
+        );
+
+        $this->shareWith($eric, '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>', $calendar);
+
+        self::assertSame([], $eric->children());
+        self::assertSame(InviteStatus::Invalid, self::only($calendar)->status());
+    }
+
+    /**
+     * **A change the store declined tells nobody**, because what is notified
+     * about is worked out from the list before and the list after rather than
+     * from what was asked for. A store that quietly keeps its list as it was
+     * cannot cause a message about something that is not so.
+     */
+    public function testAChangeTheStoreDeclinedTellsNobody(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work', whenShared: static fn (): ?Sharee => null);
+
+        $response = $this->shareWith($eric, '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>', $calendar);
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertSame([], $calendar->sharees());
+    }
+
+    /**
+     * **The second notice about one invitation replaces the first.** §4 makes
+     * deleting a notification "no longer relevant or valid" a server's MAY,
+     * and P7-06 declined it as a judgement about somebody's data — but this
+     * is the one case where there is no judgement to make: the superseded
+     * message says the access is one thing while this server has just made it
+     * another, and a client acting on the stale one acts wrongly.
+     *
+     * The invitation is what the uid identifies (§6.16), so the resource is
+     * the same one both times.
+     */
+    public function testTheSecondNoticeAboutOneInvitationReplacesTheFirst(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $this->shareWith($eric, '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>', $calendar);
+        $this->shareWith($eric, '<CS:set>' . self::ERIC_HERE . '<CS:read-write/></CS:set>', $calendar);
+
+        self::assertStringContainsString(
+            '<cs:access><cs:read-write/></cs:access>',
+            self::theOneNotificationIn($eric),
+        );
+    }
+
+    /**
+     * §6.18 makes the sharer's `CS:common-name` optional — "In some cases
+     * servers might have directory information that includes only the common
+     * name" — so a principal nobody named is named by address alone rather
+     * than with an empty element.
+     */
+    public function testASharerNobodyNamedIsNamedByAddressAlone(): void
+    {
+        $calendar = new MemoryShareTarget('work');
+        $eric = new MemoryCollection('eric');
+
+        $this->shareOn(
+            $this->server($calendar, sharerIsCalled: null, ericsNotifications: NotificationCollection::of($eric)),
+            '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set>',
+        );
+
+        $document = self::theOneNotificationIn($eric);
+
+        self::assertStringContainsString(
+            '<cs:organizer><d:href>/principals/alice</d:href></cs:organizer>',
+            $document,
+        );
+        self::assertStringNotContainsString('common-name', $document);
+    }
+
+    /**
+     * And a refused request tells nobody, for the same reason it changes
+     * nothing: the instructions are carried out after the whole document has
+     * been read, and notifications after that.
+     */
+    public function testARefusedRequestTellsNobody(): void
+    {
+        $eric = new MemoryCollection('eric');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set>' . self::ERIC_HERE . '<CS:read/></CS:set><CS:remove/>',
+            new MemoryShareTarget('work'),
+        );
+
+        self::assertSame(400, $response->status());
+        self::assertSame([], $eric->children());
+    }
+
+    /**
+     * **And a `POST` cannot be wired without somewhere for its notifications
+     * to go.** §5.3.2's MUST is part of the change, not an extra: a server
+     * that moved a sharee list and told nobody would leave §3's whole flow —
+     * "If the request succeeds, a notification is sent to the sharee" —
+     * broken, and the sharee would never learn they had been invited.
+     *
+     * Said out loud at wiring time rather than at request time, the way
+     * {@see \DavServices\Dav\Event\CurrentPrincipalRequested} says two
+     * listeners disagreeing about identity out loud: of all the things to
+     * discover from a missing notification, this would be the worst.
+     */
+    public function testAPostNeedsSomewhereForItsNotificationsToGo(): void
+    {
+        $server = new Server(new Tree(new MemoryCollection('')));
+
+        $this->expectException(InvalidArgumentException::class);
+
+        (new Sharing($server))->register(new Post($server));
+    }
+
+    /**
+     * The one notification deposited in a store, as it was written.
+     */
+    private static function theOneNotificationIn(MemoryCollection $store): string
+    {
+        $children = $store->children();
+
+        self::assertCount(1, $children);
+
+        $notification = $children[0] ?? self::fail('nothing was deposited');
+
+        self::assertInstanceOf(MemoryFile::class, $notification);
+
+        return $notification->get();
+    }
+
+    /**
+     * What a share does, with Eric's notifications kept where they can be
+     * read back.
+     */
+    private function shareWith(
+        MemoryCollection $ericsNotifications,
+        string $instructions,
+        MemoryShareTarget $calendar,
+    ): Response {
+        return $this->shareOn(
+            $this->server($calendar, ericsNotifications: NotificationCollection::of($ericsNotifications)),
+            $instructions,
+        );
+    }
+
+    private function shareOn(Server $server, string $instructions): Response
+    {
+        return $server->handle(self::requestOf(
+            sprintf('<CS:share xmlns:D="DAV:" xmlns:CS="%s">%s</CS:share>', self::NS, $instructions),
+        ));
+    }
+
+    /**
      * The one sharee on the list, said out loud rather than indexed: a case
      * that silently read nothing would pass on a store that was never told
      * anything at all.
@@ -476,19 +964,33 @@ final class SharingPostTest extends TestCase
 
     private function post(string $body, INode $calendar, ?string $asking): Response
     {
-        return $this->server($calendar, $asking)->handle(new Request(
+        return $this->server($calendar, $asking)->handle(self::requestOf($body));
+    }
+
+    private static function requestOf(string $body): Request
+    {
+        return new Request(
             'POST',
             '/calendars/work',
             headers: new Headers(['Content-Type' => 'application/xml', 'Host' => 'calendar.example.com']),
             body: new Body($body),
-        ));
+        );
     }
 
     /**
-     * A calendar at `/calendars/work`, two principals, and whoever is asking.
+     * A calendar at `/calendars/work`, three principals, a notification
+     * collection for one of them, and whoever is asking.
+     *
+     * **Wilfredo has no notification collection**, which is §4.1.1's calendar
+     * user "not enabled for notification messages on the server", and the
+     * clock is a fixed one so that §6.25's `CS:dtstamp` can be asserted.
      */
-    private function server(INode $calendar, ?string $asking): Server
-    {
+    private function server(
+        INode $calendar,
+        ?string $asking = 'principals/alice',
+        ?string $sharerIsCalled = 'Alice',
+        ?INode $ericsNotifications = null,
+    ): Server {
         $events = new EventEmitter();
 
         $events->on(PropertiesRequested::class, (new LiveProperties())(...));
@@ -509,16 +1011,24 @@ final class SharingPostTest extends TestCase
                         $calendar instanceof MemoryShareTarget ? Calendar::of($calendar) : $calendar,
                     ))
                     ->add((new MemoryCollection('principals'))
-                        ->add(new Principal(new PrincipalInfo('alice', 'Alice')))
-                        ->add(new Principal(new PrincipalInfo('eric', 'Eric York')))),
+                        ->add(new Principal(new PrincipalInfo('alice', $sharerIsCalled)))
+                        ->add(new Principal(new PrincipalInfo('eric', 'Eric York')))
+                        ->add(new Principal(new PrincipalInfo('wilfredo', 'Wilfredo'))))
+                    ->add((new MemoryCollection('notifications'))->add(
+                        $ericsNotifications ?? NotificationCollection::of(new MemoryCollection('eric')),
+                    )),
             ),
             $events,
             new Writer(['DAV:' => 'd', self::NS => 'cs']),
         );
 
         $post = new Post($server);
+        $notifications = new Notifications(
+            $server,
+            now: static fn (): DateTimeImmutable => new DateTimeImmutable('2026-10-29T19:30:00+00:00'),
+        );
 
-        (new Sharing($server))->register($post);
+        (new Sharing($server, $notifications))->register($post);
 
         $server->onMethod('POST', $post(...));
 
