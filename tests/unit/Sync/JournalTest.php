@@ -24,6 +24,7 @@ use DavServices\Event\EventEmitter;
 use DavServices\Event\IEvent;
 use DavServices\Exception\Forbidden;
 use DavServices\Sync\Change;
+use DavServices\Sync\Changes;
 use DavServices\Sync\Journal;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -91,6 +92,7 @@ use PHPUnit\Framework\TestCase;
  */
 #[CoversClass(Journal::class)]
 #[CoversClass(Change::class)]
+#[CoversClass(Changes::class)]
 final class JournalTest extends TestCase
 {
     private const COLLECTION = 'calendars/work';
@@ -530,6 +532,32 @@ final class JournalTest extends TestCase
 
         self::assertCount(1, $answer->members());
         self::assertFalse($answer->wasCutShort());
+    }
+
+    /**
+     * **And an answer that fills the limit exactly was not cut short**, which
+     * is the boundary §3.6 draws by its own words: the `507` and the partial
+     * token are for a result set that "is truncated", and one that carries
+     * every change there was is not truncated by fitting.
+     *
+     * The difference shows twice over. A client told there was more would come
+     * back for nothing — and it would come back with a token naming the last
+     * change rather than the collection, which is a state behind where the
+     * collection stands.
+     */
+    public function testAnAnswerThatFillsTheLimitExactlyIsNotCutShort(): void
+    {
+        $journal = $this->journal();
+        $held = $journal->revisionOf(self::COLLECTION);
+
+        $journal->recordAChange(self::COLLECTION . '/one.ics');
+        $journal->recordAChange(self::COLLECTION . '/two.ics');
+
+        $answer = $journal->changesSince($held, self::COLLECTION, 1, 2);
+
+        self::assertCount(2, $answer->members());
+        self::assertFalse($answer->wasCutShort());
+        self::assertSame($journal->revisionOf(self::COLLECTION), $answer->upTo());
     }
 
     /**

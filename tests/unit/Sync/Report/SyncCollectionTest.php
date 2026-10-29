@@ -561,6 +561,27 @@ final class SyncCollectionTest extends TestCase
     }
 
     /**
+     * And neither does one that fills the limit exactly: §3.6's `507` is for a
+     * result set that "is truncated", and an answer carrying every change
+     * there was is not truncated by fitting. A client told otherwise would
+     * come back for nothing, holding a token one state behind the collection.
+     */
+    public function testAnAnswerThatFillsTheLimitExactlySaysNothingAboutMore(): void
+    {
+        $journal = new Journal(new MemoryJournalBackend());
+        $held = $this->tokenOf($journal);
+
+        $journal->recordAChange('home/one.ics');
+        $journal->recordAChange('home/two.ics');
+
+        $body = (string) $this->sync(token: $held, revisions: $journal, atMost: 2)->body();
+
+        self::assertSame(2, substr_count($body, '<d:propstat>'));
+        self::assertStringNotContainsString(self::CUT_SHORT, $body);
+        self::assertSame($this->tokenOf($journal), $this->tokenIn($body));
+    }
+
+    /**
      * **A client's limit is honoured where the server has none of its own**,
      * which is §3.6's second cause: a server limits "to limit the amount of
      * work expended in processing a request, **or as the result of an explicit
