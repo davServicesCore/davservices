@@ -47,6 +47,7 @@ while IFS='|' read -r name url desc; do
     fi
 done <<'LIST'
 caldav-ctag|https://raw.githubusercontent.com/apple/ccs-calendarserver/master/doc/Extensions/caldav-ctag.txt|CS:getctag (R-SYNC-06) — hebt sich selbst zugunsten von RFC 6578 auf
+caldav-sharing|https://raw.githubusercontent.com/apple/ccs-calendarserver/master/doc/Extensions/caldav-sharing.txt|Freigabe von Kalendern (R-CAL-20)
 LIST
 
 printf '\n%d geladen, %d übersprungen, %d fehlgeschlagen.\nAblage: %s\n' \
