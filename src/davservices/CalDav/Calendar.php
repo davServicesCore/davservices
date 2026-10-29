@@ -76,6 +76,31 @@ class Calendar implements ICollection, IResourceType
     public const CALENDAR = '{urn:ietf:params:xml:ns:caldav}calendar';
 
     /**
+     * What §5.2.1 of `caldav-sharing` adds once a calendar has a sharee
+     * (R-CAL-20).
+     *
+     * > Calendar collections that are shared have addition elements listed in
+     * > their DAV:resourcetype property in addition to DAV:collection and
+     * > CALDAV:calendar.
+     * >
+     * > o CS:shared-owner (Section 6.1): used to indicate that the calendar is
+     * > owned by the current user and is being shared by them.
+     *
+     * **It is derived from {@see IShareable::sharees()}** rather than asked of
+     * the store, which is how §5.3.1's MUST is kept without anything having to
+     * remember it: "The server MUST update the DAV:resourcetype property on
+     * the calendar collection to ensure it contains a CS:shared-owner XML
+     * element", and the same sentence again, inverted, for the last sharee
+     * going away. Two facts about one thing can drift apart, and a client
+     * reading a calendar that says it is private over a list of people it was
+     * shared with has no way to tell which half is true.
+     *
+     * A calendar over a store that is no {@see IShareable} therefore never
+     * carries it, and neither does one whose sharee list is empty.
+     */
+    public const SHARED_OWNER = '{http://calendarserver.org/ns/}shared-owner';
+
+    /**
      * Protected on purpose: {@see of()} is the only way in, because it is the
      * one place that can choose correctly between this class and the one that
      * also keeps properties.
@@ -118,21 +143,31 @@ class Calendar implements ICollection, IResourceType
     }
 
     /**
-     * A calendar, and whatever else the collection underneath already was.
+     * A calendar, whether it is shared, and whatever else the collection
+     * underneath already was.
      *
      * A resource type is a list rather than a label (RFC 4918 §15.9), so a
      * collection that is both a calendar and something an application invented
      * says both. Replacing the list would quietly take the other half away.
      *
+     * **`CS:shared-owner` is worked out rather than stored**, for the reason
+     * {@see self::SHARED_OWNER} gives.
+     *
      * @return list<string>
      */
     public function resourceTypes(): array
     {
-        if (!$this->collection instanceof IResourceType) {
-            return [self::CALENDAR];
+        $types = [self::CALENDAR];
+
+        if ($this->collection instanceof IShareable && $this->collection->sharees() !== []) {
+            $types[] = self::SHARED_OWNER;
         }
 
-        return [self::CALENDAR, ...$this->collection->resourceTypes()];
+        if (!$this->collection instanceof IResourceType) {
+            return $types;
+        }
+
+        return [...$types, ...$this->collection->resourceTypes()];
     }
 
     /**
