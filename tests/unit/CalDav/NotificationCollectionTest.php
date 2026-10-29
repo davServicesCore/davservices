@@ -120,6 +120,32 @@ final class NotificationCollectionTest extends TestCase
     }
 
     /**
+     * **And a write goes to the store too**, which is the half that makes the
+     * claim worth making: a wrapper that answered properties but swallowed
+     * changes would leave a client's `PROPPATCH` reporting success over a
+     * store that never heard of it.
+     *
+     * A notification collection is somewhere a client sets a
+     * `DAV:displayname` — §4 has it as a collection a user's client looks in
+     * every few minutes — so this is the ordinary case rather than an exotic
+     * one.
+     */
+    public function testAWriteGoesToTheStoreAsWell(): void
+    {
+        $collection = NotificationCollection::of(new MemoryPropertyCollection('notifications'));
+
+        self::assertInstanceOf(IProperties::class, $collection);
+        self::assertSame(
+            ['{DAV:}displayname' => 200],
+            $collection->patchProperties(['{DAV:}displayname' => 'Alerts']),
+        );
+        self::assertSame(
+            ['{DAV:}displayname' => 'Alerts'],
+            $collection->properties(['{DAV:}displayname']),
+        );
+    }
+
+    /**
      * The members are the store's, and so is everything else a collection is
      * asked: being a notification collection adds nothing to any of it.
      */
