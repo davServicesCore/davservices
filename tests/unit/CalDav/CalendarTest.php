@@ -15,6 +15,10 @@ namespace DavServices\Tests\Unit\CalDav;
 
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarKeepingItsOwn;
+use DavServices\CalDav\InviteStatus;
+use DavServices\CalDav\IShareable;
+use DavServices\CalDav\Sharee;
+use DavServices\CalDav\SharingAccess;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\IExtendedCollection;
 use DavServices\Dav\IProperties;
@@ -87,6 +91,104 @@ final class CalendarTest extends TestCase
 
         self::assertSame(
             [self::CALENDAR, self::ONE_OF_OURS, self::ANOTHER_OF_OURS],
+            $calendar->resourceTypes(),
+        );
+    }
+
+    /**
+     * **A calendar that is shared says so** — R-CAL-20, P7-05.
+     *
+     * No RFC defines this: the source is `caldav-sharing`, "Shared and
+     * Published Calendars in CalDAV", C. Daboo and E. York, Apple, 19
+     * September 2012, which `docs/referenzen/download-extensions.sh` fetches.
+     * §5.2.1 of it:
+     *
+     * > Calendar collections that are shared have addition elements listed in
+     * > their DAV:resourcetype property in addition to DAV:collection and
+     * > CALDAV:calendar.
+     * >
+     * > o CS:shared-owner (Section 6.1): used to indicate that the calendar is
+     * > owned by the current user and is being shared by them.
+     *
+     * **And it is worked out from the sharee list rather than stored beside
+     * it**, which is what §5.3.1 asks for without having to be obeyed:
+     *
+     * > The server MUST update the DAV:resourcetype property on the calendar
+     * > collection to ensure it contains a CS:shared-owner XML element to
+     * > indicate the calendar collection is now shared.
+     *
+     * A server keeping the element as a second fact would have two answers to
+     * one question and a way for them to drift apart. Derived, they cannot.
+     */
+    public function testACalendarWithAShareeSaysItIsSharedByItsOwner(): void
+    {
+        $calendar = Calendar::of(new MemoryShareable('work', [
+            new Sharee('mailto:eric@example.com', SharingAccess::ReadWrite, InviteStatus::NoResponse),
+        ]));
+
+        self::assertSame([self::CALENDAR, Calendar::SHARED_OWNER], $calendar->resourceTypes());
+    }
+
+    /**
+     * **And one that is shared with nobody says nothing of the sort**, which
+     * is the other half of §5.3.1 and the half a server forgets:
+     *
+     * > To unshare a calendar, the sharer simply removes all sharees to the
+     * > CS:invite property of the calendar collection as per Section 5.3.2.
+     * > The server MUST update the DAV:resourcetype property on the calendar
+     * > collection to ensure it does **not** contain a CS:shared-owner XML
+     * > element to indicate the calendar collection is not shared.
+     *
+     * A calendar that *may* be shared is not a calendar that *is*: §5.2.3 is
+     * the property that says sharing is allowed, and this one says it has
+     * happened.
+     */
+    public function testACalendarSharedWithNobodySaysNothingOfTheSort(): void
+    {
+        $calendar = Calendar::of(new MemoryShareable('work', [], [IShareable::CAN_BE_SHARED]));
+
+        self::assertSame([self::CALENDAR], $calendar->resourceTypes());
+    }
+
+    /**
+     * **A sharee who declined is still a sharee**, so the calendar is still
+     * shared. §5.4.2 says what a refusal does, and removing is not it:
+     *
+     * > When such a request is received the server MUST remove the shared
+     * > calendar from the sharee's calendar home and automatically **update
+     * > the sharee's status** in the sharer's calendar's CS:invite property.
+     *
+     * The status lives inside the entry (§6.5), so only the sharer's
+     * `CS:remove` (§6.28) takes an entry away. A server that dropped the
+     * resource type on a decline would tell the sharer their calendar is
+     * private while a list of people who were asked is still on it.
+     */
+    public function testAShareeWhoDeclinedIsStillASharee(): void
+    {
+        $calendar = Calendar::of(new MemoryShareable('work', [
+            new Sharee('mailto:eric@example.com', SharingAccess::Read, InviteStatus::Declined),
+        ]));
+
+        self::assertSame([self::CALENDAR, Calendar::SHARED_OWNER], $calendar->resourceTypes());
+    }
+
+    /**
+     * And the shared type takes its place beside what the store already was,
+     * rather than instead of it — §15.9's list again, with two kinds of its
+     * own so that "keep the list" and "keep the first of it" cannot pass for
+     * each other.
+     */
+    public function testTheSharedTypeComesBesideWhatTheStoreAlreadyWas(): void
+    {
+        $calendar = Calendar::of(new MemoryShareable(
+            'work',
+            [new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted)],
+            [],
+            [self::ONE_OF_OURS, self::ANOTHER_OF_OURS],
+        ));
+
+        self::assertSame(
+            [self::CALENDAR, Calendar::SHARED_OWNER, self::ONE_OF_OURS, self::ANOTHER_OF_OURS],
             $calendar->resourceTypes(),
         );
     }
