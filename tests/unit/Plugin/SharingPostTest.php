@@ -778,6 +778,68 @@ final class SharingPostTest extends TestCase
     }
 
     /**
+     * **And neither is an address that names something which is no principal
+     * at all.** §5.3.2 has the first form be "a principal-URL for a sharee",
+     * so a path that leads to a calendar leads to nobody — and a server that
+     * deposited a notification wherever a path happened to resolve would
+     * write into resources that are not notification collections.
+     */
+    public function testAnAddressThatNamesNoPrincipalIsWrittenToNowhere(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>/calendars/work/</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * **An address that climbs out of the tree is nobody either, and does not
+     * take the request down with it.** The address comes from a client, and
+     * `Uri\Path` refuses one that "climbs above the root of the server" —
+     * which has to be an answer here rather than an exception nobody catches,
+     * because §5.3.2's change has already been made by then.
+     */
+    public function testAnAddressThatClimbsOutOfTheTreeIsWrittenToNowhere(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareWith(
+            $eric,
+            '<CS:set><D:href>/../principals/eric/</D:href><CS:read/></CS:set>',
+            $calendar,
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * And the same of a `DAV:owner` that climbs out of the tree: it names
+     * nobody, so nobody is the sharer, so nothing is shared. **Before**
+     * anything changes, which is the difference from the case above — the
+     * owner is read first.
+     */
+    public function testACalendarWhoseOwnerClimbsOutOfTheTreeCannotBeShared(): void
+    {
+        $calendar = new MemoryShareTarget('work', owner: '/../principals/alice/');
+
+        $response = $this->share('<CS:set>' . self::ERIC . '<CS:read/></CS:set>', $calendar);
+
+        self::assertSame(403, $response->status());
+        self::assertSame([], $calendar->sharees());
+    }
+
+    /**
      * And a sharer whose own principal is not in the tree is named by address
      * alone: this server has just taken somebody's word for who is asking,
      * and a dangling `DAV:owner` is a deployment's problem rather than a
