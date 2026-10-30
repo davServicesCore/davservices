@@ -201,6 +201,50 @@ final class CalendarTest extends TestCase
     }
 
     /**
+     * **A calendar somebody shared to me says that instead** — R-CAL-20,
+     * P7-05c. §5.2.1 lists the two side by side and they are each other's
+     * opposite:
+     *
+     * > o CS:shared-owner (Section 6.1): used to indicate that the calendar is
+     * > owned by the current user and is being shared by them.
+     * >
+     * > o CS:shared (Section 6.2): used to indicate that the calendar is owned
+     * > by **another** user and is being shared to the current user.
+     *
+     * And §6.2 says where such a calendar is: it "appears in the sharee's
+     * calendar home collection". Which is why this is derived from being a
+     * {@see \DavServices\CalDav\ISharedWithMe} rather than asked of a store:
+     * a copy that knows where the original is, is a copy, and one that forgot
+     * to say so would look to a client like a calendar of the sharee's own.
+     */
+    public function testACalendarSomebodySharedToMeSaysSo(): void
+    {
+        $calendar = Calendar::of(new MemorySharedWithMe('work'));
+
+        self::assertSame([self::CALENDAR, Calendar::SHARED], $calendar->resourceTypes());
+    }
+
+    /**
+     * **And a copy is never also said to be shared by whoever holds it**,
+     * however much of the sharee list it carries. §6.1 is about a calendar
+     * "owned by the current user" and §6.2 about one "owned by another user",
+     * so the two are each other's opposite and a client told both would have
+     * been told nothing.
+     *
+     * A sharee's copy does carry part of the list — §5.2.2 has `CS:invite` on
+     * "the calendar collection resources of the sharees" — which is exactly
+     * what would make a server work the wrong one out.
+     */
+    public function testACopyIsNotSaidToBeSharedByWhoeverHoldsIt(): void
+    {
+        $calendar = Calendar::of(new MemorySharedWithMe('work', sharees: [
+            new Sharee('/principals/eric/', SharingAccess::Read, InviteStatus::Accepted),
+        ]));
+
+        self::assertSame([self::CALENDAR, Calendar::SHARED], $calendar->resourceTypes());
+    }
+
+    /**
      * And `DAV:collection` is not in that list because the server adds it for
      * every collection by itself — which is what the property has to come back
      * with, so this is the half that matters.

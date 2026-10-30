@@ -19,12 +19,14 @@ use DavServices\CalDav\Calendar;
 use DavServices\CalDav\InviteNotification;
 use DavServices\CalDav\InviteStatus;
 use DavServices\CalDav\IShareable;
+use DavServices\CalDav\ISharedWithMe;
 use DavServices\CalDav\IShareTarget;
 use DavServices\CalDav\Sharee;
 use DavServices\CalDav\SharingAccess;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Method\Post;
 use DavServices\Dav\Property\Answers;
@@ -126,6 +128,11 @@ final class Sharing
     public const ALLOWED_SHARING_MODES = '{http://calendarserver.org/ns/}allowed-sharing-modes';
 
     /**
+     * §5.2.4's property: where the sharer's own copy of this calendar is.
+     */
+    public const SHARED_URL = '{http://calendarserver.org/ns/}shared-url';
+
+    /**
      * The order §5.2.3's grammar puts the modes in.
      *
      *     <!ELEMENT allowed-sharing-modes (can-be-shared?, can-be-published?)>
@@ -159,6 +166,17 @@ final class Sharing
     private const DISPLAY_NAME = '{DAV:}displayname';
 
     private const USER = '{http://calendarserver.org/ns/}user';
+
+    private const ORGANIZER = '{http://calendarserver.org/ns/}organizer';
+
+    /**
+     * The three §5.2 says a client may not write.
+     *
+     * §5.2.2, §5.2.3 and §5.2.4 each say "This property MUST be protected",
+     * and they are one list here rather than three names in a condition
+     * because they are refused for one reason: the server works all three out.
+     */
+    private const PROTECTED = [self::INVITE, self::ALLOWED_SHARING_MODES, self::SHARED_URL];
 
     private const COMMON_NAME = '{http://calendarserver.org/ns/}common-name';
 
@@ -242,13 +260,41 @@ final class Sharing
         }
 
         $store = $node->collection();
+        $result = $event->result();
 
-        if (!$store instanceof IShareable) {
+        if ($store instanceof ISharedWithMe) {
+            self::nameTheOriginal($result, $store);
+        }
+
+        if ($store instanceof IShareable) {
+            self::nameTheModes($result, $store);
+        }
+
+        $this->nameTheSharees($result, $node, $store);
+    }
+
+    /**
+     * §5.2.4, where the sharer's own copy of this calendar is.
+     *
+     * > This WebDAV property is present on a shared calendar collection
+     * > resource that appears in a sharee's calendar home collection. Its
+     * > content is a single DAV:href element whose value is the URL of the
+     * > sharer's calendar being shared.
+     *
+     * Handed on as the store gave it. §5.3.2 shares between principals of one
+     * server, so the URL is one this server made, and rebuilding it would be
+     * guessing at a path the store already knows.
+     *
+     * Asked for by name only, §5.2.4 saying so in the same words as the other
+     * two.
+     */
+    private static function nameTheOriginal(PropFindResult $result, ISharedWithMe $copy): void
+    {
+        if (!$result->wasNamed(self::SHARED_URL)) {
             return;
         }
 
-        self::nameTheModes($event->result(), $store);
-        self::nameTheSharees($event->result(), $store);
+        $result->set(self::SHARED_URL, self::holding(self::SHARED_URL, self::saying(self::HREF, $copy->sharedUrl())));
     }
 
     /**
@@ -298,25 +344,103 @@ final class Sharing
      *
      * Asked for by name only, for the reason §5.2.3 gives in the same words.
      */
-    private static function nameTheSharees(PropFindResult $result, IShareable $calendar): void
+    private function nameTheSharees(PropFindResult $result, Calendar $node, ICollection $store): void
     {
         if (!$result->wasNamed(self::INVITE)) {
             return;
         }
 
-        $sharees = $calendar->sharees();
+        // §5.2.2's grammar is a sequence — `<!ELEMENT invite (organizer?,
+        // user*)>` — so the order here is the document's and not a choice.
+        $property = new Element(self::INVITE);
 
-        if ($sharees === []) {
+        if ($store instanceof ISharedWithMe) {
+            $organizer = $this->organizerOf($result->path(), $node);
+
+            if ($organizer !== null) {
+                $property->append($organizer);
+            }
+        }
+
+        if ($store instanceof IShareable) {
+            foreach ($store->sharees() as $sharee) {
+                $property->append(self::entryFor($sharee));
+            }
+        }
+
+        if ($property->children() === []) {
             return;
         }
 
-        $property = new Element(self::INVITE);
+        $result->set(self::INVITE, $property);
+    }
 
-        foreach ($sharees as $sharee) {
-            $property->append(self::entryFor($sharee));
+    /**
+     * §5.2.2's `CS:organizer`, which a sharee's copy carries and the sharer's
+     * own does not.
+     *
+     * > In addition, servers SHOULD include a CS:organizer XML element on
+     * > calendar collection resources of the sharees to provide clients with a
+     * > fast way to determine who the sharer is.
+     *
+     * **And the sharer is already named on the copy**, so nothing is stored
+     * twice: §5.5.5 puts `DAV:owner` on a shared calendar as "a reference to a
+     * principal-URL of the sharer (owner)" and says what a client does with it
+     * there — "Clients can use this value to determine what the allowed
+     * ORGANIZER iCalendar property values are", which is a client working in
+     * the sharee's copy.
+     *
+     * Null where that names nobody. §6.18 makes the `DAV:href` the one
+     * required child, so there is nothing to write without one, and §5.2.2's
+     * organizer is a SHOULD that a server which cannot tell who the sharer is
+     * may not keep.
+     *
+     * **Asking the node for its owner raises `PropertiesRequested` again**,
+     * and this is not the recursion it looks like: the inner question names
+     * `DAV:owner` and nothing else, so {@see self::nameTheSharees()} finds
+     * `CS:invite` unasked for and does nothing. The round trip is what makes
+     * a dead property store and access control answer, which reading the node
+     * directly would step over.
+     */
+    private function organizerOf(string $path, Calendar $node): ?Element
+    {
+        $href = $this->ownerOf($path, $node);
+
+        if ($href === null) {
+            return null;
         }
 
-        $result->set(self::INVITE, $property);
+        $organizer = self::holding(self::ORGANIZER, self::saying(self::HREF, $href));
+        $name = $this->nameOf($href);
+
+        if ($name !== null) {
+            $organizer->append(self::saying(self::COMMON_NAME, $name));
+        }
+
+        return $organizer;
+    }
+
+    /**
+     * What the principal at this address is called, where this server has one
+     * and it is named.
+     */
+    private function nameOf(string $href): ?string
+    {
+        try {
+            $path = $this->server->pathOf($href);
+        } catch (MalformedPath) {
+            return null;
+        }
+
+        if (!$this->server->tree()->exists($path)) {
+            return null;
+        }
+
+        $node = $this->server->tree()->node($path);
+        $name = Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::DISPLAY_NAME])
+            ->byStatus()[200][self::DISPLAY_NAME] ?? null;
+
+        return is_string($name) ? $name : null;
     }
 
     /**
@@ -367,6 +491,18 @@ final class Sharing
         $element = new Element($name);
 
         $element->appendText($text);
+
+        return $element;
+    }
+
+    /**
+     * An element of this name with that element inside it.
+     */
+    private static function holding(string $name, Element $child): Element
+    {
+        $element = new Element($name);
+
+        $element->append($child);
 
         return $element;
     }
@@ -640,6 +776,29 @@ final class Sharing
      */
     private function sharerOf(string $path, INode $node, Request $request): ?string
     {
+        $href = $this->ownerOf($path, $node);
+
+        if ($href === null) {
+            return null;
+        }
+
+        try {
+            return $this->server->pathOfUrl($href, $request);
+        } catch (DavException | MalformedPath) {
+            return null;
+        }
+    }
+
+    /**
+     * The address `DAV:owner` names on this node, or null where it names
+     * nobody.
+     *
+     * Read through {@see Answers} for the reason {@see self::sharerOf()}
+     * gives, and trimmed because a `DAV:href` that arrives pretty-printed
+     * carries its indentation with it.
+     */
+    private function ownerOf(string $path, INode $node): ?string
+    {
         $owner = Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::OWNER])
             ->byStatus()[200][self::OWNER] ?? null;
 
@@ -649,15 +808,7 @@ final class Sharing
 
         $href = trim($owner->child(self::HREF)?->text() ?? '');
 
-        if ($href === '') {
-            return null;
-        }
-
-        try {
-            return $this->server->pathOfUrl($href, $request);
-        } catch (DavException | MalformedPath) {
-            return null;
-        }
+        return $href === '' ? null : $href;
     }
 
     /**
@@ -831,7 +982,7 @@ final class Sharing
         $result = $event->result();
 
         foreach (array_keys($result->mutations()) as $name) {
-            if ($name === self::INVITE || $name === self::ALLOWED_SHARING_MODES) {
+            if (in_array($name, self::PROTECTED, true)) {
                 $result->set($name, 403, self::CANNOT_MODIFY_PROTECTED);
             }
         }

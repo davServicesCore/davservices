@@ -101,6 +101,19 @@ class Calendar implements ICollection, IResourceType
     public const SHARED_OWNER = '{http://calendarserver.org/ns/}shared-owner';
 
     /**
+     * And §5.2.1's other half, on the sharee's copy (R-CAL-20).
+     *
+     * > o CS:shared (Section 6.2): used to indicate that the calendar is owned
+     * > by another user and is being shared to the current user.
+     *
+     * **Derived from being an {@see ISharedWithMe}**, which is the one thing
+     * such a copy has to know: a calendar that knows where the original is, is
+     * a copy. There is nothing a store could forget to say, and nothing for a
+     * client to mistake for a calendar of the sharee's own.
+     */
+    public const SHARED = '{http://calendarserver.org/ns/}shared';
+
+    /**
      * Protected on purpose: {@see of()} is the only way in, because it is the
      * one place that can choose correctly between this class and the one that
      * also keeps properties.
@@ -159,7 +172,13 @@ class Calendar implements ICollection, IResourceType
     {
         $types = [self::CALENDAR];
 
-        if ($this->collection instanceof IShareable && $this->collection->sharees() !== []) {
+        // **The two are each other's opposite** (§6.1 against §6.2: "owned by
+        // the current user" against "owned by another user"), so a copy is
+        // never also said to be shared by whoever holds it — however much of
+        // the sharee list it carries for §5.2.2.
+        if ($this->collection instanceof ISharedWithMe) {
+            $types[] = self::SHARED;
+        } elseif ($this->collection instanceof IShareable && $this->collection->sharees() !== []) {
             $types[] = self::SHARED_OWNER;
         }
 
