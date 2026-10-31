@@ -17,14 +17,21 @@ use Closure;
 use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\InviteNotification;
+use DavServices\CalDav\InviteReply;
 use DavServices\CalDav\InviteStatus;
 use DavServices\CalDav\IShareable;
+use DavServices\CalDav\ISharedWithMe;
+use DavServices\CalDav\IShareeHome;
 use DavServices\CalDav\IShareTarget;
 use DavServices\CalDav\Sharee;
 use DavServices\CalDav\SharingAccess;
+use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
+use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\Method\Post;
 use DavServices\Dav\Property\Answers;
@@ -37,6 +44,7 @@ use DavServices\Exception\Forbidden;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
+use DavServices\Uri\Path;
 use DavServices\Xml\Element;
 use InvalidArgumentException;
 
@@ -126,6 +134,11 @@ final class Sharing
     public const ALLOWED_SHARING_MODES = '{http://calendarserver.org/ns/}allowed-sharing-modes';
 
     /**
+     * §5.2.4's property: where the sharer's own copy of this calendar is.
+     */
+    public const SHARED_URL = '{http://calendarserver.org/ns/}shared-url';
+
+    /**
      * The order §5.2.3's grammar puts the modes in.
      *
      *     <!ELEMENT allowed-sharing-modes (can-be-shared?, can-be-published?)>
@@ -141,6 +154,37 @@ final class Sharing
      * §6.26's root element, which is what a share `POST` carries.
      */
     private const SHARE = '{http://calendarserver.org/ns/}share';
+
+    /**
+     * §5.1's token, which this server says once it can do all of §5.
+     *
+     * > A server that supports the features described in this document MUST
+     * > include "calendarserver-sharing" as a field in the DAV response header
+     * > from an OPTIONS request on any resource that supports these features.
+     *
+     * **Said only where the `POST` is wired**, because that is what makes the
+     * features reachable: §5.2's properties on their own are something to read
+     * and nothing to do, and a client that read the token and could not share
+     * would have been told something untrue. The same standard
+     * {@see CalDav} holds `calendar-access` to.
+     */
+    public const COMPLIANCE = 'calendarserver-sharing';
+
+    /**
+     * §6.29's root, which §5.4.1 makes the answer to an acceptance.
+     */
+    private const SHARED_AS = '{http://calendarserver.org/ns/}shared-as';
+
+    private const HOST_URL = '{http://calendarserver.org/ns/}hosturl';
+
+    private const IN_REPLY_TO = '{http://calendarserver.org/ns/}in-reply-to';
+
+    /**
+     * RFC 4791 §6.2.1's property, which is how this server says where a
+     * principal's calendars are — and therefore which home §5.4.1 lets them
+     * reply on.
+     */
+    private const CALENDAR_HOME_SET = '{urn:ietf:params:xml:ns:caldav}calendar-home-set';
 
     private const SET = '{http://calendarserver.org/ns/}set';
 
@@ -160,6 +204,17 @@ final class Sharing
 
     private const USER = '{http://calendarserver.org/ns/}user';
 
+    private const ORGANIZER = '{http://calendarserver.org/ns/}organizer';
+
+    /**
+     * The three §5.2 says a client may not write.
+     *
+     * §5.2.2, §5.2.3 and §5.2.4 each say "This property MUST be protected",
+     * and they are one list here rather than three names in a condition
+     * because they are refused for one reason: the server works all three out.
+     */
+    private const PROTECTED = [self::INVITE, self::ALLOWED_SHARING_MODES, self::SHARED_URL];
+
     private const COMMON_NAME = '{http://calendarserver.org/ns/}common-name';
 
     private const ACCESS = '{http://calendarserver.org/ns/}access';
@@ -169,6 +224,14 @@ final class Sharing
     private const HREF = '{DAV:}href';
 
     private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
+
+    /**
+     * What is being answered, where this plugin has seen a method begin.
+     *
+     * §5.4.2's correction hangs off {@see BeforeUnbind}, which carries a path
+     * and nothing else, and the correction has to know who is asking.
+     */
+    private ?Request $request = null;
 
     /**
      * @param Notifications|null $notifications Where §5.3.2's notifications
@@ -227,6 +290,32 @@ final class Sharing
             $document,
             $notifications,
         ));
+
+        $post->on(
+            InviteReply::INVITE_REPLY,
+            fn (Request $request, Element $document): Response => $this->reply($request, $document, $notifications),
+        );
+
+        // **The request is remembered**, because {@see BeforeUnbind} carries
+        // only a path and §5.4.2's correction needs to know who is asking.
+        // The same way {@see Acl} keeps the request it is guarding.
+        $events->on(BeforeMethod::class, function (BeforeMethod $event): void {
+            $this->request = $event->request();
+        });
+
+        $events->on(
+            BeforeUnbind::class,
+            function (BeforeUnbind $event) use ($notifications): void {
+                $this->refuseByRemoving($event, $notifications);
+            },
+        );
+
+        // §5.1's token comes with the `POST` and not before it: a server that
+        // announced support over the properties alone would have a client
+        // offer sharing and then be told the method is not allowed.
+        $events->on(OptionsRequested::class, static function (OptionsRequested $event): void {
+            $event->addCompliance(self::COMPLIANCE);
+        });
     }
 
     /**
@@ -242,13 +331,41 @@ final class Sharing
         }
 
         $store = $node->collection();
+        $result = $event->result();
 
-        if (!$store instanceof IShareable) {
+        if ($store instanceof ISharedWithMe) {
+            self::nameTheOriginal($result, $store);
+        }
+
+        if ($store instanceof IShareable) {
+            self::nameTheModes($result, $store);
+        }
+
+        $this->nameTheSharees($result, $node, $store);
+    }
+
+    /**
+     * §5.2.4, where the sharer's own copy of this calendar is.
+     *
+     * > This WebDAV property is present on a shared calendar collection
+     * > resource that appears in a sharee's calendar home collection. Its
+     * > content is a single DAV:href element whose value is the URL of the
+     * > sharer's calendar being shared.
+     *
+     * Handed on as the store gave it. §5.3.2 shares between principals of one
+     * server, so the URL is one this server made, and rebuilding it would be
+     * guessing at a path the store already knows.
+     *
+     * Asked for by name only, §5.2.4 saying so in the same words as the other
+     * two.
+     */
+    private static function nameTheOriginal(PropFindResult $result, ISharedWithMe $copy): void
+    {
+        if (!$result->wasNamed(self::SHARED_URL)) {
             return;
         }
 
-        self::nameTheModes($event->result(), $store);
-        self::nameTheSharees($event->result(), $store);
+        $result->set(self::SHARED_URL, self::holding(self::SHARED_URL, self::saying(self::HREF, $copy->sharedUrl())));
     }
 
     /**
@@ -298,25 +415,103 @@ final class Sharing
      *
      * Asked for by name only, for the reason §5.2.3 gives in the same words.
      */
-    private static function nameTheSharees(PropFindResult $result, IShareable $calendar): void
+    private function nameTheSharees(PropFindResult $result, Calendar $node, ICollection $store): void
     {
         if (!$result->wasNamed(self::INVITE)) {
             return;
         }
 
-        $sharees = $calendar->sharees();
+        // §5.2.2's grammar is a sequence — `<!ELEMENT invite (organizer?,
+        // user*)>` — so the order here is the document's and not a choice.
+        $property = new Element(self::INVITE);
 
-        if ($sharees === []) {
+        if ($store instanceof ISharedWithMe) {
+            $organizer = $this->organizerOf($result->path(), $node);
+
+            if ($organizer !== null) {
+                $property->append($organizer);
+            }
+        }
+
+        if ($store instanceof IShareable) {
+            foreach ($store->sharees() as $sharee) {
+                $property->append(self::entryFor($sharee));
+            }
+        }
+
+        if ($property->children() === []) {
             return;
         }
 
-        $property = new Element(self::INVITE);
+        $result->set(self::INVITE, $property);
+    }
 
-        foreach ($sharees as $sharee) {
-            $property->append(self::entryFor($sharee));
+    /**
+     * §5.2.2's `CS:organizer`, which a sharee's copy carries and the sharer's
+     * own does not.
+     *
+     * > In addition, servers SHOULD include a CS:organizer XML element on
+     * > calendar collection resources of the sharees to provide clients with a
+     * > fast way to determine who the sharer is.
+     *
+     * **And the sharer is already named on the copy**, so nothing is stored
+     * twice: §5.5.5 puts `DAV:owner` on a shared calendar as "a reference to a
+     * principal-URL of the sharer (owner)" and says what a client does with it
+     * there — "Clients can use this value to determine what the allowed
+     * ORGANIZER iCalendar property values are", which is a client working in
+     * the sharee's copy.
+     *
+     * Null where that names nobody. §6.18 makes the `DAV:href` the one
+     * required child, so there is nothing to write without one, and §5.2.2's
+     * organizer is a SHOULD that a server which cannot tell who the sharer is
+     * may not keep.
+     *
+     * **Asking the node for its owner raises `PropertiesRequested` again**,
+     * and this is not the recursion it looks like: the inner question names
+     * `DAV:owner` and nothing else, so {@see self::nameTheSharees()} finds
+     * `CS:invite` unasked for and does nothing. The round trip is what makes
+     * a dead property store and access control answer, which reading the node
+     * directly would step over.
+     */
+    private function organizerOf(string $path, Calendar $node): ?Element
+    {
+        $href = $this->ownerOf($path, $node);
+
+        if ($href === null) {
+            return null;
         }
 
-        $result->set(self::INVITE, $property);
+        $organizer = self::holding(self::ORGANIZER, self::saying(self::HREF, $href));
+        $name = $this->nameOf($href);
+
+        if ($name !== null) {
+            $organizer->append(self::saying(self::COMMON_NAME, $name));
+        }
+
+        return $organizer;
+    }
+
+    /**
+     * What the principal at this address is called, where this server has one
+     * and it is named.
+     */
+    private function nameOf(string $href): ?string
+    {
+        try {
+            $path = $this->server->pathOf($href);
+        } catch (MalformedPath) {
+            return null;
+        }
+
+        if (!$this->server->tree()->exists($path)) {
+            return null;
+        }
+
+        $node = $this->server->tree()->node($path);
+        $name = Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::DISPLAY_NAME])
+            ->byStatus()[200][self::DISPLAY_NAME] ?? null;
+
+        return is_string($name) ? $name : null;
     }
 
     /**
@@ -367,6 +562,18 @@ final class Sharing
         $element = new Element($name);
 
         $element->appendText($text);
+
+        return $element;
+    }
+
+    /**
+     * An element of this name with that element inside it.
+     */
+    private static function holding(string $name, Element $child): Element
+    {
+        $element = new Element($name);
+
+        $element->append($child);
 
         return $element;
     }
@@ -448,6 +655,390 @@ final class Sharing
     }
 
     /**
+     * §5.4.1's `POST`: the sharee accepts or declines an invitation.
+     *
+     * > When a sharee is invited to a shared calendar they can accept or
+     * > decline the invite by issuing a POST request to the sharee's calendar
+     * > home collection resource.
+     *
+     * **Everything in the document comes from a client** — an address, a
+     * calendar and an identifier — so each of the three is checked against
+     * something this server knows before anything happens:
+     *
+     * - the target is the asker's own calendar home, as this server's own
+     *   `CALDAV:calendar-home-set` names it;
+     * - the `DAV:href` names the asker;
+     * - the `CS:hosturl` names a calendar here whose sharee list can be
+     *   corrected, and that list holds an invitation for the asker;
+     * - and §6.23's `CS:in-reply-to` matches the identifier that invitation
+     *   was sent under.
+     *
+     * The last one is free, §6.16's identifier being derived from the calendar
+     * and the sharee rather than remembered. Without the others, anybody could
+     * accept any calendar into any home.
+     *
+     * @throws Forbidden If the reply is not the asker's to make, or names
+     *                   something this server cannot answer for
+     * @throws BadRequest If the document is missing anything §6.22 requires
+     */
+    private function reply(Request $request, Element $document, Notifications $notifications): Response
+    {
+        $path = $this->server->path($request);
+        $home = $this->server->tree()->node($path);
+
+        $asking = $this->server->events()->emit(new CurrentPrincipalRequested($request))->principal();
+
+        if ($asking === null) {
+            throw new Forbidden('§5.4.1 is a sharee replying, and nobody here has said who they are.');
+        }
+
+        $sharee = self::addressIn($document, '§6.22 begins with a DAV:href, and this reply names nobody.');
+        $answer = self::answerIn($document);
+        $wanted = self::addressIn(
+            $document->child(self::HOST_URL) ?? throw new BadRequest('§6.22 wants a CS:hosturl, and this reply has none.'),
+            '§6.17 holds a DAV:href, and this CS:hosturl has none.',
+        );
+        $inReplyTo = self::identifierIn($document);
+        $summary = self::textIn($document, self::SUMMARY);
+
+        $who = $this->principalAt($sharee, $request);
+
+        if ($who === null || $who[0] !== $asking) {
+            throw new Forbidden('§5.4.1 has the sharee reply for themselves, and this reply names somebody else.');
+        }
+
+        // **After the address, and that order is load-bearing**: whoever is
+        // asking has a principal in this tree by now, because the check above
+        // found one at their path. So the home question is never asked about
+        // somebody who is not there, and there is no case of a missing
+        // principal left for it to answer.
+        if (!$this->isTheCalendarHomeOf($asking, $path)) {
+            throw new Forbidden('§5.4.1 puts a reply on the sharee own calendar home, and this is not theirs.');
+        }
+
+        $shared = $this->calendarAt($wanted, $request);
+
+        if ($shared === null) {
+            throw new Forbidden('A reply names a calendar of this server whose sharee list can be corrected (§5.4.2).');
+        }
+
+        [$sharedPath, $sharedNode, $store] = $shared;
+
+        $where = $this->server->hrefOf($sharedPath, $sharedNode);
+        $invitation = $this->invitationFor($asking, $store->sharees(), $request);
+
+        if ($invitation === null) {
+            throw new Forbidden('There is no invitation on that calendar for whoever is asking.');
+        }
+
+        if (!hash_equals(InviteNotification::identifierOf($where, $invitation->href()), $inReplyTo)) {
+            throw new Forbidden('§6.23 names the invitation being answered, and this is not one this server sent.');
+        }
+
+        // **Before the answer is recorded**, because a home that cannot take a
+        // shared calendar must leave the invitation as it was rather than
+        // half-answered.
+        $copy = $answer === InviteStatus::Accepted ? $this->copyInto($home, $path, $where) : null;
+
+        $store->shareWith(new Sharee(
+            $invitation->href(),
+            $invitation->access(),
+            $answer,
+            $invitation->commonName(),
+            $summary ?? $invitation->summary(),
+        ));
+
+        $this->tellTheSharer($notifications, $request, $sharedPath, $sharedNode, new InviteReply(
+            $invitation->href(),
+            $answer,
+            $where,
+            $inReplyTo,
+            $summary,
+        ));
+
+        return $copy === null
+            ? (new Response(200))->withHeader('Cache-Control', 'no-cache')
+            : (new Response(200, body: $this->server->writer()->write(
+                self::holding(self::SHARED_AS, self::saying(self::HREF, $copy)),
+            )))
+                ->withHeader('Content-Type', 'application/xml; charset=utf-8')
+                ->withHeader('Cache-Control', 'no-cache');
+    }
+
+    /**
+     * Makes the sharee's copy and says where it is, as §5.4.1's answer needs
+     * it.
+     *
+     * > That root element contains a single DAV:href element whose content is
+     * > the URI of the shared calendar in the sharee's calendar home created
+     * > by the invite acceptance.
+     *
+     * @throws Forbidden If this home takes no shared calendars
+     */
+    private function copyInto(INode $home, string $path, string $hostUrl): string
+    {
+        if (!$home instanceof IShareeHome) {
+            throw new Forbidden('This calendar home does not take shared calendars into itself (§5.4.1).');
+        }
+
+        $copy = Path::join($path, $home->acceptShareOf($hostUrl));
+
+        return $this->server->hrefOf($copy, $this->server->tree()->node($copy));
+    }
+
+    /**
+     * Whether this path is a calendar home that principal may reply on.
+     *
+     * **Asked of the server's own answer** rather than worked out from a
+     * layout: RFC 4791 §6.2.1's `CALDAV:calendar-home-set` is what this
+     * server tells a client its calendars are under, so it is also what says
+     * which home is theirs. A deployment that puts homes somewhere unusual is
+     * right either way, and a server with no such property answers nobody's
+     * reply — which is the truth about a server that has no calendar homes.
+     *
+     * The principal is known to be in the tree, {@see self::reply()} having
+     * found one at that path before asking this.
+     */
+    private function isTheCalendarHomeOf(string $principal, string $path): bool
+    {
+        $homes = Answers::about(
+            $this->server->events(),
+            $principal,
+            $this->server->tree()->node($principal),
+            PropFindForm::Named,
+            [self::CALENDAR_HOME_SET],
+        )->byStatus()[200][self::CALENDAR_HOME_SET] ?? null;
+
+        if (!$homes instanceof Element) {
+            return false;
+        }
+
+        foreach ($homes->children() as $href) {
+            // Whatever answers that property is another plugin, so what is in
+            // it is read rather than assumed.
+            if ($href->name() !== self::HREF) {
+                continue;
+            }
+
+            try {
+                if ($this->server->pathOf(trim($href->text())) === $path) {
+                    return true;
+                }
+            } catch (MalformedPath) {
+                continue;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The calendar this address names, where it is one of this server's and
+     * its sharee list is one that can be corrected.
+     *
+     * @return array{string, Calendar, IShareTarget}|null The path, the node
+     *                                                    and the store
+     */
+    private function calendarAt(string $href, Request $request): ?array
+    {
+        try {
+            $path = $this->server->pathOfUrl($href, $request);
+        } catch (DavException | MalformedPath) {
+            return null;
+        }
+
+        if (!$this->server->tree()->exists($path)) {
+            return null;
+        }
+
+        $node = $this->server->tree()->node($path);
+
+        if (!$node instanceof Calendar) {
+            return null;
+        }
+
+        $store = $node->collection();
+
+        return $store instanceof IShareTarget ? [$path, $node, $store] : null;
+    }
+
+    /**
+     * The invitation on this list that was sent to this principal, if any.
+     *
+     * Matched by resolving each address rather than by comparing text,
+     * because §5.3.2 lets a sharer name a sharee three different ways. An
+     * entry naming somebody this server does not host resolves to nobody and
+     * matches nobody, which is §5.3.2's own position on such a sharee: "how
+     * invitations are sent or access enabled is out of scope".
+     *
+     * @param list<Sharee> $sharees
+     */
+    private function invitationFor(string $principal, array $sharees, Request $request): ?Sharee
+    {
+        foreach ($sharees as $sharee) {
+            $who = $this->principalAt($sharee->href(), $request);
+
+            if ($who !== null && $who[0] === $principal) {
+                return $sharee;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * §5.4.2: a sharee takes their copy away, and the sharer's list says so.
+     *
+     * > When such a request is received the server MUST remove the shared
+     * > calendar from the sharee's calendar home and automatically update the
+     * > sharee's status in the sharer's calendar's CS:invite property.
+     *
+     * **Declined**, §6.9's being the only state that fits somebody who no
+     * longer has it — and §5.4.2 being the other way a sharee refuses.
+     *
+     * Done **before** the unbind, because the copy is what says where the
+     * sharer's calendar is, and after the unbind there is nothing to ask.
+     *
+     * **The sharee is taken to be whoever is asking**, and that is a limit
+     * rather than a choice: nothing on the copy says whose it is. §5.4.2
+     * describes the sharee removing their own copy, which is what this
+     * answers; an administrator clearing somebody else's leaves the sharer's
+     * list to be put right by hand.
+     *
+     * The sharer is told in the same words a decline is told in. §5.4.2 does
+     * not ask for that and §5.4.1 asks for it of "the change in the sharee
+     * state" — which is this change, reached the other way.
+     */
+    private function refuseByRemoving(BeforeUnbind $event, Notifications $notifications): void
+    {
+        $path = $event->path();
+        $node = $this->server->tree()->node($path);
+
+        if (!$node instanceof Calendar || !$node->collection() instanceof ISharedWithMe) {
+            return;
+        }
+
+        // Nothing to correct where no request is behind the removal: an
+        // application taking a node away itself is nobody refusing anything,
+        // and §5.4.2 is about a sharee's `DELETE`.
+        $request = $this->request;
+
+        if ($request === null) {
+            return;
+        }
+
+        $asking = $this->server->events()->emit(new CurrentPrincipalRequested($request))->principal();
+
+        if ($asking === null) {
+            return;
+        }
+
+        $shared = $this->calendarAt($node->collection()->sharedUrl(), $request);
+
+        if ($shared === null) {
+            return;
+        }
+
+        [$sharedPath, $sharedNode, $store] = $shared;
+
+        $invitation = $this->invitationFor($asking, $store->sharees(), $request);
+
+        if ($invitation === null) {
+            return;
+        }
+
+        $where = $this->server->hrefOf($sharedPath, $sharedNode);
+
+        $store->shareWith(new Sharee(
+            $invitation->href(),
+            $invitation->access(),
+            InviteStatus::Declined,
+            $invitation->commonName(),
+            $invitation->summary(),
+        ));
+
+        $this->tellTheSharer($notifications, $request, $sharedPath, $sharedNode, new InviteReply(
+            $invitation->href(),
+            InviteStatus::Declined,
+            $where,
+            InviteNotification::identifierOf($where, $invitation->href()),
+            $invitation->summary(),
+        ));
+    }
+
+    /**
+     * §5.4.1's SHOULD: the sharer is told how the sharee answered.
+     *
+     * > When the sharee replies to an invite, the server SHOULD send a
+     * > notification to the sharer to update them on the change in the sharee
+     * > state.
+     *
+     * The sharer is whoever §5.5.5's `DAV:owner` names on the calendar, and
+     * nothing is sent where that is nobody this server hosts — the same reach
+     * §5.3.2's notifications have.
+     */
+    private function tellTheSharer(
+        Notifications $notifications,
+        Request $request,
+        string $path,
+        Calendar $calendar,
+        InviteReply $reply,
+    ): void {
+        $owner = $this->ownerOf($path, $calendar);
+
+        if ($owner === null) {
+            return;
+        }
+
+        $sharer = $this->principalAt($owner, $request);
+
+        if ($sharer === null) {
+            return;
+        }
+
+        [, $principal] = $sharer;
+
+        $notifications->deposit($principal, $reply->inReplyTo(), $reply->toElement());
+    }
+
+    /**
+     * Which of §6.22's two the document says.
+     *
+     * @throws BadRequest If it names neither, or both
+     */
+    private static function answerIn(Element $document): InviteStatus
+    {
+        $accepted = $document->child(InviteStatus::Accepted->value) !== null;
+        $declined = $document->child(InviteStatus::Declined->value) !== null;
+
+        // One condition for both ways of failing a choice of one, as §6.27's
+        // access level is read.
+        if ($accepted === $declined) {
+            throw new BadRequest(
+                '§6.22 lets a reply name one of CS:invite-accepted and CS:invite-declined, not neither and not both.',
+            );
+        }
+
+        return $accepted ? InviteStatus::Accepted : InviteStatus::Declined;
+    }
+
+    /**
+     * The invitation a reply answers (§6.23).
+     *
+     * @throws BadRequest If it names none
+     */
+    private static function identifierIn(Element $document): string
+    {
+        $identifier = trim($document->child(self::IN_REPLY_TO)?->text() ?? '');
+
+        if ($identifier === '') {
+            throw new BadRequest('§6.22 wants a CS:in-reply-to, and this reply names no invitation.');
+        }
+
+        return $identifier;
+    }
+
+    /**
      * §5.3.2's MUST: everyone whose standing changed is told, and nobody
      * else.
      *
@@ -526,7 +1117,9 @@ final class Sharing
             return;
         }
 
-        $notifications->deposit($sharee, $notice->uid(), $notice->toElement());
+        [, $principal] = $sharee;
+
+        $notifications->deposit($principal, $notice->uid(), $notice->toElement());
     }
 
     /**
@@ -587,8 +1180,14 @@ final class Sharing
     }
 
     /**
-     * The principal a sharee's address names on this server, or null where it
-     * names none.
+     * The principal an address names on this server and the path it is at,
+     * or null where it names none.
+     *
+     * **Both, from one resolution.** A caller that had the node and wanted
+     * the path would have to resolve the address again, and two resolutions
+     * of one address are two chances to disagree about whose it is.
+     *
+     * @return array{string, Principal}|null
      *
      * §5.3.2 lets the address be one of three things, and only the first can
      * be delivered to: "either a principal-URL for a sharee hosted on the
@@ -602,7 +1201,7 @@ final class Sharing
      * absolute, and {@see Server::pathOfUrl()} is what then decides whether
      * it is this server's.
      */
-    private function principalAt(string $href, Request $request): ?Principal
+    private function principalAt(string $href, Request $request): ?array
     {
         $scheme = parse_url($href, PHP_URL_SCHEME);
 
@@ -622,7 +1221,7 @@ final class Sharing
 
         $node = $this->server->tree()->node($path);
 
-        return $node instanceof Principal ? $node : null;
+        return $node instanceof Principal ? [$path, $node] : null;
     }
 
     /**
@@ -640,6 +1239,29 @@ final class Sharing
      */
     private function sharerOf(string $path, INode $node, Request $request): ?string
     {
+        $href = $this->ownerOf($path, $node);
+
+        if ($href === null) {
+            return null;
+        }
+
+        try {
+            return $this->server->pathOfUrl($href, $request);
+        } catch (DavException | MalformedPath) {
+            return null;
+        }
+    }
+
+    /**
+     * The address `DAV:owner` names on this node, or null where it names
+     * nobody.
+     *
+     * Read through {@see Answers} for the reason {@see self::sharerOf()}
+     * gives, and trimmed because a `DAV:href` that arrives pretty-printed
+     * carries its indentation with it.
+     */
+    private function ownerOf(string $path, INode $node): ?string
+    {
         $owner = Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::OWNER])
             ->byStatus()[200][self::OWNER] ?? null;
 
@@ -649,15 +1271,7 @@ final class Sharing
 
         $href = trim($owner->child(self::HREF)?->text() ?? '');
 
-        if ($href === '') {
-            return null;
-        }
-
-        try {
-            return $this->server->pathOfUrl($href, $request);
-        } catch (DavException | MalformedPath) {
-            return null;
-        }
+        return $href === '' ? null : $href;
     }
 
     /**
@@ -719,7 +1333,7 @@ final class Sharing
      */
     private static function toShare(Element $set, array $already): Closure
     {
-        $href = self::addressIn($set);
+        $href = self::addressIn($set, '§6.27 begins with a DAV:href, and this CS:set names nobody.');
 
         $sharee = new Sharee(
             $href,
@@ -741,7 +1355,7 @@ final class Sharing
      */
     private static function toStopSharing(Element $remove): Closure
     {
-        $href = self::addressIn($remove);
+        $href = self::addressIn($remove, '§6.28 begins with a DAV:href, and this CS:remove names nobody.');
 
         return static function (IShareTarget $target) use ($href): void {
             $target->stopSharingWith($href);
@@ -749,19 +1363,20 @@ final class Sharing
     }
 
     /**
-     * The address an instruction is about, in whichever of §5.3.2's three
-     * forms it arrived.
+     * The address an element is about, in whichever of §5.3.2's three forms
+     * it arrived.
      *
-     * @throws BadRequest If there is none, which both grammars begin with
+     * @param string $why What to say where there is none, every grammar that
+     *                    carries an address having its own section to cite
+     *
+     * @throws BadRequest If there is none
      */
-    private static function addressIn(Element $instruction): string
+    private static function addressIn(Element $instruction, string $why): string
     {
         $href = trim($instruction->child(self::HREF)?->text() ?? '');
 
         if ($href === '') {
-            throw new BadRequest(
-                '§6.27 and §6.28 both begin with a DAV:href, and this instruction names nobody.',
-            );
+            throw new BadRequest($why);
         }
 
         return $href;
@@ -831,7 +1446,7 @@ final class Sharing
         $result = $event->result();
 
         foreach (array_keys($result->mutations()) as $name) {
-            if ($name === self::INVITE || $name === self::ALLOWED_SHARING_MODES) {
+            if (in_array($name, self::PROTECTED, true)) {
                 $result->set($name, 403, self::CANNOT_MODIFY_PROTECTED);
             }
         }

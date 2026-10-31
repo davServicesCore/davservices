@@ -260,7 +260,12 @@ final class NotificationsTest extends TestCase
      * §5's sharing, and only the first is here. A server announcing the token
      * would have a client `POST` a `CS:share` and be told the method is not
      * allowed — worse than silence, because §5.1 is how a client decides
-     * whether to offer sharing at all. The token comes with R-CAL-20.
+     * whether to offer sharing at all.
+     *
+     * **R-CAL-20 has since arrived and this case still stands**: the token is
+     * said by {@see \DavServices\Plugin\Sharing}, and only where that plugin
+     * was given a `POST` to hang §5.3.2 on. A server with notifications and no
+     * sharing is exactly the server this case describes.
      */
     public function testItAnnouncesNoSharingSupport(): void
     {
