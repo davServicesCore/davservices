@@ -115,6 +115,17 @@ final class SharingReplyTest extends TestCase
 
     private const HOST = '<CS:hosturl><D:href>/calendars/alice/work/</D:href></CS:hosturl>';
 
+    private ?MemoryShareeHome $elsewhere = null;
+
+    /**
+     * Somebody else's calendar home, which also takes shared calendars: a
+     * reply aimed at it is refused by the home check and by nothing else.
+     */
+    private function elsewhere(): MemoryShareeHome
+    {
+        return $this->elsewhere ??= new MemoryShareeHome('wilfredo');
+    }
+
     /**
      * **The whole of §5.4.1's answer**: `CS:shared-as` naming the copy the
      * acceptance created, and the copy really there.
@@ -280,12 +291,14 @@ final class SharingReplyTest extends TestCase
      */
     public function testAReplyOnSomebodyElsesHomeIsRefused(): void
     {
-        $home = new MemoryShareeHome('eric');
-
-        $response = $this->reply($this->accepting(), home: $home, at: '/calendars/alice');
+        $response = $this->reply($this->accepting(), at: '/calendars/wilfredo');
 
         self::assertSame(403, $response->status());
-        self::assertSame([], $home->children());
+        // **Wilfredo's home takes shared calendars too**, so nothing but the
+        // home check stands between this reply and a copy in it. A fixture
+        // whose other home took none would have let a server that skipped
+        // that check refuse for the wrong reason.
+        self::assertSame([], $this->elsewhere()->children());
     }
 
     /**
@@ -298,9 +311,13 @@ final class SharingReplyTest extends TestCase
     }
 
     /**
-     * **And one by somebody whose principal is not in the tree**: there is
-     * nothing to read a `CALDAV:calendar-home-set` from, so there is no home
-     * this server will call theirs.
+     * **And one by somebody whose principal is not in the tree**: no address
+     * can resolve to a principal that is not there, so the `DAV:href` names
+     * somebody other than whoever is asking whatever it says.
+     *
+     * That is also why the home question is asked **after** this one — it
+     * then never has a missing principal to answer about, and needs no guard
+     * of its own for a case it cannot meet.
      */
     public function testAReplyByAPrincipalThatIsNotThereIsRefused(): void
     {
@@ -940,7 +957,8 @@ final class SharingReplyTest extends TestCase
                             ->add(Calendar::of($work))
                             ->add(Calendar::of(new MemoryCollection('private')))
                             ->add(new MemoryFile('notes.txt', 'nothing to do with sharing')))
-                        ->add($home))
+                        ->add($home)
+                        ->add($this->elsewhere()))
                     ->add((new MemoryCollection('principals'))
                         ->add(new Principal(new PrincipalInfo('alice', 'Alice')))
                         ->add(new Principal(new PrincipalInfo('eric', 'Eric York'))))

@@ -692,10 +692,6 @@ final class Sharing
             throw new Forbidden('§5.4.1 is a sharee replying, and nobody here has said who they are.');
         }
 
-        if (!$this->isTheCalendarHomeOf($asking, $path)) {
-            throw new Forbidden('§5.4.1 puts a reply on the sharee own calendar home, and this is not theirs.');
-        }
-
         $sharee = self::addressIn($document, '§6.22 begins with a DAV:href, and this reply names nobody.');
         $answer = self::answerIn($document);
         $wanted = self::addressIn(
@@ -709,6 +705,15 @@ final class Sharing
 
         if ($who === null || $who[0] !== $asking) {
             throw new Forbidden('§5.4.1 has the sharee reply for themselves, and this reply names somebody else.');
+        }
+
+        // **After the address, and that order is load-bearing**: whoever is
+        // asking has a principal in this tree by now, because the check above
+        // found one at their path. So the home question is never asked about
+        // somebody who is not there, and there is no case of a missing
+        // principal left for it to answer.
+        if (!$this->isTheCalendarHomeOf($asking, $path)) {
+            throw new Forbidden('§5.4.1 puts a reply on the sharee own calendar home, and this is not theirs.');
         }
 
         $shared = $this->calendarAt($wanted, $request);
@@ -790,13 +795,12 @@ final class Sharing
      * which home is theirs. A deployment that puts homes somewhere unusual is
      * right either way, and a server with no such property answers nobody's
      * reply — which is the truth about a server that has no calendar homes.
+     *
+     * The principal is known to be in the tree, {@see self::reply()} having
+     * found one at that path before asking this.
      */
     private function isTheCalendarHomeOf(string $principal, string $path): bool
     {
-        if (!$this->server->tree()->exists($principal)) {
-            return false;
-        }
-
         $homes = Answers::about(
             $this->server->events(),
             $principal,
