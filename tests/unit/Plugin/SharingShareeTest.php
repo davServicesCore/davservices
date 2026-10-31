@@ -208,6 +208,21 @@ final class SharingShareeTest extends TestCase
     }
 
     /**
+     * **A calendar whose store knows nothing of sharing carries no invitation
+     * list at all**, and that is the half that keeps the property off every
+     * calendar: §5.2.2 has it on one "that has been shared by the owner, or on
+     * the calendar collection resources of the sharees", and a calendar that
+     * is neither is neither.
+     */
+    public function testACalendarThatKnowsNothingOfSharingCarriesNoInvitationList(): void
+    {
+        $answer = $this->asking('<T:invite/>', Calendar::of(new MemoryCollection('work')));
+
+        self::assertStringContainsString('404 Not Found', $answer);
+        self::assertStringNotContainsString('<cs:invite>', $answer);
+    }
+
+    /**
      * **A sharer's own calendar carries no organizer**, which is the half that
      * keeps this from being answered everywhere: §5.2.2 asks for the element
      * "on calendar collection resources **of the sharees**", and on the

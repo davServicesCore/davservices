@@ -255,6 +255,21 @@
                 // could see.
                 "DavServices\\Xml\\Writer::namespacesOf",
             ]
+        },
+        // A principal that is not in the tree has no
+        // `CALDAV:calendar-home-set` to read, so this guard is what turns
+        // §5.4.1's reply into a `403` instead of the `404` that asking the
+        // tree for a missing node would raise. Saying "yes, that is their
+        // home" instead cannot be seen from outside: the reply is then
+        // refused a moment later by the guard that wants its `DAV:href` to
+        // name whoever is asking, and no address can resolve to a principal
+        // that is not there. Same status, same empty body — an equivalent
+        // mutant, and one that would hide the next real gap behind a number
+        // below 100.
+        "FalseValue": {
+            "ignore": [
+                "DavServices\\Plugin\\Sharing::isTheCalendarHomeOf",
+            ]
         }
     }
 }

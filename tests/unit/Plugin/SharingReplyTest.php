@@ -102,6 +102,11 @@ use PHPUnit\Framework\TestCase;
  */
 #[CoversClass(Sharing::class)]
 #[CoversClass(InviteReply::class)]
+// **And the notification too**, because §6.23's check runs through
+// `InviteNotification::identifierOf()`: a mutation round told what covers only
+// the two above runs this file's cases against neither, and reported a change
+// to that method as unnoticed when every case here notices it.
+#[CoversClass(InviteNotification::class)]
 final class SharingReplyTest extends TestCase
 {
     private const NS = 'http://calendarserver.org/ns/';
@@ -222,6 +227,52 @@ final class SharingReplyTest extends TestCase
     }
 
     /**
+     * **And it takes the place of the one the sharer wrote.** §6.14 gives the
+     * element to both of them — "This can be used by sharers to communicate
+     * the nature of a shared calendar to sharees, **as well as** used by
+     * sharees to indicate back to the sharer how each sharee is refering to
+     * the shared calendar" — and the entry is where the sharer reads what
+     * their sharee calls it. A server keeping its own wording would never
+     * show them the answer.
+     */
+    public function testTheShareesSummaryTakesThePlaceOfTheSharersOnTheList(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $this->reply($this->accepting() . '<CS:summary>Alice and me</CS:summary>', work: $work);
+
+        self::assertSame('Alice and me', self::only($work)->summary());
+    }
+
+    /**
+     * And the sharer's own wording stands where the sharee sent none.
+     */
+    public function testTheSharersSummaryStandsWhereTheShareeSentNone(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $this->reply($this->accepting(), work: $work);
+
+        self::assertSame('Shared workspace', self::only($work)->summary());
+    }
+
+    /**
+     * **An identifier written across several lines is still the identifier.**
+     * §6.23 is `(#PCDATA)`, so a document that arrives pretty-printed carries
+     * the indentation with it — and a server comparing the text as it stood
+     * would refuse every client that formats its XML.
+     */
+    public function testAnIdentifierWrittenAcrossSeveralLinesStillMatches(): void
+    {
+        $response = $this->reply(
+            '<D:href>/principals/eric/</D:href><CS:invite-accepted/>' . self::HOST
+            . '<CS:in-reply-to>' . "\n            " . $this->identifier() . "\n        " . '</CS:in-reply-to>',
+        );
+
+        self::assertSame(200, $response->status());
+    }
+
+    /**
      * **A reply on somebody else's calendar home is refused.** §5.4.1 puts it
      * on "**the sharee's** calendar home collection resource", and the home is
      * where the copy would be made: without this, an invitation could be
@@ -285,13 +336,51 @@ final class SharingReplyTest extends TestCase
 
     /**
      * And a home named by an address that climbs out of the tree is no home:
-     * `Uri\Path` refuses it, and the next one named is still read.
+     * `Uri\Path` refuses it.
      */
     public function testAHomeThatClimbsOutOfTheTreeIsNoHome(): void
     {
         $response = $this->reply($this->accepting(), homeSet: self::aHomeSetSaying('/../calendars/eric/'));
 
         self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **But the one named after it is still read.** RFC 4791 §6.2.1 lets the
+     * property name more than one home — "There can be multiple" — so one
+     * address this server cannot resolve is one entry passed over and not the
+     * end of the list.
+     */
+    public function testAHomeNamedAfterAnUnusableOneIsStillRead(): void
+    {
+        $home = new MemoryShareeHome('eric');
+
+        $response = $this->reply($this->accepting(), home: $home, homeSet: self::aHomeSetSaying(
+            '/../calendars/eric/',
+            '/calendars/eric/',
+        ));
+
+        self::assertSame(200, $response->status());
+        self::assertTrue($home->hasChild('shared-1'));
+    }
+
+    /**
+     * **And a home written across several lines is still the home.** The
+     * property is another plugin's answer and may arrive pretty-printed, which
+     * a server comparing the text as it stood would refuse.
+     */
+    public function testAHomeWrittenAcrossSeveralLinesIsStillTheHome(): void
+    {
+        $home = new MemoryShareeHome('eric');
+
+        $response = $this->reply(
+            $this->accepting(),
+            home: $home,
+            homeSet: self::aHomeSetSaying("\n            /calendars/eric/\n        "),
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertTrue($home->hasChild('shared-1'));
     }
 
     /**
@@ -492,6 +581,21 @@ final class SharingReplyTest extends TestCase
         $home->add(new MemoryCollection('mine'));
 
         $response = $this->remove($home, $work, at: '/calendars/eric/mine');
+
+        self::assertSame(204, $response->status());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **And deleting something that is no calendar at all corrects nothing**,
+     * which is the half that keeps this listener off every `DELETE` this
+     * server answers — a file, a plain collection, anything.
+     */
+    public function testDeletingSomethingThatIsNoCalendarCorrectsNothing(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $response = $this->remove($this->homeHoldingACopy(), $work, at: '/calendars/alice/notes.txt');
 
         self::assertSame(204, $response->status());
         self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
@@ -729,13 +833,16 @@ final class SharingReplyTest extends TestCase
     /**
      * RFC 4791 §6.2.1's property, naming one home.
      */
-    private static function aHomeSetSaying(string $href): Element
+    private static function aHomeSetSaying(string ...$hrefs): Element
     {
         $set = new Element(self::HOME_SET);
-        $names = new Element('{DAV:}href');
 
-        $names->appendText($href);
-        $set->append($names);
+        foreach ($hrefs as $href) {
+            $names = new Element('{DAV:}href');
+
+            $names->appendText($href);
+            $set->append($names);
+        }
 
         return $set;
     }
@@ -831,7 +938,8 @@ final class SharingReplyTest extends TestCase
                     ->add((new MemoryCollection('calendars'))
                         ->add((new MemoryCollection('alice'))
                             ->add(Calendar::of($work))
-                            ->add(Calendar::of(new MemoryCollection('private'))))
+                            ->add(Calendar::of(new MemoryCollection('private')))
+                            ->add(new MemoryFile('notes.txt', 'nothing to do with sharing')))
                         ->add($home))
                     ->add((new MemoryCollection('principals'))
                         ->add(new Principal(new PrincipalInfo('alice', 'Alice')))
