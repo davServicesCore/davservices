@@ -380,9 +380,16 @@ final class SharingReplyTest extends TestCase
      */
     public function testAHomeThatTakesNoSharedCalendarsCannotAcceptOne(): void
     {
-        $response = $this->reply($this->accepting(), home: new MemoryCollection('eric'));
+        $work = $this->sharersCalendar();
+
+        $response = $this->reply($this->accepting(), home: new MemoryCollection('eric'), work: $work);
 
         self::assertSame(403, $response->status());
+        // **And the invitation is left as it was**, which is why the copy is
+        // made before the answer is recorded: a sharer whose list said
+        // "accepted" over a sharee with no copy would be reading a state
+        // nobody is in.
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
     }
 
     /**
