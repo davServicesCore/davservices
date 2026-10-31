@@ -36,6 +36,8 @@ use DavServices\Plugin\Sharing;
 use DavServices\Tests\Unit\CalDav\MemoryShareable;
 use DavServices\Tests\Unit\CalDav\MemorySharedWithMe;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
+use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Xml\Element;
 use DavServices\Xml\Writer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -287,6 +289,27 @@ final class SharingShareeTest extends TestCase
     }
 
     /**
+     * **And a sharer whose name is not text has no name.** `DAV:displayname`
+     * holds text (RFC 4918 §15.2), but a property may hold XML instead, and
+     * §6.18's `CS:common-name` is `(#PCDATA)` — so a value that is an element
+     * is no common name, and the address stands alone rather than carrying a
+     * document where a name belongs.
+     */
+    public function testASharerWhoseNameIsNotTextIsNamedByAddressAlone(): void
+    {
+        $answer = $this->asking(
+            '<T:invite/>',
+            Calendar::of(new MemorySharedWithMe('work', owner: '/principals/odd')),
+        );
+
+        self::assertStringContainsString(
+            '<cs:organizer><d:href>/principals/odd</d:href></cs:organizer>',
+            $answer,
+        );
+        self::assertStringNotContainsString('common-name', $answer);
+    }
+
+    /**
      * **A copy with no sharee list still says who shared it**, §5.2.2's
      * `(organizer?, user*)` admitting a document with the organizer and no
      * users at all — and the organizer being the half a sharee is certain to
@@ -352,7 +375,13 @@ final class SharingShareeTest extends TestCase
                 (new MemoryCollection(''))
                     ->add((new MemoryCollection('calendars'))->add($calendar))
                     ->add((new MemoryCollection('principals'))
-                        ->add(new Principal(new PrincipalInfo('alice', 'Alice')))),
+                        ->add(new Principal(new PrincipalInfo('alice', 'Alice')))
+                        // Somebody whose name is a document rather than text,
+                        // which a property may hold and a common name may not.
+                        ->add((new MemoryFile('odd'))->withProperty(
+                            '{DAV:}displayname',
+                            new Element('{https://dav.services/test}not-a-name'),
+                        ))),
             ),
             $events,
             new Writer(['DAV:' => 'd', self::NS => 'cs']),
