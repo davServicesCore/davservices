@@ -22,9 +22,12 @@ use DavServices\CalDav\NotificationCollection;
 use DavServices\CalDav\Sharee;
 use DavServices\CalDav\SharingAccess;
 use DavServices\Dav\Acl\PrincipalInfo;
+use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\INode;
+use DavServices\Dav\Method\Delete;
+use DavServices\Dav\Method\Options;
 use DavServices\Dav\Method\Post;
 use DavServices\Dav\Property\LiveProperties;
 use DavServices\Dav\Server;
@@ -36,6 +39,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\Notifications;
 use DavServices\Plugin\Sharing;
+use DavServices\Tests\Unit\CalDav\MemorySharedWithMe;
 use DavServices\Tests\Unit\CalDav\MemoryShareeHome;
 use DavServices\Tests\Unit\CalDav\MemoryShareTarget;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
@@ -426,6 +430,179 @@ final class SharingReplyTest extends TestCase
     }
 
     /**
+     * **§5.4.2: taking the copy away is a `DELETE`**, and it leaves the
+     * sharer's list saying so.
+     *
+     * > To remove a shared calendar from a sharee's calendar home collection
+     * > a DELETE request is targeted at the shared calendar URI. When such a
+     * > request is received the server MUST remove the shared calendar from
+     * > the sharee's calendar home and **automatically update the sharee's
+     * > status** in the sharer's calendar's CS:invite property.
+     *
+     * Declined, because §6.9's is the only state that fits somebody who no
+     * longer has it — and because §5.4.2 is the other way a sharee refuses.
+     */
+    public function testRemovingTheCopyLeavesTheShareeDeclined(): void
+    {
+        $work = $this->sharersCalendar();
+        $home = $this->homeHoldingACopy();
+
+        $response = $this->remove($home, $work);
+
+        self::assertSame(204, $response->status());
+        self::assertFalse($home->hasChild('shared-1'), 'and the copy is gone');
+        self::assertSame(InviteStatus::Declined, self::only($work)->status());
+    }
+
+    /**
+     * **And the sharer is told, in the same words a decline is told in.**
+     * §5.4.2 does not ask for it and §5.4.1 does, of "the change in the
+     * sharee state" — and this is that change, reached the other way. A
+     * sharer left to notice it on their next `PROPFIND` would be the only one
+     * not told about a list of their own.
+     */
+    public function testRemovingTheCopyTellsTheSharer(): void
+    {
+        $alice = new MemoryCollection('alice');
+
+        $this->remove($this->homeHoldingACopy(), $this->sharersCalendar(), $alice);
+
+        self::assertStringContainsString('<cs:invite-declined/>', self::theOneNotificationIn($alice));
+    }
+
+    /**
+     * **Deleting a calendar that is nobody's copy corrects no list**, which is
+     * the half that keeps this listener off every other `DELETE` this server
+     * answers.
+     */
+    public function testDeletingACalendarThatIsNobodysCopyCorrectsNoList(): void
+    {
+        $work = $this->sharersCalendar();
+        $home = new MemoryShareeHome('eric');
+
+        $home->add(new MemoryCollection('mine'));
+
+        $response = $this->remove($home, $work, at: '/calendars/eric/mine');
+
+        self::assertSame(204, $response->status());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **And neither does one whose original is not there any more.** The copy
+     * still goes — §5.4.2's first half is the sharee's to have — and there is
+     * no list left to correct.
+     */
+    public function testDeletingACopyWhoseOriginalIsGoneStillRemovesIt(): void
+    {
+        $home = $this->homeHoldingACopy('/calendars/alice/missing/');
+
+        $response = $this->remove($home, $this->sharersCalendar());
+
+        self::assertSame(204, $response->status());
+        self::assertFalse($home->hasChild('shared-1'));
+    }
+
+    /**
+     * **A removal by somebody who holds no invitation corrects nothing**, and
+     * that is a limit worth seeing: nothing on the copy says whose it is, so
+     * the sharee is taken to be whoever is asking. §5.4.2 describes the sharee
+     * removing their own copy; an administrator clearing somebody else's leaves
+     * the sharer's list to be corrected by hand.
+     */
+    public function testARemovalBySomebodyWithNoInvitationCorrectsNothing(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $response = $this->remove($this->homeHoldingACopy(), $work, asking: 'principals/alice');
+
+        self::assertSame(204, $response->status());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **And a removal with no request behind it corrects nothing.** An
+     * application taking a node away itself is nobody refusing anything, and
+     * §5.4.2 is about a sharee's `DELETE` — so there is nobody whose standing
+     * could have changed.
+     */
+    public function testARemovalWithNoRequestBehindItCorrectsNothing(): void
+    {
+        $work = $this->sharersCalendar();
+        $server = $this->server(
+            $this->homeHoldingACopy(),
+            $work,
+            new MemoryCollection('alice'),
+            'principals/eric',
+            true,
+        );
+
+        $server->events()->emit(new BeforeUnbind('calendars/eric/shared-1'));
+
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **§5.1: and now the server says it does all this.**
+     *
+     * > A server that supports the features described in this document MUST
+     * > include "calendarserver-sharing" as a field in the DAV response header
+     * > from an OPTIONS request on any resource that supports these features.
+     *
+     * The token was withheld through P7-05a and P7-05b, twice, under this same
+     * sentence: with §5.3.2's `POST` missing a client could not share, and
+     * with §5.4 missing a sharee could not answer. Both are here, so the
+     * promise can be made.
+     */
+    public function testItNowAnnouncesSharingSupport(): void
+    {
+        $server = $this->server(
+            new MemoryShareeHome('eric'),
+            $this->sharersCalendar(),
+            new MemoryCollection('alice'),
+            'principals/eric',
+            true,
+        );
+
+        $server->onMethod('OPTIONS', (new Options($server))(...));
+
+        $answer = $server->handle(new Request('OPTIONS', '/calendars/eric'));
+
+        self::assertStringContainsString(
+            'calendarserver-sharing',
+            $answer->headers()->first('DAV') ?? '',
+        );
+    }
+
+    /**
+     * Eric's home with a copy of Alice's calendar already in it.
+     */
+    private function homeHoldingACopy(string $of = '/calendars/alice/work/'): MemoryShareeHome
+    {
+        $home = new MemoryShareeHome('eric');
+
+        $home->add(new MemorySharedWithMe('shared-1', $of));
+
+        return $home;
+    }
+
+    private function remove(
+        MemoryShareeHome $home,
+        MemoryShareTarget $work,
+        ?MemoryCollection $notifications = null,
+        ?string $asking = 'principals/eric',
+        string $at = '/calendars/eric/shared-1',
+    ): Response {
+        return $this->server(
+            $home,
+            $work,
+            $notifications ?? new MemoryCollection('alice'),
+            $asking,
+            true,
+        )->handle(new Request('DELETE', $at, headers: new Headers(['Host' => 'calendar.example.com'])));
+    }
+
+    /**
      * The body of a reply that accepts, with everything §6.22 requires.
      */
     private function accepting(): string
@@ -621,6 +798,7 @@ final class SharingReplyTest extends TestCase
         )))->register($post);
 
         $server->onMethod('POST', $post(...));
+        $server->onMethod('DELETE', (new Delete($server))(...));
 
         return $server;
     }

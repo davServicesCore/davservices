@@ -485,7 +485,8 @@ final class SharingTest extends TestCase
     }
 
     /**
-     * **It announces no sharing support yet, and that is deliberate.** §5.1:
+     * **A server with the properties and no `POST` announces no sharing**,
+     * and that is deliberate. §5.1:
      *
      * > A server that supports the features described in this document MUST
      * > include "calendarserver-sharing" as a field in the DAV response header
@@ -497,12 +498,17 @@ final class SharingTest extends TestCase
      * and then be told the method is not allowed — worse than silence, because
      * §5.1 is how a client decides whether to offer it at all.
      *
+     * **The token exists now** and is said by this same plugin, but only where
+     * it was handed a `POST` to hang §5.3.2 on
+     * ({@see \DavServices\Tests\Unit\Plugin\SharingReplyTest}). Here it was
+     * not, which is a deployment that wants the properties and nothing else.
+     *
      * The same standard {@see \DavServices\Plugin\CalDav} holds itself to with
      * `calendar-access`, whose §5.1 makes the token "a promise that the server
      * supports all MUST level requirements specified in this document" — and
      * which that plugin does not announce either, for one still open.
      */
-    public function testItAnnouncesNoSharingSupportYet(): void
+    public function testAServerWithTheseTwoPropertiesAloneAnnouncesNoSharing(): void
     {
         $server = $this->server($this->calendar([$this->eric()], [IShareable::CAN_BE_SHARED]));
 

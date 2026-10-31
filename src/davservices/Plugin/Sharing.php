@@ -25,7 +25,10 @@ use DavServices\CalDav\IShareeHome;
 use DavServices\CalDav\IShareTarget;
 use DavServices\CalDav\Sharee;
 use DavServices\CalDav\SharingAccess;
+use DavServices\Dav\Event\BeforeMethod;
+use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
+use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
@@ -153,6 +156,21 @@ final class Sharing
     private const SHARE = '{http://calendarserver.org/ns/}share';
 
     /**
+     * §5.1's token, which this server says once it can do all of §5.
+     *
+     * > A server that supports the features described in this document MUST
+     * > include "calendarserver-sharing" as a field in the DAV response header
+     * > from an OPTIONS request on any resource that supports these features.
+     *
+     * **Said only where the `POST` is wired**, because that is what makes the
+     * features reachable: §5.2's properties on their own are something to read
+     * and nothing to do, and a client that read the token and could not share
+     * would have been told something untrue. The same standard
+     * {@see CalDav} holds `calendar-access` to.
+     */
+    public const COMPLIANCE = 'calendarserver-sharing';
+
+    /**
      * §6.29's root, which §5.4.1 makes the answer to an acceptance.
      */
     private const SHARED_AS = '{http://calendarserver.org/ns/}shared-as';
@@ -206,6 +224,14 @@ final class Sharing
     private const HREF = '{DAV:}href';
 
     private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
+
+    /**
+     * What is being answered, where this plugin has seen a method begin.
+     *
+     * §5.4.2's correction hangs off {@see BeforeUnbind}, which carries a path
+     * and nothing else, and the correction has to know who is asking.
+     */
+    private ?Request $request = null;
 
     /**
      * @param Notifications|null $notifications Where §5.3.2's notifications
@@ -269,6 +295,27 @@ final class Sharing
             InviteReply::INVITE_REPLY,
             fn (Request $request, Element $document): Response => $this->reply($request, $document, $notifications),
         );
+
+        // **The request is remembered**, because {@see BeforeUnbind} carries
+        // only a path and §5.4.2's correction needs to know who is asking.
+        // The same way {@see Acl} keeps the request it is guarding.
+        $events->on(BeforeMethod::class, function (BeforeMethod $event): void {
+            $this->request = $event->request();
+        });
+
+        $events->on(
+            BeforeUnbind::class,
+            function (BeforeUnbind $event) use ($notifications): void {
+                $this->refuseByRemoving($event, $notifications);
+            },
+        );
+
+        // §5.1's token comes with the `POST` and not before it: a server that
+        // announced support over the properties alone would have a client
+        // offer sharing and then be told the method is not allowed.
+        $events->on(OptionsRequested::class, static function (OptionsRequested $event): void {
+            $event->addCompliance(self::COMPLIANCE);
+        });
     }
 
     /**
@@ -833,6 +880,86 @@ final class Sharing
         }
 
         return null;
+    }
+
+    /**
+     * §5.4.2: a sharee takes their copy away, and the sharer's list says so.
+     *
+     * > When such a request is received the server MUST remove the shared
+     * > calendar from the sharee's calendar home and automatically update the
+     * > sharee's status in the sharer's calendar's CS:invite property.
+     *
+     * **Declined**, §6.9's being the only state that fits somebody who no
+     * longer has it — and §5.4.2 being the other way a sharee refuses.
+     *
+     * Done **before** the unbind, because the copy is what says where the
+     * sharer's calendar is, and after the unbind there is nothing to ask.
+     *
+     * **The sharee is taken to be whoever is asking**, and that is a limit
+     * rather than a choice: nothing on the copy says whose it is. §5.4.2
+     * describes the sharee removing their own copy, which is what this
+     * answers; an administrator clearing somebody else's leaves the sharer's
+     * list to be put right by hand.
+     *
+     * The sharer is told in the same words a decline is told in. §5.4.2 does
+     * not ask for that and §5.4.1 asks for it of "the change in the sharee
+     * state" — which is this change, reached the other way.
+     */
+    private function refuseByRemoving(BeforeUnbind $event, Notifications $notifications): void
+    {
+        $path = $event->path();
+        $node = $this->server->tree()->node($path);
+
+        if (!$node instanceof Calendar || !$node->collection() instanceof ISharedWithMe) {
+            return;
+        }
+
+        // Nothing to correct where no request is behind the removal: an
+        // application taking a node away itself is nobody refusing anything,
+        // and §5.4.2 is about a sharee's `DELETE`.
+        $request = $this->request;
+
+        if ($request === null) {
+            return;
+        }
+
+        $asking = $this->server->events()->emit(new CurrentPrincipalRequested($request))->principal();
+
+        if ($asking === null) {
+            return;
+        }
+
+        $shared = $this->calendarAt($node->collection()->sharedUrl(), $request);
+
+        if ($shared === null) {
+            return;
+        }
+
+        [$sharedPath, $sharedNode, $store] = $shared;
+
+        $invitation = $this->invitationFor($asking, $store->sharees(), $request);
+
+        if ($invitation === null) {
+            return;
+        }
+
+        $where = $this->server->hrefOf($sharedPath, $sharedNode);
+
+        $store->shareWith(new Sharee(
+            $invitation->href(),
+            $invitation->access(),
+            InviteStatus::Declined,
+            $invitation->commonName(),
+            $invitation->summary(),
+        ));
+
+        $this->tellTheSharer($notifications, $request, $sharedPath, $sharedNode, new InviteReply(
+            $invitation->href(),
+            InviteStatus::Declined,
+            $where,
+            InviteNotification::identifierOf($where, $invitation->href()),
+            $invitation->summary(),
+        ));
     }
 
     /**

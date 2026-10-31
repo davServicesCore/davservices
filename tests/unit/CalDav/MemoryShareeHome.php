@@ -13,7 +13,10 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\CalDav;
 
+use DavServices\CalDav\Calendar;
 use DavServices\CalDav\IShareeHome;
+use DavServices\Dav\ICollection;
+use DavServices\Dav\INode;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 
 /**
@@ -36,5 +39,29 @@ final class MemoryShareeHome extends MemoryCollection implements IShareeHome
         $this->add(new MemorySharedWithMe($name, $hostUrl));
 
         return $name;
+    }
+
+    /**
+     * **A calendar home hands out calendars**, which is what makes the copy
+     * one: §5.2's properties are a calendar collection's, and so is §5.4.2's
+     * removal. The store underneath is what is kept, so that deleting the
+     * copy reaches the member of this collection.
+     */
+    public function child(string $name): INode
+    {
+        $child = parent::child($name);
+
+        return $child instanceof ICollection ? Calendar::of($child) : $child;
+    }
+
+    /**
+     * @return list<INode>
+     */
+    public function children(): array
+    {
+        return array_map(
+            static fn (INode $child): INode => $child instanceof ICollection ? Calendar::of($child) : $child,
+            parent::children(),
+        );
     }
 }
