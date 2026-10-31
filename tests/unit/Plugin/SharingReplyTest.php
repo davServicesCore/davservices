@@ -1,0 +1,627 @@
+<?php
+
+/*
+ * This file is part of davServices.
+ *
+ * (c) Felix Böck <https://dav.services>
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * For the full copyright and license information, see the LICENSE file.
+ */
+
+declare(strict_types=1);
+
+namespace DavServices\Tests\Unit\Plugin;
+
+use DateTimeImmutable;
+use DavServices\Acl\Principal;
+use DavServices\CalDav\Calendar;
+use DavServices\CalDav\InviteNotification;
+use DavServices\CalDav\InviteStatus;
+use DavServices\CalDav\NotificationCollection;
+use DavServices\CalDav\Sharee;
+use DavServices\CalDav\SharingAccess;
+use DavServices\Dav\Acl\PrincipalInfo;
+use DavServices\Dav\Event\CurrentPrincipalRequested;
+use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\INode;
+use DavServices\Dav\Method\Post;
+use DavServices\Dav\Property\LiveProperties;
+use DavServices\Dav\Server;
+use DavServices\Dav\Tree;
+use DavServices\Event\EventEmitter;
+use DavServices\Http\Body;
+use DavServices\Http\Headers;
+use DavServices\Http\Request;
+use DavServices\Http\Response;
+use DavServices\Plugin\Notifications;
+use DavServices\Plugin\Sharing;
+use DavServices\Tests\Unit\CalDav\MemoryShareeHome;
+use DavServices\Tests\Unit\CalDav\MemoryShareTarget;
+use DavServices\Tests\Unit\Dav\MemoryCollection;
+use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Xml\Element;
+use DavServices\Xml\Writer;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * Test list for §5.4.1, the sharee's reply. R-CAL-20, P7-05c.
+ *
+ * > When a sharee is invited to a shared calendar they can accept or decline
+ * > the invite by issuing a POST request to the sharee's calendar home
+ * > collection resource. The POST request MUST contain an XML document as its
+ * > body with the root element being CS:invite-reply.
+ * >
+ * > The CS:invite-reply element in the POST request specifies the sharee who
+ * > is replying in the DAV:href element, the accept or decline action via the
+ * > CS:invite-accepted or CS:invite-declined elements, the URL of the shared
+ * > calendar in the CS:hosturl element, the unique identifier of the invite to
+ * > which it is a reply in the CS:in-reply-to element, and an optional
+ * > CS:summary element.
+ * >
+ * > The response to a POST request that accepts a shared calendar invite MUST
+ * > be an XML document containing CS:shared-as (Section 6.29) as its root
+ * > element. That root element contains a single DAV:href element whose
+ * > content is the URI of the shared calendar in the sharee's calendar home
+ * > created by the invite acceptance.
+ * >
+ * > When the sharee replies to an invite, the server SHOULD send a
+ * > notification to the sharer to update them on the change in the sharee
+ * > state.
+ *
+ * with §6.22's grammar:
+ *
+ *     <!ELEMENT invite-reply (DAV:href,
+ *                             (invite-accepted | invite-declined),
+ *                             hosturl, in-reply-to, summary?>
+ *
+ * ## Four things are checked before anything happens, and each of them has to
+ *
+ * A reply carries the address of a sharee, the URL of a calendar and the
+ * identifier of an invitation — **all three from the client**. A server that
+ * took them on trust would let anybody accept any calendar into any home.
+ *
+ * - the target is **the asker's own** calendar home, as the server's own
+ *   `CALDAV:calendar-home-set` names it;
+ * - the `DAV:href` names **the asker**;
+ * - the `CS:hosturl` names a calendar on this server whose sharee list can be
+ *   corrected;
+ * - and that list holds an invitation **for the asker**, whose identifier the
+ *   `CS:in-reply-to` matches.
+ *
+ * The last one is free: §6.16's identifier is derived from the calendar and
+ * the sharee, so checking it costs nothing and proves the reply answers an
+ * invitation this server really issued.
+ */
+#[CoversClass(Sharing::class)]
+final class SharingReplyTest extends TestCase
+{
+    private const NS = 'http://calendarserver.org/ns/';
+
+    private const HOME_SET = '{urn:ietf:params:xml:ns:caldav}calendar-home-set';
+
+    private const HOST = '<CS:hosturl><D:href>/calendars/alice/work/</D:href></CS:hosturl>';
+
+    /**
+     * **The whole of §5.4.1's answer**: `CS:shared-as` naming the copy the
+     * acceptance created, and the copy really there.
+     */
+    public function testAcceptingMakesTheCopyAndSaysWhereItIs(): void
+    {
+        $home = new MemoryShareeHome('eric');
+
+        $response = $this->reply($this->accepting(), home: $home);
+
+        self::assertSame(200, $response->status());
+        // The root carries the namespace declarations, which is the writer's
+        // business and not this case's.
+        self::assertStringContainsString('<cs:shared-as ', (string) $response->body());
+        self::assertStringContainsString(
+            '><d:href>/calendars/eric/shared-1/</d:href></cs:shared-as>',
+            (string) $response->body(),
+        );
+        self::assertSame('application/xml; charset=utf-8', $response->headers()->first('Content-Type'));
+        self::assertTrue($home->hasChild('shared-1'));
+    }
+
+    /**
+     * **And the sharer's list says so**, which is what §5.4.2 calls updating
+     * "the sharee's status in the sharer's calendar's CS:invite property" and
+     * what §6.8 means by an invite "they previously accepted".
+     */
+    public function testAcceptingSetsTheShareeAsAcceptedOnTheSharersCalendar(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $this->reply($this->accepting(), work: $work);
+
+        self::assertSame(InviteStatus::Accepted, self::only($work)->status());
+        self::assertSame(SharingAccess::ReadWrite, self::only($work)->access(), 'the access is not the reply to change');
+    }
+
+    /**
+     * **§6.22's notification goes to the sharer**, in the order that grammar
+     * lays down — "the server SHOULD send a notification to the sharer to
+     * update them on the change in the sharee state".
+     *
+     * Asserted as one string because the order is half of what is asserted.
+     */
+    public function testAcceptingTellsTheSharer(): void
+    {
+        $alice = new MemoryCollection('alice');
+
+        $this->reply($this->accepting(), notifications: $alice);
+
+        self::assertStringContainsString(
+            '<cs:invite-reply><d:href>/principals/eric/</d:href><cs:invite-accepted/>'
+            . '<cs:hosturl><d:href>/calendars/alice/work/</d:href></cs:hosturl>'
+            . '<cs:in-reply-to>' . $this->identifier() . '</cs:in-reply-to>'
+            . '</cs:invite-reply>',
+            self::theOneNotificationIn($alice),
+        );
+    }
+
+    /**
+     * **A refusal creates nothing** and says nothing beyond `200`: §5.4.1
+     * makes a body owed only to "a POST request that **accepts**", and there
+     * is no URI to name where nothing was created.
+     */
+    public function testDecliningMakesNothingAndNamesNothing(): void
+    {
+        $home = new MemoryShareeHome('eric');
+        $work = $this->sharersCalendar();
+
+        $response = $this->reply($this->declining(), home: $home, work: $work);
+
+        self::assertSame(200, $response->status());
+        self::assertSame('', (string) $response->body());
+        self::assertSame([], $home->children());
+        self::assertSame(InviteStatus::Declined, self::only($work)->status());
+    }
+
+    /**
+     * And the sharer is told of that as well, with §6.9's element: the point
+     * of the message is "the change in the sharee state", whichever way it
+     * changed.
+     */
+    public function testDecliningTellsTheSharerToo(): void
+    {
+        $alice = new MemoryCollection('alice');
+
+        $this->reply($this->declining(), notifications: $alice);
+
+        self::assertStringContainsString('<cs:invite-declined/>', self::theOneNotificationIn($alice));
+    }
+
+    /**
+     * §6.22 makes `CS:summary` optional, and it is carried where the sharee
+     * sent one — §6.14 having it "used by sharees to indicate back to the
+     * sharer how each sharee is refering to the shared calendar".
+     */
+    public function testTheShareesOwnSummaryIsCarriedToTheSharer(): void
+    {
+        $alice = new MemoryCollection('alice');
+
+        $this->reply(
+            $this->accepting() . '<CS:summary>Alice and me</CS:summary>',
+            notifications: $alice,
+        );
+
+        self::assertStringContainsString(
+            '</cs:in-reply-to><cs:summary>Alice and me</cs:summary></cs:invite-reply>',
+            self::theOneNotificationIn($alice),
+        );
+    }
+
+    /**
+     * **A reply on somebody else's calendar home is refused.** §5.4.1 puts it
+     * on "**the sharee's** calendar home collection resource", and the home is
+     * where the copy would be made: without this, an invitation could be
+     * accepted into a home its holder never asked about.
+     */
+    public function testAReplyOnSomebodyElsesHomeIsRefused(): void
+    {
+        $home = new MemoryShareeHome('eric');
+
+        $response = $this->reply($this->accepting(), home: $home, at: '/calendars/alice');
+
+        self::assertSame(403, $response->status());
+        self::assertSame([], $home->children());
+    }
+
+    /**
+     * **And one by nobody at all**, there being no home to call theirs and
+     * nobody to be the sharee of an invitation.
+     */
+    public function testAReplyByNobodyIsRefused(): void
+    {
+        self::assertSame(403, $this->reply($this->accepting(), asking: null)->status());
+    }
+
+    /**
+     * **And one by somebody whose principal is not in the tree**: there is
+     * nothing to read a `CALDAV:calendar-home-set` from, so there is no home
+     * this server will call theirs.
+     */
+    public function testAReplyByAPrincipalThatIsNotThereIsRefused(): void
+    {
+        self::assertSame(403, $this->reply($this->accepting(), asking: 'principals/ghost')->status());
+    }
+
+    /**
+     * **A server that publishes no calendar home answers nobody's reply**,
+     * and that is the truth about it rather than an oversight: §5.4.1's
+     * target is "the sharee's calendar home collection resource", and RFC
+     * 4791 §6.2.1's property is how this server says where that is.
+     */
+    public function testAReplyIsRefusedWhereThisServerPublishesNoHome(): void
+    {
+        self::assertSame(403, $this->reply($this->accepting(), homeSet: false)->status());
+    }
+
+    /**
+     * **And whatever else is in that property is read rather than assumed.**
+     * Another plugin answers it, so a child that is no `DAV:href` is passed
+     * over and the hrefs beside it still count — here the stray one comes
+     * first.
+     */
+    public function testAStrayElementInTheHomeSetIsPassedOver(): void
+    {
+        $home = new MemoryShareeHome('eric');
+
+        $response = $this->reply($this->accepting(), home: $home, homeSet: self::aHomeSetWithAStrayChild());
+
+        self::assertSame(200, $response->status());
+        self::assertTrue($home->hasChild('shared-1'));
+    }
+
+    /**
+     * And a home named by an address that climbs out of the tree is no home:
+     * `Uri\Path` refuses it, and the next one named is still read.
+     */
+    public function testAHomeThatClimbsOutOfTheTreeIsNoHome(): void
+    {
+        $response = $this->reply($this->accepting(), homeSet: self::aHomeSetSaying('/../calendars/eric/'));
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **A reply that names somebody else as the sharee is refused**, which is
+     * the guard that keeps the notification honest: without it a client could
+     * have the sharer told that a third party had accepted.
+     */
+    public function testAReplyThatNamesSomebodyElseIsRefused(): void
+    {
+        $response = $this->reply(
+            '<D:href>/principals/alice/</D:href><CS:invite-accepted/>' . self::HOST
+            . '<CS:in-reply-to>' . $this->identifier() . '</CS:in-reply-to>',
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **A reply about a calendar that is not there is refused**, and so is one
+     * about a calendar whose sharee list is nobody's to correct: §5.4.2 makes
+     * updating that list part of what a reply does, so a reply that could not
+     * be recorded would be a reply that went nowhere.
+     */
+    #[DataProvider('calendarsNoReplyCanName')]
+    public function testAReplyAboutACalendarThatCannotRecordItIsRefused(string $host): void
+    {
+        $response = $this->reply(
+            '<D:href>/principals/eric/</D:href><CS:invite-accepted/>'
+            . '<CS:hosturl><D:href>' . $host . '</D:href></CS:hosturl>'
+            . '<CS:in-reply-to>' . $this->identifier() . '</CS:in-reply-to>',
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function calendarsNoReplyCanName(): iterable
+    {
+        yield 'nothing is there' => ['/calendars/alice/missing/'];
+        yield 'it is no calendar' => ['/calendars/'];
+        yield 'it is on another server' => ['http://elsewhere.example.com/calendars/alice/work/'];
+        yield 'it climbs out of the tree' => ['/../calendars/alice/work/'];
+        yield 'it is a calendar whose list is nobody to change' => ['/calendars/alice/private/'];
+    }
+
+    /**
+     * **A reply to an invitation that was never sent is refused.** The asker
+     * is on no sharee list of that calendar, so there is nothing to answer —
+     * and this is what keeps a client from accepting a calendar it was never
+     * offered.
+     */
+    public function testAReplyToAnInvitationNobodySentIsRefused(): void
+    {
+        $work = new MemoryShareTarget('work', sharees: [
+            new Sharee('/principals/wilfredo/', SharingAccess::Read, InviteStatus::NoResponse),
+        ]);
+
+        $response = $this->reply($this->accepting(), work: $work);
+
+        self::assertSame(403, $response->status());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **And one whose identifier does not match is refused.** §6.23 has
+     * `CS:in-reply-to` carry "the unique identifier of the inviate message
+     * that this notification message is a reply to", and §6.16's identifier is
+     * derived from the calendar and the sharee — so the check costs nothing
+     * and a reply that fails it is answering something this server never sent.
+     */
+    public function testAReplyWhoseIdentifierDoesNotMatchIsRefused(): void
+    {
+        $response = $this->reply(
+            '<D:href>/principals/eric/</D:href><CS:invite-accepted/>' . self::HOST
+            . '<CS:in-reply-to>not the one</CS:in-reply-to>',
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **A home that takes no shared calendars cannot accept one**, and that is
+     * a `403` rather than a crash: a calendar home is an ordinary collection
+     * until an application says otherwise, and §5.4.1's copy is one only it
+     * can make.
+     */
+    public function testAHomeThatTakesNoSharedCalendarsCannotAcceptOne(): void
+    {
+        $response = $this->reply($this->accepting(), home: new MemoryCollection('eric'));
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
+     * **But it can still decline**, because nothing is created by a refusal —
+     * which is what makes the two worth telling apart.
+     */
+    public function testAHomeThatTakesNoSharedCalendarsCanStillDecline(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $response = $this->reply($this->declining(), home: new MemoryCollection('eric'), work: $work);
+
+        self::assertSame(200, $response->status());
+        self::assertSame(InviteStatus::Declined, self::only($work)->status());
+    }
+
+    /**
+     * **Every required child of §6.22 is required**, and a document missing
+     * one is refused before anything changes.
+     */
+    #[DataProvider('repliesThatSayTooLittle')]
+    public function testAReplyThatSaysTooLittleIsRefused(string $body): void
+    {
+        $work = $this->sharersCalendar();
+
+        self::assertSame(400, $this->reply($body, work: $work)->status());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function repliesThatSayTooLittle(): iterable
+    {
+        $identifier = '<CS:in-reply-to>whatever</CS:in-reply-to>';
+
+        yield 'no address' => ['<CS:invite-accepted/>' . self::HOST . $identifier];
+        yield 'no calendar' => ['<D:href>/principals/eric/</D:href><CS:invite-accepted/>' . $identifier];
+        yield 'no identifier' => ['<D:href>/principals/eric/</D:href><CS:invite-accepted/>' . self::HOST];
+        yield 'neither yes nor no' => ['<D:href>/principals/eric/</D:href>' . self::HOST . $identifier];
+        yield 'both yes and no' => [
+            '<D:href>/principals/eric/</D:href><CS:invite-accepted/><CS:invite-declined/>'
+            . self::HOST . $identifier,
+        ];
+    }
+
+    /**
+     * The body of a reply that accepts, with everything §6.22 requires.
+     */
+    private function accepting(): string
+    {
+        return '<D:href>/principals/eric/</D:href><CS:invite-accepted/>' . self::HOST
+            . '<CS:in-reply-to>' . $this->identifier() . '</CS:in-reply-to>';
+    }
+
+    private function declining(): string
+    {
+        return '<D:href>/principals/eric/</D:href><CS:invite-declined/>' . self::HOST
+            . '<CS:in-reply-to>' . $this->identifier() . '</CS:in-reply-to>';
+    }
+
+    /**
+     * §6.16's identifier of the invitation these cases answer, taken from the
+     * thing that makes it rather than written out.
+     */
+    private function identifier(): string
+    {
+        $notice = InviteNotification::aboutAChange(
+            new Sharee('/principals/eric/', SharingAccess::ReadWrite, InviteStatus::NoResponse),
+            '/calendars/alice/work/',
+            '/principals/alice/',
+            null,
+        );
+
+        self::assertNotNull($notice);
+
+        return $notice->uid();
+    }
+
+    /**
+     * Alice's calendar, shared to Eric and waiting for his answer.
+     */
+    private function sharersCalendar(): MemoryShareTarget
+    {
+        return new MemoryShareTarget('work', sharees: [
+            new Sharee('/principals/eric/', SharingAccess::ReadWrite, InviteStatus::NoResponse, 'Eric York', 'Shared workspace'),
+        ]);
+    }
+
+    /**
+     * The one sharee on a calendar's list.
+     */
+    private static function only(MemoryShareTarget $calendar): Sharee
+    {
+        $sharees = $calendar->sharees();
+
+        self::assertCount(1, $sharees);
+
+        return $sharees[0] ?? self::fail('the list is empty');
+    }
+
+    /**
+     * The one notification deposited in a store, as it was written.
+     */
+    private static function theOneNotificationIn(MemoryCollection $store): string
+    {
+        $children = $store->children();
+
+        self::assertCount(1, $children);
+
+        $notification = $children[0] ?? self::fail('nothing was deposited');
+
+        self::assertInstanceOf(MemoryFile::class, $notification);
+
+        return $notification->get();
+    }
+
+    /**
+     * RFC 4791 §6.2.1's property, naming one home.
+     */
+    private static function aHomeSetSaying(string $href): Element
+    {
+        $set = new Element(self::HOME_SET);
+        $names = new Element('{DAV:}href');
+
+        $names->appendText($href);
+        $set->append($names);
+
+        return $set;
+    }
+
+    /**
+     * And one with something in it that is no address at all, which only
+     * whatever answers the property can put there.
+     */
+    private static function aHomeSetWithAStrayChild(): Element
+    {
+        $set = new Element(self::HOME_SET);
+        $stray = new Element('{https://dav.services/test}something-else');
+        $names = new Element('{DAV:}href');
+
+        $names->appendText('/calendars/eric/');
+        $set->append($stray);
+        $set->append($names);
+
+        return $set;
+    }
+
+    private function reply(
+        string $body,
+        ?string $asking = 'principals/eric',
+        ?INode $home = null,
+        ?MemoryShareTarget $work = null,
+        ?MemoryCollection $notifications = null,
+        string $at = '/calendars/eric',
+        Element|bool $homeSet = true,
+    ): Response {
+        return $this->server(
+            $home ?? new MemoryShareeHome('eric'),
+            $work ?? $this->sharersCalendar(),
+            $notifications ?? new MemoryCollection('alice'),
+            $asking,
+            $homeSet,
+        )->handle(new Request(
+            'POST',
+            $at,
+            headers: new Headers(['Content-Type' => 'application/xml', 'Host' => 'calendar.example.com']),
+            body: new Body(sprintf(
+                '<CS:invite-reply xmlns:D="DAV:" xmlns:CS="%s">%s</CS:invite-reply>',
+                self::NS,
+                $body,
+            )),
+        ));
+    }
+
+    /**
+     * Alice's calendars, Eric's home, the two principals, and a notification
+     * collection for Alice.
+     *
+     * **`CALDAV:calendar-home-set` is answered by a listener here** rather
+     * than by {@see \DavServices\Plugin\CalDav}, because what the sharing
+     * plugin reads is the property and not that plugin: whatever this server
+     * publishes as a principal's calendar home is the home a reply may be
+     * posted to.
+     */
+    private function server(
+        INode $home,
+        MemoryShareTarget $work,
+        MemoryCollection $notifications,
+        ?string $asking,
+        Element|bool $homeSet,
+    ): Server {
+        $events = new EventEmitter();
+
+        $events->on(PropertiesRequested::class, (new LiveProperties())(...));
+        $events->on(PropertiesRequested::class, static function (PropertiesRequested $event) use ($homeSet): void {
+            $result = $event->result();
+
+            if ($homeSet === false || !$event->node() instanceof Principal || !$result->wants(self::HOME_SET)) {
+                return;
+            }
+
+            $result->set(self::HOME_SET, $homeSet instanceof Element
+                ? $homeSet
+                : self::aHomeSetSaying('/calendars/' . $event->node()->name() . '/'));
+        });
+
+        if ($asking !== null) {
+            $events->on(
+                CurrentPrincipalRequested::class,
+                static function (CurrentPrincipalRequested $event) use ($asking): void {
+                    $event->answerWith($asking);
+                },
+            );
+        }
+
+        $server = new Server(
+            new Tree(
+                (new MemoryCollection(''))
+                    ->add((new MemoryCollection('calendars'))
+                        ->add((new MemoryCollection('alice'))
+                            ->add(Calendar::of($work))
+                            ->add(Calendar::of(new MemoryCollection('private'))))
+                        ->add($home))
+                    ->add((new MemoryCollection('principals'))
+                        ->add(new Principal(new PrincipalInfo('alice', 'Alice')))
+                        ->add(new Principal(new PrincipalInfo('eric', 'Eric York'))))
+                    ->add((new MemoryCollection('notifications'))
+                        ->add(NotificationCollection::of($notifications))),
+            ),
+            $events,
+            new Writer(['DAV:' => 'd', self::NS => 'cs']),
+        );
+
+        $post = new Post($server);
+
+        (new Sharing($server, new Notifications(
+            $server,
+            now: static fn (): DateTimeImmutable => new DateTimeImmutable('2026-10-30T09:00:00+00:00'),
+        )))->register($post);
+
+        $server->onMethod('POST', $post(...));
+
+        return $server;
+    }
+}

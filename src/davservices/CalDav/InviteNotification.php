@@ -167,7 +167,20 @@ final class InviteNotification
      */
     public function uid(): string
     {
-        return hash('sha256', $this->calendar . "\0" . $this->sharee->href());
+        return self::identifierOf($this->calendar, $this->sharee->href());
+    }
+
+    /**
+     * The identifier of the invitation of this calendar to this address.
+     *
+     * **Public because a reply is checked against it.** §6.23 has a sharee
+     * quote "the unique identifier of the inviate message that this
+     * notification message is a reply to", and a server that could not work
+     * out what it had sent would have to take the claim on trust.
+     */
+    public static function identifierOf(string $calendar, string $sharee): string
+    {
+        return hash('sha256', $calendar . "\0" . $sharee);
     }
 
     /**
