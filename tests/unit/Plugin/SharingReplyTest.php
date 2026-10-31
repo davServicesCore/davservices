@@ -17,6 +17,7 @@ use DateTimeImmutable;
 use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\InviteNotification;
+use DavServices\CalDav\InviteReply;
 use DavServices\CalDav\InviteStatus;
 use DavServices\CalDav\NotificationCollection;
 use DavServices\CalDav\Sharee;
@@ -100,6 +101,7 @@ use PHPUnit\Framework\TestCase;
  * invitation this server really issued.
  */
 #[CoversClass(Sharing::class)]
+#[CoversClass(InviteReply::class)]
 final class SharingReplyTest extends TestCase
 {
     private const NS = 'http://calendarserver.org/ns/';
@@ -525,6 +527,50 @@ final class SharingReplyTest extends TestCase
 
         self::assertSame(204, $response->status());
         self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **And one by nobody corrects nothing either.** A `DELETE` that got this
+     * far without anybody having said who they are is one no sharee made, and
+     * §5.4.2's correction is about a sharee's standing.
+     */
+    public function testARemovalByNobodyCorrectsNothing(): void
+    {
+        $work = $this->sharersCalendar();
+
+        $response = $this->remove($this->homeHoldingACopy(), $work, asking: null);
+
+        self::assertSame(204, $response->status());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * **A sharer this server cannot name is not written to**, and the reply
+     * still works: §5.4.1's SHOULD reaches no further than the notification
+     * mechanism §4 provides, and the sharee's standing is recorded either way.
+     */
+    #[DataProvider('sharersNobodyCanWriteTo')]
+    public function testASharerThisServerCannotNameIsNotWrittenTo(?string $owner): void
+    {
+        $alice = new MemoryCollection('alice');
+        $work = new MemoryShareTarget('work', owner: $owner, sharees: [
+            new Sharee('/principals/eric/', SharingAccess::ReadWrite, InviteStatus::NoResponse),
+        ]);
+
+        $response = $this->reply($this->accepting(), work: $work, notifications: $alice);
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $alice->children());
+        self::assertSame(InviteStatus::Accepted, self::only($work)->status());
+    }
+
+    /**
+     * @return iterable<string, array{string|null}>
+     */
+    public static function sharersNobodyCanWriteTo(): iterable
+    {
+        yield 'the calendar names no owner' => [null];
+        yield 'it names somebody this server does not host' => ['mailto:alice@example.com'];
     }
 
     /**
