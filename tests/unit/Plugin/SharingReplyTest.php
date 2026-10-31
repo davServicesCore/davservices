@@ -311,6 +311,23 @@ final class SharingReplyTest extends TestCase
     }
 
     /**
+     * **And a reply by nobody is refused before its document is read.** An
+     * anonymous client gets `403` and not `400`: whether its XML was
+     * well-formed is none of its business while it may not be here at all,
+     * and telling it which part of the document this server disliked is
+     * telling it something about a calendar it may not see.
+     */
+    public function testAReplyByNobodyIsRefusedBeforeItsDocumentIsRead(): void
+    {
+        $response = $this->reply(
+            '<CS:invite-accepted/>' . self::HOST . '<CS:in-reply-to>whatever</CS:in-reply-to>',
+            asking: null,
+        );
+
+        self::assertSame(403, $response->status());
+    }
+
+    /**
      * **And one by somebody whose principal is not in the tree**: no address
      * can resolve to a principal that is not there, so the `DAV:href` names
      * somebody other than whoever is asking whatever it says.
