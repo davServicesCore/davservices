@@ -32,6 +32,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\Scheduling;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
+use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Tests\Unit\Dav\TypedCollection;
 use DavServices\Xml\Element;
 use DavServices\Xml\Writer;
@@ -265,14 +266,88 @@ final class SchedulingTest extends TestCase
         self::assertSame('1', $answer->headers()->first('DAV'));
     }
 
-    private function asking(string $properties, string $path): string
+    /**
+     * **Whatever else is in that property is read rather than assumed.**
+     * Another plugin answers `CALDAV:calendar-home-set`, so a child that is no
+     * `DAV:href` is passed over and the address beside it still counts — here
+     * the stray one comes first.
+     */
+    public function testAStrayElementInTheHomeSetIsPassedOver(): void
     {
-        return $this->askingWhole('<D:prop>' . $properties . '</D:prop>', $path);
+        $set = new Element(self::HOME_SET);
+
+        $set->append(new Element('{https://dav.services/test}something-else'));
+        $set->append(self::hrefSaying('/calendars/bernard/'));
+
+        $answer = $this->asking('<C:schedule-inbox-URL/>', '/principals/bernard', $set);
+
+        self::assertStringContainsString('<d:href>/calendars/bernard/inbox/</d:href>', $answer);
     }
 
-    private function askingWhole(string $body, string $path): string
+    /**
+     * **And a home this server cannot resolve is no home — and not the end of
+     * the list.** RFC 4791 §6.2.1 allows more than one: "There can be
+     * multiple", so one address that leads nowhere is one entry passed over.
+     *
+     * Three ways it can lead nowhere, and all three come from whatever answers
+     * that property rather than from a client — which is why none of them may
+     * take the request down with it.
+     */
+    #[DataProvider('homesThatLeadNowhere')]
+    public function testAHomeThatLeadsNowhereIsPassedOver(string $href): void
     {
-        return (string) $this->server()->handle(new Request(
+        $set = new Element(self::HOME_SET);
+
+        $set->append(self::hrefSaying($href));
+        $set->append(self::hrefSaying('/calendars/bernard/'));
+
+        $answer = $this->asking('<C:schedule-inbox-URL/>', '/principals/bernard', $set);
+
+        self::assertStringContainsString('<d:href>/calendars/bernard/inbox/</d:href>', $answer);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function homesThatLeadNowhere(): iterable
+    {
+        yield 'it climbs out of the tree' => ['/../calendars/bernard/'];
+        yield 'there is nothing there' => ['/calendars/nobody/'];
+        yield 'it is no collection' => ['/calendars/bernard/notes.txt'];
+    }
+
+    /**
+     * And where every address leads nowhere, the property is not answered at
+     * all — which is §2.2.1's "not enabled" again.
+     */
+    public function testAHomeSetThatLeadsNowhereAnswersNothing(): void
+    {
+        $set = new Element(self::HOME_SET);
+
+        $set->append(self::hrefSaying('/calendars/nobody/'));
+
+        $answer = $this->asking('<C:schedule-inbox-URL/>', '/principals/bernard', $set);
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
+    private static function hrefSaying(string $href): Element
+    {
+        $names = new Element('{DAV:}href');
+
+        $names->appendText($href);
+
+        return $names;
+    }
+
+    private function asking(string $properties, string $path, ?Element $homeSet = null): string
+    {
+        return $this->askingWhole('<D:prop>' . $properties . '</D:prop>', $path, $homeSet);
+    }
+
+    private function askingWhole(string $body, string $path, ?Element $homeSet = null): string
+    {
+        return (string) $this->server($homeSet)->handle(new Request(
             'PROPFIND',
             $path,
             headers: new Headers(['Depth' => '0']),
@@ -295,16 +370,22 @@ final class SchedulingTest extends TestCase
      * publishes as a principal's calendar home is where the collections are
      * looked for.
      */
-    private function server(): Server
+    private function server(?Element $homeSet = null): Server
     {
         $events = new EventEmitter();
 
         $events->on(PropertiesRequested::class, (new LiveProperties())(...));
-        $events->on(PropertiesRequested::class, static function (PropertiesRequested $event): void {
+        $events->on(PropertiesRequested::class, static function (PropertiesRequested $event) use ($homeSet): void {
             $node = $event->node();
             $result = $event->result();
 
             if (!$node instanceof Principal || !$result->wants(self::HOME_SET) || $node->name() === 'nobody') {
+                return;
+            }
+
+            if ($homeSet !== null) {
+                $result->set(self::HOME_SET, $homeSet);
+
                 return;
             }
 
@@ -323,7 +404,8 @@ final class SchedulingTest extends TestCase
                         ->add((new MemoryCollection('bernard'))
                             ->add(Inbox::of(new MemoryCollection('inbox')))
                             ->add(Outbox::of(new MemoryCollection('outbox')))
-                            ->add(new TypedCollection('work', Calendar::CALENDAR)))
+                            ->add(new TypedCollection('work', Calendar::CALENDAR))
+                            ->add(new MemoryFile('notes.txt', 'nothing to do with scheduling')))
                         ->add((new MemoryCollection('wilfredo'))
                             ->add(new TypedCollection('work', Calendar::CALENDAR))))
                     ->add((new MemoryCollection('principals'))
