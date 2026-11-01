@@ -331,6 +331,35 @@ final class SchedulingTest extends TestCase
         self::assertStringContainsString('404 Not Found', $answer);
     }
 
+    /**
+     * **A home written across several lines is still the home.** The property
+     * is another plugin's answer and may arrive pretty-printed, which a server
+     * comparing the text as it stood would refuse — and then tell a client
+     * that a user with an Inbox has none.
+     */
+    public function testAHomeWrittenAcrossSeveralLinesIsStillTheHome(): void
+    {
+        $set = new Element(self::HOME_SET);
+
+        $set->append(self::hrefSaying("\n            /calendars/bernard/\n        "));
+
+        $answer = $this->asking('<C:schedule-inbox-URL/>', '/principals/bernard', $set);
+
+        self::assertStringContainsString('<d:href>/calendars/bernard/inbox/</d:href>', $answer);
+    }
+
+    /**
+     * **And a member that has no resource type at all is walked past**, not
+     * tripped over: a calendar home holds whatever the deployment put there,
+     * and §2 promises only that the collections are the server's to create.
+     */
+    public function testAMemberWithNoResourceTypeIsWalkedPast(): void
+    {
+        $answer = $this->asking('<C:schedule-inbox-URL/>', '/principals/wilfredo');
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
     private static function hrefSaying(string $href): Element
     {
         $names = new Element('{DAV:}href');
@@ -407,7 +436,8 @@ final class SchedulingTest extends TestCase
                             ->add(new TypedCollection('work', Calendar::CALENDAR))
                             ->add(new MemoryFile('notes.txt', 'nothing to do with scheduling')))
                         ->add((new MemoryCollection('wilfredo'))
-                            ->add(new TypedCollection('work', Calendar::CALENDAR))))
+                            ->add(new TypedCollection('work', Calendar::CALENDAR))
+                            ->add(new MemoryFile('notes.txt', 'nothing to do with scheduling'))))
                     ->add((new MemoryCollection('principals'))
                         ->add(new Principal(new PrincipalInfo('bernard', 'Bernard')))
                         ->add(new Principal(new PrincipalInfo('wilfredo', 'Wilfredo')))
