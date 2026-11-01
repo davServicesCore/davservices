@@ -141,6 +141,14 @@ final class Scheduling
      * **No method and no report.** §2.3 extends two reports and §5 adds a
      * `POST`, and neither is here: both are about what is *in* an Inbox or
      * what an Outbox is asked to do, and nothing delivers into one yet.
+     *
+     * **And nothing checks §2.2's other MUST** — "Scheduling Inbox
+     * collections MUST only contain calendar object resources that obey the
+     * restrictions specified in iTIP [RFC5546]" — for the same reason: what
+     * goes into an Inbox is what the server itself puts there when it
+     * delivers a scheduling message, and that is the chunk after this one.
+     * The rule belongs with the thing that writes, not with the thing that
+     * says where to write.
      */
     public function register(): void
     {
