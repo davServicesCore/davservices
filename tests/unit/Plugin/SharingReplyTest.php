@@ -15,6 +15,7 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DateTimeImmutable;
 use DavServices\Acl\Principal;
+use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\InviteNotification;
 use DavServices\CalDav\InviteReply;
@@ -40,6 +41,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\Notifications;
 use DavServices\Plugin\Sharing;
+use DavServices\Tests\Unit\Backend\MemoryCalendarUserBackend;
 use DavServices\Tests\Unit\CalDav\MemorySharedWithMe;
 use DavServices\Tests\Unit\CalDav\MemoryShareeHome;
 use DavServices\Tests\Unit\CalDav\MemoryShareTarget;
@@ -766,6 +768,80 @@ final class SharingReplyTest extends TestCase
     }
 
     /**
+     * **With a directory, a sharee named by a calendar user address can
+     * answer at last.** This is the gap P7-05c wrote down and left open:
+     * §5.4.1's reply is matched to whoever is asking by resolving the address
+     * on the sharer's list, and a `mailto:` resolved to nobody — so such a
+     * sharee was invited, was told, and could do nothing about it.
+     *
+     * {@see ICalendarUserBackend} closes it, and nothing else about the reply
+     * changes: the identifier is still derived from the address the invitation
+     * was sent to, which is the `mailto:` and not the principal's URL.
+     */
+    public function testAShareeNamedByAnAddressCanReplyWhereADirectoryKnowsThem(): void
+    {
+        $home = new MemoryShareeHome('eric');
+        $work = $this->invitationByAddress();
+
+        $response = $this->shareeReplies($home, $work, self::aDirectory());
+
+        self::assertSame(200, $response->status());
+        self::assertTrue($home->hasChild('shared-1'));
+        self::assertSame(InviteStatus::Accepted, self::only($work)->status());
+    }
+
+    /**
+     * **And without one they still cannot**, which is §5.3.2's own excuse
+     * rather than a fault: "the sharee might not be a user on the same server
+     * - though in that case how invitations are sent or access enabled is out
+     * of scope for this specification."
+     */
+    public function testAShareeNamedByAnAddressCannotReplyWithoutADirectory(): void
+    {
+        $home = new MemoryShareeHome('eric');
+        $work = $this->invitationByAddress();
+
+        $response = $this->shareeReplies($home, $work, null);
+
+        self::assertSame(403, $response->status());
+        self::assertSame([], $home->children());
+        self::assertSame(InviteStatus::NoResponse, self::only($work)->status());
+    }
+
+    /**
+     * Alice's calendar, shared to Eric at the address §5.3.2.1's example uses
+     * rather than at his principal's URL.
+     */
+    private function invitationByAddress(): MemoryShareTarget
+    {
+        return new MemoryShareTarget('work', sharees: [
+            new Sharee('mailto:eric@example.com', SharingAccess::ReadWrite, InviteStatus::NoResponse),
+        ]);
+    }
+
+    private function shareeReplies(
+        MemoryShareeHome $home,
+        MemoryShareTarget $work,
+        ?ICalendarUserBackend $calendarUsers,
+    ): Response {
+        return $this->reply(
+            '<D:href>mailto:eric@example.com</D:href><CS:invite-accepted/>' . self::HOST
+            . '<CS:in-reply-to>' . $this->identifier('mailto:eric@example.com') . '</CS:in-reply-to>',
+            home: $home,
+            work: $work,
+            calendarUsers: $calendarUsers,
+        );
+    }
+
+    /**
+     * A directory that knows Eric at that address.
+     */
+    private static function aDirectory(): MemoryCalendarUserBackend
+    {
+        return new MemoryCalendarUserBackend(['eric' => ['mailto:eric@example.com']]);
+    }
+
+    /**
      * Eric's home with a copy of Alice's calendar already in it.
      */
     private function homeHoldingACopy(string $of = '/calendars/alice/work/'): MemoryShareeHome
@@ -812,10 +888,10 @@ final class SharingReplyTest extends TestCase
      * §6.16's identifier of the invitation these cases answer, taken from the
      * thing that makes it rather than written out.
      */
-    private function identifier(): string
+    private function identifier(string $sharee = '/principals/eric/'): string
     {
         $notice = InviteNotification::aboutAChange(
-            new Sharee('/principals/eric/', SharingAccess::ReadWrite, InviteStatus::NoResponse),
+            new Sharee($sharee, SharingAccess::ReadWrite, InviteStatus::NoResponse),
             '/calendars/alice/work/',
             '/principals/alice/',
             null,
@@ -906,6 +982,7 @@ final class SharingReplyTest extends TestCase
         ?MemoryCollection $notifications = null,
         string $at = '/calendars/eric',
         Element|bool $homeSet = true,
+        ?ICalendarUserBackend $calendarUsers = null,
     ): Response {
         return $this->server(
             $home ?? new MemoryShareeHome('eric'),
@@ -913,6 +990,7 @@ final class SharingReplyTest extends TestCase
             $notifications ?? new MemoryCollection('alice'),
             $asking,
             $homeSet,
+            $calendarUsers,
         )->handle(new Request(
             'POST',
             $at,
@@ -941,6 +1019,7 @@ final class SharingReplyTest extends TestCase
         MemoryCollection $notifications,
         ?string $asking,
         Element|bool $homeSet,
+        ?ICalendarUserBackend $calendarUsers = null,
     ): Server {
         $events = new EventEmitter();
 
@@ -988,10 +1067,14 @@ final class SharingReplyTest extends TestCase
 
         $post = new Post($server);
 
-        (new Sharing($server, new Notifications(
+        (new Sharing(
             $server,
-            now: static fn (): DateTimeImmutable => new DateTimeImmutable('2026-10-30T09:00:00+00:00'),
-        )))->register($post);
+            new Notifications(
+                $server,
+                now: static fn (): DateTimeImmutable => new DateTimeImmutable('2026-10-30T09:00:00+00:00'),
+            ),
+            $calendarUsers,
+        ))->register($post);
 
         $server->onMethod('POST', $post(...));
         $server->onMethod('DELETE', (new Delete($server))(...));

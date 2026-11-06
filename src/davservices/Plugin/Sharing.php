@@ -15,6 +15,7 @@ namespace DavServices\Plugin;
 
 use Closure;
 use DavServices\Acl\Principal;
+use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\InviteNotification;
 use DavServices\CalDav\InviteReply;
@@ -238,10 +239,19 @@ final class Sharing
      *                                          are deposited. Needed only for
      *                                          the `POST`, and then it is
      *                                          needed: see {@see register()}
+     * @param ICalendarUserBackend|null $calendarUsers Which principal is
+     *                                                 reachable at a calendar user address.
+     *                                                 **Without it, §5.3.2's second and third
+     *                                                 forms of address reach nobody** — a sharee
+     *                                                 named by one is never written to and can
+     *                                                 never reply, which is the excuse §5.3.2
+     *                                                 itself offers ("out of scope for this
+     *                                                 specification") and not a failure
      */
     public function __construct(
         private readonly Server $server,
         private readonly ?Notifications $notifications = null,
+        private readonly ?ICalendarUserBackend $calendarUsers = null,
     ) {
     }
 
@@ -1203,14 +1213,23 @@ final class Sharing
      */
     private function principalAt(string $href, Request $request): ?array
     {
-        $scheme = parse_url($href, PHP_URL_SCHEME);
+        // §5.3.2's second and third forms — "a calendar user address or email
+        // address" — name no resource of this server, and which principal is
+        // reachable at one is a question about people. A directory is the only
+        // thing that can answer it, and without one §5.3.2's own excuse
+        // stands: "how invitations are sent or access enabled is out of scope
+        // for this specification".
+        $url = self::couldBeOneOfOurs($href) ? $href : $this->calendarUsers?->principalFor($href);
 
-        if ($scheme !== null && !in_array($scheme, ['http', 'https'], true)) {
+        // **Asked once and not again.** A directory that answers with another
+        // calendar user address has named no resource either, and asking it
+        // about its own answer is how a server walks in a circle.
+        if ($url === null || !self::couldBeOneOfOurs($url)) {
             return null;
         }
 
         try {
-            $path = $this->server->pathOfUrl($href, $request);
+            $path = $this->server->pathOfUrl($url, $request);
         } catch (DavException | MalformedPath) {
             return null;
         }
@@ -1222,6 +1241,21 @@ final class Sharing
         $node = $this->server->tree()->node($path);
 
         return $node instanceof Principal ? [$path, $node] : null;
+    }
+
+    /**
+     * Whether this address could name a resource of this server at all.
+     *
+     * A scheme of its own says it could not: `http` and `https` are let
+     * through because a principal-URL may be absolute, and
+     * {@see Server::pathOfUrl()} is what then decides whether it is this
+     * server's.
+     */
+    private static function couldBeOneOfOurs(string $href): bool
+    {
+        $scheme = parse_url($href, PHP_URL_SCHEME);
+
+        return $scheme === null || in_array($scheme, ['http', 'https'], true);
     }
 
     /**
