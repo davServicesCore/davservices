@@ -687,8 +687,13 @@ final class SharingPostTest extends TestCase
      * **And a directory that answers with another address reaches nobody.**
      * {@see ICalendarUserBackend::principalFor()} is asked for a principal's
      * URL; an answer that is itself a calendar user address names no resource
-     * of this server, and asking the directory again about its own answer is
-     * how a server walks in a circle.
+     * of this server.
+     *
+     * The answer here is `mailto:principals/eric/`, which is the one shape
+     * that makes the guard worth having: strip the scheme and it is the path
+     * of a real principal, so a server that read a directory's answer as a
+     * path would deliver on the strength of an address that only resembled
+     * one. The same confusion P7-05c refused for an address from a client.
      */
     public function testADirectoryThatAnswersWithAnotherAddressReachesNobody(): void
     {
@@ -703,7 +708,7 @@ final class SharingPostTest extends TestCase
                 NotificationCollection::of($eric),
                 new MemoryCalendarUserBackend(
                     ['eric' => ['mailto:eric@example.com']],
-                    principalsAt: 'mailto:eric-again@',
+                    principalsAt: 'mailto:principals/',
                 ),
             ),
             '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
