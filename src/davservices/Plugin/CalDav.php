@@ -13,8 +13,8 @@ declare(strict_types=1);
 
 namespace DavServices\Plugin;
 
-use Closure;
 use DavServices\Acl\Principal;
+use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Limits;
@@ -248,8 +248,6 @@ final class CalDav
 
     private readonly Limits $limits;
 
-    /** @var Closure(string): list<string> */
-    private readonly Closure $calendarUserAddresses;
 
     /**
      * @param string $calendarsAt Where the calendar homes are mounted, as a
@@ -260,28 +258,21 @@ final class CalDav
      * @param Limits|null $limits What this server will keep (§5.2.3 to §5.2.9).
      *                            R-CAL-08 makes every value configurable and
      *                            the ones {@see Limits} names the defaults
-     * @param (callable(string): list<string>)|null $calendarUserAddresses The
-     *                                                                     calendar addresses of a principal, by name
-     *                                                                     (RFC 6638 §2.4.1). Asked for only where
-     *                                                                     somebody asked for the property, because an
-     *                                                                     application's callable may well go looking in
-     *                                                                     a directory. **Nothing is the right answer
-     *                                                                     where there is nothing**: §2.4.1 reads an
-     *                                                                     absent property as "the associated calendar
-     *                                                                     user is not enabled for scheduling on the
-     *                                                                     server", which is true of a server that does
-     *                                                                     no scheduling
+     * @param ICalendarUserBackend|null $calendarUsers Which calendar
+     *                                                 addresses belong to whom (RFC 6638 §2.4.1).
+     *                                                 **Nothing is the right answer where there is
+     *                                                 nothing**: §2.4.1 reads an absent property as
+     *                                                 "the associated calendar user is not enabled
+     *                                                 for scheduling on the server", which is true
+     *                                                 of a server that does no scheduling
      */
     public function __construct(
         private readonly Server $server,
         private readonly string $calendarsAt = 'calendars',
         ?Limits $limits = null,
-        ?callable $calendarUserAddresses = null,
+        private readonly ?ICalendarUserBackend $calendarUsers = null,
     ) {
         $this->limits = $limits ?? new Limits();
-        $this->calendarUserAddresses = $calendarUserAddresses === null
-            ? static fn (string $principal): array => []
-            : $calendarUserAddresses(...);
     }
 
     /**
@@ -750,10 +741,10 @@ final class CalDav
             return;
         }
 
-        // Asked only where somebody asked for the answer: the application's
-        // callable may well go looking in a directory, and a `PROPFIND` for
+        // Asked only where somebody asked for the answer: the directory
+        // may well be somewhere else entirely, and a `PROPFIND` for
         // `DAV:displayname` has no business costing that.
-        $addresses = ($this->calendarUserAddresses)($node->name());
+        $addresses = $this->calendarUsers?->addressesOf($node->name()) ?? [];
 
         if ($addresses !== []) {
             $result->set(self::USER_ADDRESSES, $this->holdingHrefs(self::USER_ADDRESSES, $addresses));
