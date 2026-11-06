@@ -15,6 +15,7 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DateTimeImmutable;
 use DavServices\Acl\Principal;
+use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\InviteNotification;
 use DavServices\CalDav\InviteStatus;
@@ -37,6 +38,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\Notifications;
 use DavServices\Plugin\Sharing;
+use DavServices\Tests\Unit\Backend\MemoryCalendarUserBackend;
 use DavServices\Tests\Unit\CalDav\MemoryShareable;
 use DavServices\Tests\Unit\CalDav\MemoryShareTarget;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
@@ -649,6 +651,80 @@ final class SharingPostTest extends TestCase
             '<cs:invite-deleted/><cs:access><cs:read/></cs:access>',
             self::theOneNotificationIn($eric),
         );
+    }
+
+    /**
+     * **With a directory, a sharee named by a calendar user address is
+     * written to after all.** §5.3.2 excuses a server that cannot reach such
+     * a sharee — "how invitations are sent or access enabled is out of scope"
+     * — and the excuse runs out where something can say who is reachable at
+     * that address: {@see ICalendarUserBackend} is that something, and then
+     * the sharee **is** a user on this server.
+     *
+     * The case above still stands for a deployment that wires none.
+     */
+    public function testWithADirectoryAnAddressReachesItsSharee(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareOn(
+            $this->server(
+                $calendar,
+                'principals/alice',
+                'Alice',
+                NotificationCollection::of($eric),
+                self::aDirectory(),
+            ),
+            '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertStringContainsString('<cs:invite-noresponse/>', self::theOneNotificationIn($eric));
+    }
+
+    /**
+     * **And a directory that answers with another address reaches nobody.**
+     * {@see ICalendarUserBackend::principalFor()} is asked for a principal's
+     * URL; an answer that is itself a calendar user address names no resource
+     * of this server.
+     *
+     * The answer here is `mailto:principals/eric/`, which is the one shape
+     * that makes the guard worth having: strip the scheme and it is the path
+     * of a real principal, so a server that read a directory's answer as a
+     * path would deliver on the strength of an address that only resembled
+     * one. The same confusion P7-05c refused for an address from a client.
+     */
+    public function testADirectoryThatAnswersWithAnotherAddressReachesNobody(): void
+    {
+        $eric = new MemoryCollection('eric');
+        $calendar = new MemoryShareTarget('work');
+
+        $response = $this->shareOn(
+            $this->server(
+                $calendar,
+                'principals/alice',
+                'Alice',
+                NotificationCollection::of($eric),
+                new MemoryCalendarUserBackend(
+                    ['eric' => ['mailto:eric@example.com']],
+                    principalsAt: 'mailto:principals/',
+                ),
+            ),
+            '<CS:set>' . self::ERIC . '<CS:read/></CS:set>',
+        );
+
+        self::assertSame(200, $response->status());
+        self::assertSame([], $eric->children());
+        self::assertCount(1, $calendar->sharees());
+    }
+
+    /**
+     * A directory that knows Eric at the address §5.3.2.1's example uses.
+     */
+    private static function aDirectory(): MemoryCalendarUserBackend
+    {
+        return new MemoryCalendarUserBackend(['eric' => ['mailto:eric@example.com']]);
     }
 
     /**
@@ -1278,6 +1354,7 @@ final class SharingPostTest extends TestCase
         ?string $asking = 'principals/alice',
         ?string $sharerIsCalled = 'Alice',
         ?INode $ericsNotifications = null,
+        ?ICalendarUserBackend $calendarUsers = null,
     ): Server {
         $events = new EventEmitter();
 
@@ -1316,7 +1393,7 @@ final class SharingPostTest extends TestCase
             now: static fn (): DateTimeImmutable => new DateTimeImmutable('2026-10-29T19:30:00+00:00'),
         );
 
-        (new Sharing($server, $notifications))->register($post);
+        (new Sharing($server, $notifications, $calendarUsers))->register($post);
 
         $server->onMethod('POST', $post(...));
 

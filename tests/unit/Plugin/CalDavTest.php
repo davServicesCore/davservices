@@ -46,6 +46,7 @@ use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Plugin\CalDav;
 use DavServices\Plugin\DeadProperties;
+use DavServices\Tests\Unit\Backend\MemoryCalendarUserBackend;
 use DavServices\Tests\Unit\Backend\MemoryPropertyStorage;
 use DavServices\Tests\Unit\CalDav\MemoryCalendarHome;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
@@ -614,10 +615,7 @@ final class CalDavTest extends TestCase
             $this->principal('bernard'),
         ));
 
-        $plugin = new CalDav(
-            $this->server(),
-            calendarUserAddresses: static fn (string $principal): array => ['mailto:' . $principal . '@example.com'],
-        );
+        $plugin = new CalDav($this->server(), calendarUsers: self::aDirectory());
         $answer = $this->answerFor(
             '{urn:ietf:params:xml:ns:caldav}calendar-user-address-set',
             $this->principal('bernard'),
@@ -650,10 +648,7 @@ final class CalDavTest extends TestCase
     public function testNothingItAnswersTurnsUpUnderAllprop(string $property, bool $principal): void
     {
         $node = $principal ? $this->principal('bernard') : null;
-        $plugin = new CalDav(
-            $this->server(),
-            calendarUserAddresses: static fn (string $name): array => ['mailto:' . $name . '@example.com'],
-        );
+        $plugin = new CalDav($this->server(), calendarUsers: self::aDirectory());
 
         self::assertNull(
             $this->answerFor($property, $node, $plugin, PropFindForm::Everything, named: false),
@@ -663,6 +658,18 @@ final class CalDavTest extends TestCase
             $this->answerFor($property, $node, $plugin, PropFindForm::Everything),
             'A DAV:include was not answered.',
         );
+    }
+
+    /**
+     * A directory that knows one address per principal, which is all §2.4.1
+     * needs to be answerable.
+     */
+    private static function aDirectory(): MemoryCalendarUserBackend
+    {
+        return new MemoryCalendarUserBackend([
+            'bernard' => ['mailto:bernard@example.com'],
+            'cyrus' => ['mailto:cyrus@example.com'],
+        ]);
     }
 
     /**
