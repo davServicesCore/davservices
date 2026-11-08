@@ -447,9 +447,20 @@ jobs:
           extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash
 
       - name: Fetch phpDocumentor
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL -o phpDocumentor.phar \
-            "https://github.com/phpDocumentor/phpDocumentor/releases/download/${PHPDOC_VERSION}/phpDocumentor.phar"
+          # The same way round as the documentation workflow fetches it, for
+          # the same reason: on 08.11.2026 the browser download URL answered
+          # 504 while the releases API served the asset intact. See
+          # .github/workflows/docs.yml.
+          asset=$(gh api "repos/phpDocumentor/phpDocumentor/releases/tags/${PHPDOC_VERSION}" \
+            --jq '.assets[] | select(.name == "phpDocumentor.phar") | .id')
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+            -H 'Accept: application/octet-stream' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -o phpDocumentor.phar \
+            "https://api.github.com/repos/phpDocumentor/phpDocumentor/releases/assets/${asset}"
           echo "${PHPDOC_SHA256}  phpDocumentor.phar" | sha256sum --check --strict
 
       - name: Build the API reference
