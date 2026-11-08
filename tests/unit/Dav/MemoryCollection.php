@@ -46,6 +46,9 @@ class MemoryCollection implements ICollection, IMember
     /** Set where listing the members is to be refused. */
     private ?IHttpFailure $listingRefusal = null;
 
+    /** Set where taking a new member is to be refused. */
+    private ?IHttpFailure $creationRefusal = null;
+
     /** Set where being deleted is to be refused. */
     private ?IHttpFailure $deletionRefusal = null;
 
@@ -94,6 +97,17 @@ class MemoryCollection implements ICollection, IMember
     public function refuseListing(?IHttpFailure $refusal = null): self
     {
         $this->listingRefusal = $refusal ?? new Forbidden(sprintf('"%s" is not to be listed.', $this->name));
+
+        return $this;
+    }
+
+    /**
+     * Refuses to take a new member, as a store does that is full, read-only,
+     * or not willing to hold what it was handed.
+     */
+    public function refuseCreation(?IHttpFailure $refusal = null): self
+    {
+        $this->creationRefusal = $refusal ?? new Forbidden(sprintf('"%s" takes nothing new.', $this->name));
 
         return $this;
     }
@@ -151,6 +165,10 @@ class MemoryCollection implements ICollection, IMember
 
     public function createFile(string $name, mixed $content = null): ?string
     {
+        if ($this->creationRefusal !== null) {
+            throw $this->creationRefusal;
+        }
+
         if (isset($this->members[$name])) {
             throw new Conflict(sprintf('"%s" is already there.', $name));
         }
