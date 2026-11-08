@@ -111,6 +111,116 @@ final class ShardedCoverage
     }
 
     /**
+     * The same rule one level down: each function's branches are left to the
+     * shards that ran it.
+     *
+     * **Two shards can both have measured a file and still disagree about a
+     * function only one of them ran.** Measured on 08.11.2026 on
+     * `Plugin\Scheduling::guardTheCollections()`, once a second test file of
+     * that plugin had landed in a shard of its own:
+     *
+     *     shard 7  ids 0,13,14,20,25,26  all hit
+     *     shard 8  ids 0,16,17,23,28,29  none hit
+     *
+     * The source is one `foreach` over two constants of another class, and
+     * shard 8 — which runs the delivery and never a `DELETE` — compiled it
+     * three opcodes longer. Unioned, the function came out with eleven
+     * branches of which five no test could ever reach.
+     *
+     * {@see layoutsWorthKeeping()} cannot answer that: both shards *measured*
+     * the file, so both layouts are worth keeping, and that is the right answer
+     * about a file. About a **function**, the shard that ran none of it is in
+     * exactly the position of a shard that merely loaded the class: it recorded
+     * a numbering nothing of its own could hit.
+     *
+     * **It cannot hide a gap**, for the reason the file-level rule cannot: a
+     * branch no test reaches is unhit in the layout of the shard that did run
+     * the function, and that layout stays. And a function no shard ran keeps
+     * every layout it has, so code no test touches goes on counting against
+     * the floor.
+     *
+     * Where two shards both ran it, both stay — which of the two numberings is
+     * the real one is not a question this can answer either.
+     *
+     * Applied after {@see oneRecordPerFunction()}, whose folding is what makes
+     * a listener's record say that its shard ran it.
+     *
+     * @param list<array<array-key, mixed>> $layouts One file-to-functions map
+     *                                               per shard, in the order
+     *                                               they will be merged
+     *
+     * @return list<array<array-key, mixed>> What to keep, in that same order
+     */
+    public static function recordsWorthKeeping(array $layouts): array
+    {
+        $ranAnywhere = [];
+
+        foreach ($layouts as $layout) {
+            foreach ($layout as $file => $functions) {
+                if (!is_array($functions)) {
+                    continue;
+                }
+
+                foreach ($functions as $name => $record) {
+                    if (self::ranHere($record)) {
+                        $ranAnywhere[$file . "\0" . $name] = true;
+                    }
+                }
+            }
+        }
+
+        $kept = [];
+
+        foreach ($layouts as $layout) {
+            $mine = [];
+
+            foreach ($layout as $file => $functions) {
+                if (!is_array($functions)) {
+                    $mine[$file] = $functions;
+
+                    continue;
+                }
+
+                $records = [];
+
+                foreach ($functions as $name => $record) {
+                    if (self::ranHere($record) || !isset($ranAnywhere[$file . "\0" . $name])) {
+                        $records[$name] = $record;
+                    }
+                }
+
+                $mine[$file] = $records;
+            }
+
+            $kept[] = $mine;
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Whether this record says the shard it came from ran the function.
+     *
+     * One branch hit anywhere is enough, and the entry branch is not asked for
+     * on its own: a collector that denies the entry of a function whose body
+     * ran is the thing {@see withTheEntryOfEveryFunctionThatRan()} exists for.
+     */
+    private static function ranHere(mixed $record): bool
+    {
+        if (!is_array($record) || !is_array($record['branches'] ?? null)) {
+            return false;
+        }
+
+        foreach ($record['branches'] as $branch) {
+            if (is_array($branch) && is_array($branch['hit'] ?? null) && $branch['hit'] !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * One record per function, for the records of one file.
      *
      * **A method reached two ways is recorded twice, and the second record

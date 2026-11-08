@@ -99,20 +99,9 @@ $layouts = ShardedCoverage::layoutsWorthKeeping(array_map(
     $shards,
 ));
 
-$merged = null;
+$folded = [];
 
-foreach ($shards as $at => $coverage) {
-    $layout = $layouts[$at] ?? null;
-
-    // One layout per shard comes back, in the order they went in. Saying so
-    // out loud rather than reaching for an empty array: a shard whose
-    // functions had quietly become none would report every branch of every
-    // class it measured as missing, and the floor would be a mystery.
-    if ($layout === null) {
-        fwrite(STDERR, sprintf("  FAIL coverage — nothing came back for shard %d\n", $at + 1));
-        exit(1);
-    }
-
+foreach ($layouts as $layout) {
     // **And one record per function.** A method reached both through an
     // event and as a method call is recorded twice, the second time without
     // its class name — the same compiled function, with the hits split
@@ -127,6 +116,28 @@ foreach ($shards as $at => $coverage) {
                 ShardedCoverage::oneRecordPerFunction($functions),
             )
             : $functions;
+    }
+
+    $folded[] = $layout;
+}
+
+// **And each function's branches are left to the shards that ran it.** Two
+// shards can both have measured a file — one its listeners, one its methods —
+// and still disagree about the numbering of a function only one of them
+// entered. See ShardedCoverage for the measurement; it comes after the folding
+// above, which is what makes a listener's record say that its shard ran it.
+$merged = null;
+
+foreach (ShardedCoverage::recordsWorthKeeping($folded) as $at => $layout) {
+    $coverage = $shards[$at] ?? null;
+
+    // One layout per shard comes back, in the order they went in. Saying so
+    // out loud rather than reaching past the end: a shard whose functions had
+    // quietly become none would report every branch of every class it
+    // measured as missing, and the floor would be a mystery.
+    if ($coverage === null) {
+        fwrite(STDERR, sprintf("  FAIL coverage — nothing came back for shard %d\n", $at + 1));
+        exit(1);
     }
 
     $coverage->getData(true)->setFunctionCoverage($layout);

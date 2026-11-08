@@ -189,6 +189,140 @@ final class ShardedCoverageTest extends TestCase
 
         self::assertSame([], self::filesIn($kept, 0));
     }
+
+    /**
+     * **The same rule one level down.** Two shards that each ran part of a
+     * file both keep their layouts, and then disagree about a function only
+     * one of them ran.
+     *
+     * Measured on 08.11.2026 on `Plugin\Scheduling::guardTheCollections()`,
+     * once a second test file of that plugin had landed in a shard of its own:
+     *
+     *     shard 7  ids 0,13,14,20,25,26  all hit
+     *     shard 8  ids 0,16,17,23,28,29  none hit
+     *
+     * The source is one `foreach` over two constants of another class, and
+     * shard 8 — which runs the delivery and never a `DELETE` — compiled it
+     * three opcodes longer. Unioned, the function came out with eleven
+     * branches of which five no test could ever reach, and a floor of 100 %
+     * stopped being meetable.
+     */
+    public function testAFunctionBelongsToTheShardThatRanIt(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => ['named' => self::record([0 => true, 13 => true])]],
+            [self::FILE => ['named' => self::record([0 => false, 16 => false])]],
+        ]);
+
+        self::assertSame(['named'], self::functionsIn($kept, 0));
+        self::assertSame([], self::functionsIn($kept, 1), 'the numbering of a shard that never ran it is gone');
+    }
+
+    /**
+     * **A function no shard ran keeps every layout it has.** Then there is
+     * nothing to prefer, and code no test reaches must go on counting against
+     * the floor — which is the whole point of measuring.
+     */
+    public function testAFunctionNobodyRanIsStillReported(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => ['named' => self::record([0 => false, 13 => false])]],
+            [self::FILE => ['named' => self::record([0 => false, 16 => false])]],
+        ]);
+
+        self::assertSame(['named'], self::functionsIn($kept, 0));
+        self::assertSame(['named'], self::functionsIn($kept, 1));
+    }
+
+    /**
+     * **And where both shards ran it, both layouts stay.** Each has tested
+     * part of it, which of the two numberings is the real one is not a
+     * question this can answer, and keeping both is the strict reading — the
+     * same answer {@see ShardedCoverage::layoutsWorthKeeping()} gives one
+     * level up.
+     */
+    public function testWhereBothRanItBothLayoutsStay(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => ['named' => self::record([0 => true, 13 => true])]],
+            [self::FILE => ['named' => self::record([0 => true, 16 => true])]],
+        ]);
+
+        self::assertSame(['named'], self::functionsIn($kept, 0));
+        self::assertSame(['named'], self::functionsIn($kept, 1));
+    }
+
+    /**
+     * **Per function, not per file.** A shard keeps what it ran and loses what
+     * it did not, in the same file — which is what makes this worth doing: a
+     * plugin's listeners and its own methods are one file and two shards.
+     */
+    public function testTheRuleIsAppliedPerFunction(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => [
+                'named' => self::record([0 => true, 13 => true]),
+                'other' => self::record([0 => false, 13 => false]),
+            ]],
+            [self::FILE => [
+                'named' => self::record([0 => false, 16 => false]),
+                'other' => self::record([0 => true, 16 => true]),
+            ]],
+        ]);
+
+        self::assertSame(['named'], self::functionsIn($kept, 0));
+        self::assertSame(['other'], self::functionsIn($kept, 1));
+    }
+
+    /**
+     * **And what it says about one file it does not say about another.** Two
+     * files can hold a function of the same name, and a shard that ran one of
+     * them has said nothing about the other.
+     */
+    public function testTheSameNameInAnotherFileIsAnotherFunction(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => ['named' => self::record([0 => true, 13 => true])]],
+            [self::OTHER => ['named' => self::record([0 => false, 16 => false])]],
+        ]);
+
+        self::assertSame(['named'], self::functionsIn($kept, 0));
+        self::assertSame(['named'], self::functionsIn($kept, 1, self::OTHER));
+    }
+
+    /**
+     * A file whose record is not a list of functions is passed through, for
+     * the reason every other guard here exists: the reports come from another
+     * library, and its types promise nothing about their shape.
+     */
+    public function testAFileThatIsNoListOfFunctionsIsPassedThrough(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => 'not a list of functions'],
+            [self::FILE => ['named' => self::record([0 => true])]],
+        ]);
+
+        $mine = $kept[0][self::FILE] ?? null;
+
+        self::assertSame('not a list of functions', $mine);
+    }
+
+    /**
+     * And a record that carries no branches at all has run nothing, so it
+     * stands where nothing else ran that function and goes where something
+     * did.
+     */
+    public function testARecordWithoutBranchesHasRunNothing(): void
+    {
+        $kept = ShardedCoverage::recordsWorthKeeping([
+            [self::FILE => ['named' => 'not a function record']],
+            [self::FILE => ['named' => self::record([0 => true])]],
+        ]);
+
+        self::assertSame([], self::functionsIn($kept, 0));
+        self::assertSame(['named'], self::functionsIn($kept, 1));
+    }
+
     /**
      * **A method reached two ways is recorded twice**, and the second record
      * carries no class name. Measured on 15.10.2026 on
@@ -499,6 +633,26 @@ final class ShardedCoverageTest extends TestCase
         self::assertIsArray($files);
 
         return array_keys($files);
+    }
+
+    /**
+     * The functions one shard kept a layout for, in one file.
+     *
+     * @param list<array<array-key, mixed>> $kept
+     *
+     * @return list<array-key>
+     */
+    private static function functionsIn(array $kept, int $shard, string $file = self::FILE): array
+    {
+        $files = $kept[$shard] ?? null;
+
+        self::assertIsArray($files);
+
+        $functions = $files[$file] ?? null;
+
+        self::assertIsArray($functions);
+
+        return array_keys($functions);
     }
 
     /**
