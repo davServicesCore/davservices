@@ -46,6 +46,13 @@ namespace DavServices\CalDav\Schedule;
  *   user with no scheduling Inbox collection: "If not present, then the
  *   associated calendar user is not enabled for reception of scheduling
  *   messages on the server."
+ * - **{@see Rejected}** — "not delivered and was rejected because scheduling
+ *   with that recipient is not allowed". §4.3 uses that very verb for a
+ *   calendar user with no calendar to keep the event in: "If there is no valid
+ *   calendar collection, then the server MUST **reject** the attempt to deliver
+ *   the scheduling message to the 'Attendee'." Of the two permanent failures
+ *   this one tells the organizer not to try again, where `5.2` would have them
+ *   check the address — and the address was right.
  *
  * **The others are somebody else's to report.** `1.0` and `1.1` belong to a
  * server that hands a message to something slower than itself — §3.2.9.2 names
@@ -86,6 +93,13 @@ enum DeliveryStatus: string
      * §3.2.9's `5.2`: there is no way to deliver to that calendar user.
      */
     case NoWayToDeliver = '5.2';
+
+    /**
+     * §3.2.9's `5.3`: the message was rejected, scheduling with that
+     * recipient not being allowed — which is also what §4.3 asks for where a
+     * calendar user has no calendar at all to keep an event in.
+     */
+    case Rejected = '5.3';
 
     /**
      * §7.3's parameter name, which is where one of these values goes — and

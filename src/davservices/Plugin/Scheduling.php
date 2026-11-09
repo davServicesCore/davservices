@@ -27,6 +27,7 @@ use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
+use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\IResourceType;
 use DavServices\Dav\Property\Answers;
@@ -174,6 +175,17 @@ final class Scheduling
      * theirs to send (§3.1).
      */
     private const ADDRESS_SET = '{urn:ietf:params:xml:ns:caldav}calendar-user-address-set';
+
+    /**
+     * §9.2's property on an Inbox, which §4.3 reads to decide where a new
+     * scheduling object resource goes.
+     */
+    private const DEFAULT_CALENDAR = '{urn:ietf:params:xml:ns:caldav}schedule-default-calendar-URL';
+
+    /**
+     * §4.3.1.1's precondition, "Apply to: DELETE", "Use with: 403 Forbidden".
+     */
+    private const DEFAULT_CALENDAR_NEEDED = '{urn:ietf:params:xml:ns:caldav}default-calendar-needed';
 
     private const OWNER = '{DAV:}owner';
 
@@ -505,24 +517,47 @@ final class Scheduling
      */
     private function deliver(SchedulingMessage $message, string $address): DeliveryStatus
     {
-        $principal = $this->calendarUsers?->principalFor($address);
+        $url = $this->calendarUsers?->principalFor($address);
 
-        if ($principal === null) {
+        if ($url === null) {
             return DeliveryStatus::NoSuchCalendarUser;
         }
 
-        $inbox = $this->inboxFor($principal);
+        $who = $this->principalAt($url);
+
+        if ($who === null) {
+            return DeliveryStatus::NoWayToDeliver;
+        }
+
+        [$principal, $node] = $who;
+        $inbox = $this->collectionsOf(Inbox::INBOX, $principal, $node)[0] ?? null;
 
         if ($inbox === null) {
             return DeliveryStatus::NoWayToDeliver;
         }
 
-        if ($inbox->hasChild($message->name())) {
+        [$where, $collection] = $inbox;
+
+        // **The same message again has been processed already.** A second copy
+        // would overwrite whatever the calendar user has made of the first —
+        // their answer, most of all — and §4 has the Inbox hold an indicator
+        // rather than a log.
+        if ($collection->hasChild($message->name())) {
             return DeliveryStatus::Delivered;
         }
 
+        $failed = $this->copyForTheRecipient($message, $principal, $node, $where);
+
+        // §4.1: "the scheduling message MUST only appear in the 'Attendee's'
+        // scheduling Inbox collection once all automatic processing has been
+        // done." A notice without the event behind it would send a client
+        // looking for something that is not there.
+        if ($failed !== null) {
+            return $failed;
+        }
+
         try {
-            $inbox->createFile($message->name(), $message->text());
+            $collection->createFile($message->name(), $message->text());
         } catch (IHttpFailure) {
             return DeliveryStatus::NotCompleted;
         }
@@ -531,52 +566,248 @@ final class Scheduling
     }
 
     /**
-     * The scheduling Inbox collection of the principal this URL names, or null
-     * where there is none to deliver to.
+     * §4: the event itself, on a calendar of the recipient's own.
      *
-     * **Written into the store rather than through a request**, which is §4's
-     * own arrangement: "Privileges on calendars containing any matching
-     * scheduling object resource are not considered in this case (i.e., a
-     * schedule message from another user can cause modifications to resources
-     * in calendar collections that the other user would not normally have read
-     * or write access to)." What §4 does ask to be taken into account are the
-     * privileges on the Inbox itself, and those are §6's `schedule-deliver`,
-     * which is not defined yet — until it is, an application that will not
-     * take a message refuses it from the store, which is §3.2.9's `5.1`.
+     * > Servers MUST automatically process incoming scheduling messages using
+     * > the rules defined by [RFC5546], by creating or updating the
+     * > corresponding scheduling object resources on calendars owned by the
+     * > owner of the scheduling Inbox collection.
      *
-     * Null wherever the way there breaks: an address this server cannot
-     * resolve, a principal that is not there, one with no Inbox — §2.2.1's
-     * "not enabled for reception of scheduling messages on the server" — or a
-     * store that publishes the resource type on something that is no
-     * collection.
+     * **New or not is decided by the `UID`**, which is RFC 5546 §3.2.2 — the
+     * rules §4 sends us to: "If the 'UID' property value in the 'REQUEST' is
+     * not found on the recipient's calendar, then the 'REQUEST' is for a new
+     * 'VEVENT' calendar component. If the 'UID' property value is found on the
+     * recipient's calendar, then the 'REQUEST' is for a rescheduling, an
+     * update, or a reconfirmation of the 'VEVENT' calendar component."
+     *
+     * That is the `UID` **alone**, with nothing asked about whose resource it
+     * is. RFC 5545 §3.8.4.7 makes it "the persistent, globally unique
+     * identifier", so two resources carrying one are one event, and a client
+     * that reuses one has said as much. The alternative — holding the match to
+     * {@see SchedulingObject::Attendees} as well — would leave a second
+     * resource with that `UID` in the same collection, which RFC 4791 §4.1
+     * forbids outright.
+     *
+     * **An update keeps the resource's name**, so that a client watching that
+     * URL sees it change rather than losing one and gaining another. What goes
+     * with it is the attendee's own `PARTSTAT`: RFC 5546 §3.2.2.2 lets an
+     * organizer's `REQUEST` carry participation status, and the merge that
+     * would keep an answer through an inconsequential change is §3.2.10's
+     * `CALDAV:schedule-tag`, which is not here yet.
+     *
+     * @return DeliveryStatus|null What came of it, or null where it was done
      */
-    private function inboxFor(string $url): ?ICollection
-    {
+    private function copyForTheRecipient(
+        SchedulingMessage $message,
+        string $principal,
+        Principal $node,
+        string $inbox,
+    ): ?DeliveryStatus {
+        $calendars = $this->collectionsOf(Calendar::CALENDAR, $principal, $node);
+        $uid = $message->uid();
+        $kept = $message->whatTheRecipientKeeps();
+
+        // Whatever the recipient's store refuses — a listing, a read, a write
+        // — is one answer: §3.2.9's `5.1`, "the server could not complete
+        // delivery of the message". The organizer's own event is not lost over
+        // somebody else's calendar.
         try {
-            $path = $this->server->pathOf($url);
-        } catch (DavException | MalformedPath) {
+            $theirs = $uid === null ? null : self::theirCopyOf($uid, $calendars);
+
+            if ($theirs !== null) {
+                $theirs->put($kept);
+
+                return null;
+            }
+
+            $where = $this->whereANewOneGoes($calendars, $inbox, $node);
+
+            // §4.3: "If there is no valid calendar collection, then the server
+            // MUST reject the attempt to deliver the scheduling message to the
+            // 'Attendee'."
+            if ($where === null) {
+                return DeliveryStatus::Rejected;
+            }
+
+            $where->createFile($message->name(), $kept);
+        } catch (IHttpFailure) {
+            return DeliveryStatus::NotCompleted;
+        }
+
+        return null;
+    }
+
+    /**
+     * The resource on one of these calendars that holds that `UID`, or null
+     * where none does.
+     *
+     * Every calendar of theirs is asked, because §4.1 looks for a resource
+     * "belonging to the 'Attendee'" rather than one in any particular
+     * collection — and RFC 4791 §4.1 makes a `UID` unique only "in the scope
+     * of the calendar collection in which they are stored", so the one copy
+     * can be in any of them.
+     *
+     * **What is no calendar object resource is walked past**, not tripped over:
+     * §4.2 lets a calendar hold "collections that are not calendar
+     * collections", and a member this server cannot read as one object carries
+     * no `UID` to match.
+     *
+     * @param list<array{string, ICollection}> $calendars
+     */
+    private static function theirCopyOf(string $uid, array $calendars): ?IFile
+    {
+        foreach ($calendars as [, $calendar]) {
+            foreach ($calendar->children() as $child) {
+                if (!$child instanceof IFile) {
+                    continue;
+                }
+
+                $object = CalendarObject::in($child->get());
+
+                if ($object !== null && CalendarObject::uidIn($object) === $uid) {
+                    return $child;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Which of these calendars a new copy goes into, or null where there is
+     * none to go into.
+     *
+     * §4.3 asks for the default calendar where there is one — "Servers SHOULD
+     * create new scheduling object resources in the default calendar
+     * collection, if the CALDAV:schedule-default-calendar-URL WebDAV property
+     * is set" — and leaves the choice open where there is not. §9.2: "When
+     * there is no default calendar, the server is free to choose the calendar
+     * in which a new scheduling object resource is created."
+     *
+     * **The first of their calendars is the choice this server makes**, which
+     * is the only one it can make without a rule the memo does not state — the
+     * same reading {@see self::find()} makes of §2.1.1's single `DAV:href`.
+     *
+     * And nothing at all is §4.3's rejection: "A calendar user that is an
+     * 'Attendee' in a scheduling operation MUST have at least one valid
+     * calendar collection available."
+     *
+     * @param list<array{string, ICollection}> $calendars
+     */
+    private function whereANewOneGoes(array $calendars, string $inbox, Principal $node): ?ICollection
+    {
+        $first = $calendars[0] ?? null;
+
+        if ($first === null) {
             return null;
         }
 
-        if (!$this->server->tree()->exists($path)) {
+        $named = $this->defaultCalendarAt($inbox, $node);
+
+        foreach ($calendars as [$path, $calendar]) {
+            if ($path === $named) {
+                return $calendar;
+            }
+        }
+
+        // **A default this server cannot find among their calendars is passed
+        // over**, which is what §4.3 holds the property to: "the server MUST
+        // ensure that any new value for that property refers to a valid
+        // calendar collection belonging to the owner of the scheduling Inbox
+        // collection". What a store answers is read rather than trusted, and
+        // delivering into somebody else's calendar on the strength of a
+        // property would be the worst way to honour a SHOULD.
+        return $first[1];
+    }
+
+    /**
+     * The path §9.2's property names on this Inbox, or null where it names
+     * none.
+     *
+     * > If present, it contains zero or one DAV:href XML elements. When a
+     * > DAV:href element is present, its value indicates a URL to a calendar
+     * > collection that is used as the default calendar. When no DAV:href
+     * > element is present, it indicates that there is no default calendar. In
+     * > the absence of this property, there is no default calendar.
+     *
+     * So all three of those come back as null here, and the caller cannot tell
+     * them apart — nor needs to, §9.2 making them one answer.
+     *
+     * **Read through {@see Answers} rather than from the node**, for the reason
+     * {@see self::addressesOfTheOwnerOf()} gives: that is the one way this
+     * server finds out what it says about a property. The property is nobody's
+     * to answer here — §9.2 makes it "MAY be defined" and "MAY be protected",
+     * which is a deployment's decision — and a deployment that keeps a default
+     * calendar says so from its own store.
+     */
+    private function defaultCalendarAt(string $inbox, Principal $node): ?string
+    {
+        $href = self::hrefsIn(
+            Answers::about(
+                $this->server->events(),
+                $inbox,
+                $this->server->tree()->node($inbox),
+                PropFindForm::Named,
+                [self::DEFAULT_CALENDAR],
+            )->byStatus()[200][self::DEFAULT_CALENDAR] ?? null,
+        )[0] ?? null;
+
+        return $href === null ? null : $this->pathOf($href);
+    }
+
+    /**
+     * The path inside this tree that an href names, or null where it names
+     * none.
+     *
+     * **One resolution for every href this plugin reads**, and they all come
+     * from somewhere this server does not control: a store's `DAV:owner`, a
+     * directory's principal URL, another plugin's `calendar-home-set`, a
+     * default calendar somebody configured. Two of them failing in two
+     * different ways is how a server ends up more trusting of one than of the
+     * other.
+     *
+     * Both refusals are the same answer here. {@see Path::normalise()} throws
+     * where the target climbs above the root or decodes into a name that
+     * cannot be addressed; {@see Server::pathOf()} throws where it lies
+     * outside what this server is mounted at. Neither names anything this
+     * server can reach.
+     */
+    private function pathOf(string $href): ?string
+    {
+        try {
+            return $this->server->pathOf($href);
+        } catch (DavException | MalformedPath) {
+            return null;
+        }
+    }
+
+    /**
+     * The principal this URL names, with its path, or null where it names
+     * none.
+     *
+     * **Both, from one resolution**, which is what the callers need: one that
+     * had the node and wanted the path would have to resolve the URL again,
+     * and two resolutions of one URL are two chances to disagree about whose
+     * it is. The same shape {@see Sharing::principalAt()} has.
+     *
+     * Null wherever that leads nowhere: a URL this server cannot address, a
+     * path outside its tree, nothing there, or something there that is no
+     * principal. All four are a directory answering with something this server
+     * cannot deliver to, and the caller treats them alike.
+     *
+     * @return array{string, Principal}|null
+     */
+    private function principalAt(string $url): ?array
+    {
+        $path = $this->pathOf($url);
+
+        if ($path === null || !$this->server->tree()->exists($path)) {
             return null;
         }
 
         $node = $this->server->tree()->node($path);
 
-        if (!$node instanceof Principal) {
-            return null;
-        }
-
-        $where = $this->find(Inbox::INBOX, $path, $node);
-
-        if ($where === null) {
-            return null;
-        }
-
-        $inbox = $this->server->tree()->node($where);
-
-        return $inbox instanceof ICollection ? $inbox : null;
+        return $node instanceof Principal ? [$path, $node] : null;
     }
 
     /**
@@ -633,31 +864,47 @@ final class Scheduling
      */
     private function addressesOfTheOwnerOf(string $path, INode $node): array
     {
-        $owner = self::hrefsIn(
-            Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::OWNER])
-                ->byStatus()[200][self::OWNER] ?? null,
-        )[0] ?? null;
+        $owner = $this->ownerAt($path, $node);
 
         if ($owner === null) {
             return [];
         }
 
-        try {
-            $where = $this->server->pathOf($owner);
-        } catch (DavException | MalformedPath) {
-            return [];
-        }
-
-        if (!$this->server->tree()->exists($where)) {
-            return [];
-        }
-
-        $who = $this->server->tree()->node($where);
+        [$where, $who] = $owner;
 
         return self::hrefsIn(
             Answers::about($this->server->events(), $where, $who, PropFindForm::Named, [self::ADDRESS_SET])
                 ->byStatus()[200][self::ADDRESS_SET] ?? null,
         );
+    }
+
+    /**
+     * The principal `DAV:owner` names on this node, with its path, or null
+     * where it names none.
+     *
+     * Read through {@see Answers} rather than from the node, because that is
+     * the one way this server finds out what it says about a property: it is
+     * where a dead property store is reached, and where access control gets
+     * the first word. A plugin that asked the node directly would read a value
+     * this server would not hand over. The same reading
+     * {@see Sharing::sharerOf()} makes of §5.5.5.
+     *
+     * **It has to be a principal**, which is what the property is for: RFC
+     * 3744 §5.1 has `DAV:owner` "identif[y] the principal resource". An href
+     * naming anything else has named no owner, and whose a calendar is decides
+     * both who may send from it (§3.1) and whose Inbox says which of their
+     * calendars is the default one (§4.3).
+     *
+     * @return array{string, Principal}|null
+     */
+    private function ownerAt(string $path, INode $node): ?array
+    {
+        $href = self::hrefsIn(
+            Answers::about($this->server->events(), $path, $node, PropFindForm::Named, [self::OWNER])
+                ->byStatus()[200][self::OWNER] ?? null,
+        )[0] ?? null;
+
+        return $href === null ? null : $this->principalAt($href);
     }
 
     /**
@@ -726,6 +973,32 @@ final class Scheduling
      */
     private function find(string $kind, string $principal, Principal $node): ?string
     {
+        return $this->collectionsOf($kind, $principal, $node)[0][0] ?? null;
+    }
+
+    /**
+     * Every collection of this kind in the principal's calendar homes, with
+     * its path, in the order the homes name them.
+     *
+     * One walk for three questions: §2.1.1's Outbox, §2.2.1's Inbox, and
+     * §4.3's calendars. The first two want the first of them and the third
+     * wants all — §4.1 looking for a resource "belonging to the 'Attendee'"
+     * wherever it is — so the walk answers in full and
+     * {@see self::find()} takes the first.
+     *
+     * **A collection, and not merely something that says it is one.** §2.1,
+     * §2.2 and RFC 4791 §4.2 each call these collections, so a store that
+     * publishes one of their resource types on anything else has published
+     * nothing this server can use: nowhere to deliver to, and nothing to list.
+     *
+     * The nodes come back with the paths, because every caller needs both and
+     * fetching the node again from a path is a second lookup that can disagree
+     * with the first.
+     *
+     * @return list<array{string, ICollection}>
+     */
+    private function collectionsOf(string $kind, string $principal, Principal $node): array
+    {
         $homes = Answers::about(
             $this->server->events(),
             $principal,
@@ -734,15 +1007,13 @@ final class Scheduling
             [self::CALENDAR_HOME_SET],
         )->byStatus()[200][self::CALENDAR_HOME_SET] ?? null;
 
-        foreach (self::hrefsIn($homes) as $home) {
-            $found = $this->findIn($kind, $home);
+        $found = [];
 
-            if ($found !== null) {
-                return $found;
-            }
+        foreach (self::hrefsIn($homes) as $home) {
+            $found = [...$found, ...$this->theOnesIn($kind, $home)];
         }
 
-        return null;
+        return $found;
     }
 
     /**
@@ -775,33 +1046,33 @@ final class Scheduling
     }
 
     /**
-     * The first child of this home whose resource type carries that kind.
+     * The children of this home whose resource type carries that kind.
+     *
+     * @return list<array{string, ICollection}>
      */
-    private function findIn(string $kind, string $home): ?string
+    private function theOnesIn(string $kind, string $home): array
     {
-        try {
-            $path = $this->server->pathOf($home);
-        } catch (MalformedPath) {
-            return null;
-        }
+        $path = $this->pathOf($home);
 
-        if (!$this->server->tree()->exists($path)) {
-            return null;
+        if ($path === null || !$this->server->tree()->exists($path)) {
+            return [];
         }
 
         $node = $this->server->tree()->node($path);
 
         if (!$node instanceof ICollection) {
-            return null;
+            return [];
         }
 
+        $found = [];
+
         foreach ($node->children() as $child) {
-            if (self::isOfKind($child, $kind)) {
-                return Path::join($path, $child->name());
+            if ($child instanceof ICollection && self::isOfKind($child, $kind)) {
+                $found[] = [Path::join($path, $child->name()), $child];
             }
         }
 
-        return null;
+        return $found;
     }
 
     /**
@@ -834,6 +1105,54 @@ final class Scheduling
                 );
             }
         }
+
+        $this->guardTheDefaultCalendar($event->path(), $node);
+    }
+
+    /**
+     * §4.3: "Servers MUST reject any attempt to delete the default calendar
+     * collection."
+     *
+     * **Without this a calendar user could take away the collection every
+     * invitation to them is filed in**, with one request and no way back — and
+     * §4.3's other MUST would then refuse every delivery to them, because "a
+     * calendar user that is an 'Attendee' in a scheduling operation MUST have
+     * at least one valid calendar collection available".
+     *
+     * §4.3.1.1 is the code to say it with, and it is worth more than the
+     * `403`: "The client attempted to delete the calendar collection currently
+     * referenced by the CALDAV:schedule-default-calendar-URL property."
+     *
+     * The guard asks §9.2's property on the Inbox of whoever owns the
+     * calendar, so a deployment that keeps no default calendar — which §9.2
+     * allows, the property being "MAY be defined" — has nothing refused.
+     *
+     * @throws Forbidden If the path holds somebody's default calendar
+     */
+    private function guardTheDefaultCalendar(string $path, INode $node): void
+    {
+        if (!$node instanceof Calendar) {
+            return;
+        }
+
+        $owner = $this->ownerAt($path, $node);
+
+        if ($owner === null) {
+            return;
+        }
+
+        [$principal, $who] = $owner;
+        $inbox = $this->find(Inbox::INBOX, $principal, $who);
+
+        if ($inbox === null || $this->defaultCalendarAt($inbox, $who) !== $path) {
+            return;
+        }
+
+        throw new Forbidden(
+            'RFC 6638 §4.3: the default calendar collection is not to be deleted: '
+                . 'the CALDAV:default-calendar-needed precondition of §4.3.1.1.',
+            self::DEFAULT_CALENDAR_NEEDED,
+        );
     }
 
     /**
