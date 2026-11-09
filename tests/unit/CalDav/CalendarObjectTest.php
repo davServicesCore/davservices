@@ -43,6 +43,10 @@ final class CalendarObjectTest extends TestCase
         . "DTSTART:19671029T020000\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\n"
         . "END:STANDARD\r\nEND:VTIMEZONE\r\n";
 
+    /** One `VEVENT`, carrying the `UID` RFC 5545 §3.6.1 makes REQUIRED. */
+    private const EVENT = "BEGIN:VEVENT\r\nUID:uid-1@example.com\r\nDTSTAMP:20261101T090000Z\r\n"
+        . "DTSTART:20261101T100000Z\r\nEND:VEVENT\r\n";
+
     private const MEETING = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
         . "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20041210T183904Z\r\nDTSTART:20041207T120000Z\r\n"
         . "SUMMARY:One-off Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
@@ -145,6 +149,54 @@ final class CalendarObjectTest extends TestCase
 
         self::assertNotNull($object);
         self::assertSame(['VTIMEZONE'], CalendarObject::kindsIn($object));
+    }
+
+    /**
+     * **The one `UID` an object carries**, which is what identifies the event
+     * rather than the resource: RFC 5545 §3.8.4.7 calls it "the persistent,
+     * globally unique identifier", and RFC 5546 §3.2.2 decides by it whether an
+     * incoming `REQUEST` is a new event or a change to one that is already
+     * there.
+     */
+    public function testItSaysWhichUidItCarries(): void
+    {
+        self::assertSame('uid-1@example.com', CalendarObject::uidIn($this->objectOf(self::EVENT)));
+    }
+
+    /**
+     * **Null is the resource of nothing but time zones.** A `VTIMEZONE` has a
+     * `TZID` and no `UID` (RFC 5545 §3.6.5), and §5.2.3 licenses such a
+     * resource — so having none is an answer rather than a fault.
+     */
+    public function testAnObjectOfNothingButTimeZonesCarriesNoUid(): void
+    {
+        self::assertNull(CalendarObject::uidIn($this->objectOf(self::ZONE)));
+    }
+
+    /**
+     * **A component with no `UID` is passed over, not answered with.** RFC 5545
+     * §3.6.1 makes the property REQUIRED in a `VEVENT`, so one without it is
+     * already broken — and reading the empty string as the identifier of an
+     * event would make every broken object the same event.
+     */
+    public function testAComponentWithoutAUidIsPassedOver(): void
+    {
+        $object = $this->objectOf(
+            "BEGIN:VEVENT\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\nEND:VEVENT\r\n"
+            . self::EVENT,
+        );
+
+        self::assertSame('uid-1@example.com', CalendarObject::uidIn($object));
+    }
+
+    /**
+     * **And a time zone before the event does not stand in for it**, which is
+     * the same reading one level down: the walk is for the `UID` and not for
+     * the first component.
+     */
+    public function testTheTimeZoneBeforeAnEventIsNotTheAnswer(): void
+    {
+        self::assertSame('uid-1@example.com', CalendarObject::uidIn($this->objectOf(self::ZONE . self::EVENT)));
     }
 
     /**

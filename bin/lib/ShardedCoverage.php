@@ -199,6 +199,176 @@ final class ShardedCoverage
     }
 
     /**
+     * The same layouts, with each function numbered one way.
+     *
+     * **Two shards that both ran one function report two numberings of it.**
+     * Measured on 08.11.2026 on `Plugin\Scheduling::guardTheCollections()`, in
+     * the two shards that each run a test file of that plugin:
+     *
+     *     shard 7   ids 0,13,14,20,25,26
+     *     shard 13  ids 0,14,15,21,26,27
+     *
+     * The line spans are identical and in the same order — it is the same
+     * source compiled twice, and only the opcode offsets the ids are differ.
+     * Unioned by id that came out as eleven branches of which one was unhit:
+     * the `throw` that only the shard running the `DELETE` cases takes.
+     *
+     * {@see layoutsWorthKeeping()} and {@see recordsWorthKeeping()} cannot
+     * answer that one, because both shards really did run the function and
+     * both have something to say about it. **What lines them up is the
+     * shape**: a sequence of line spans is the fingerprint of a compiled
+     * function, so where two records agree on it they are the same branches in
+     * the same order, and the hits of the second fold into the first by
+     * position.
+     *
+     * **It can only add hits, never take one away**, so a branch no test
+     * reaches stays unhit and goes on counting against the floor. And where
+     * the spans disagree the records are left alone: then they are not two
+     * numberings of one shape, and folding them would be folding two different
+     * things together.
+     *
+     * @param list<array<array-key, mixed>> $layouts One file-to-functions map
+     *                                               per shard, in the order
+     *                                               they will be merged
+     *
+     * @return list<array<array-key, mixed>> What to keep, in that same order
+     */
+    public static function oneNumberingPerFunction(array $layouts): array
+    {
+        $home = [];
+
+        foreach ($layouts as $at => $layout) {
+            foreach ($layout as $file => $functions) {
+                if (!is_array($functions)) {
+                    continue;
+                }
+
+                foreach ($functions as $name => $record) {
+                    $shape = self::shapeOf($record);
+                    $key = $file . "\0" . $name;
+
+                    if ($shape !== null && !isset($home[$key])) {
+                        $home[$key] = [$at, $shape];
+                    }
+                }
+            }
+        }
+
+        $kept = $layouts;
+
+        foreach ($layouts as $at => $layout) {
+            foreach ($layout as $file => $functions) {
+                if (!is_array($functions)) {
+                    continue;
+                }
+
+                $mine = $functions;
+
+                foreach ($functions as $name => $record) {
+                    [$where, $shape] = $home[$file . "\0" . $name] ?? [null, null];
+                    $theirs = $where === null ? null : ($kept[$where][$file] ?? null);
+
+                    if (!is_array($theirs) || $where === $at || self::shapeOf($record) !== $shape) {
+                        continue;
+                    }
+
+                    $theirs[$name] = self::withTheHitsByPosition($theirs[$name] ?? null, $record);
+                    $kept[$where][$file] = $theirs;
+
+                    unset($mine[$name]);
+                }
+
+                $kept[$at][$file] = $mine;
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * The line spans of this record's branches, in order, or null where it is
+     * no record of branches.
+     *
+     * **The lines and not the opcodes**, because the opcodes are the thing
+     * that differs between two processes. Two records that agree on this are
+     * the same compiled function, numbered twice.
+     *
+     * @return list<string>|null
+     */
+    private static function shapeOf(mixed $record): ?array
+    {
+        if (!is_array($record) || !is_array($record['branches'] ?? null)) {
+            return null;
+        }
+
+        $spans = [];
+
+        foreach ($record['branches'] as $branch) {
+            if (!is_array($branch)) {
+                return null;
+            }
+
+            $spans[] = self::numberIn($branch, 'line_start') . '-' . self::numberIn($branch, 'line_end');
+        }
+
+        return $spans;
+    }
+
+    /**
+     * The first record with every branch hit either of them saw, matched by
+     * position rather than by id.
+     *
+     * The paths travel with the record that is kept, and their hits are folded
+     * the same way: one path per position, the two records being one compiled
+     * function.
+     */
+    private static function withTheHitsByPosition(mixed $kept, mixed $arrived): mixed
+    {
+        if (!is_array($kept) || !is_array($arrived)) {
+            return $kept;
+        }
+
+        foreach (['branches', 'paths'] as $part) {
+            $kept[$part] = self::foldedByPosition($kept[$part] ?? null, $arrived[$part] ?? null);
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Two lists of records, folded one position at a time.
+     */
+    private static function foldedByPosition(mixed $kept, mixed $arrived): mixed
+    {
+        if (!is_array($kept) || !is_array($arrived) || count($kept) !== count($arrived)) {
+            return $kept;
+        }
+
+        $theirs = array_values($arrived);
+        $at = 0;
+
+        foreach ($kept as $id => $mine) {
+            $other = $theirs[$at] ?? null;
+            ++$at;
+
+            if (!is_array($mine) || !is_array($other)) {
+                continue;
+            }
+
+            $hit = $other['hit'] ?? null;
+
+            if (!is_array($hit) || $hit === []) {
+                continue;
+            }
+
+            $mine['hit'] = [...(is_array($mine['hit'] ?? null) ? $mine['hit'] : []), ...$hit];
+            $kept[$id] = $mine;
+        }
+
+        return $kept;
+    }
+
+    /**
      * Whether this record says the shard it came from ran the function.
      *
      * One branch hit anywhere is enough, and the entry branch is not asked for

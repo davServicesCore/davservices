@@ -121,14 +121,20 @@ foreach ($layouts as $layout) {
     $folded[] = $layout;
 }
 
-// **And each function's branches are left to the shards that ran it.** Two
-// shards can both have measured a file — one its listeners, one its methods —
-// and still disagree about the numbering of a function only one of them
-// entered. See ShardedCoverage for the measurement; it comes after the folding
+// **And each function is numbered one way.** Two shards that both ran one
+// function report two numberings of it, because the opcodes a function
+// compiles to depend on what was already in memory; unioned by id, that counts
+// branches no test can reach. The line spans line the two up, so the hits of
+// the second fold into the first by position.
+//
+// **And what is left after that is left to the shards that ran it.** A shard
+// that merely loaded a class recorded a numbering of its own that nothing of
+// its own could hit, and where the shapes disagree there is nothing to fold.
+// See ShardedCoverage for both measurements; both come after the folding
 // above, which is what makes a listener's record say that its shard ran it.
 $merged = null;
 
-foreach (ShardedCoverage::recordsWorthKeeping($folded) as $at => $layout) {
+foreach (ShardedCoverage::recordsWorthKeeping(ShardedCoverage::oneNumberingPerFunction($folded)) as $at => $layout) {
     $coverage = $shards[$at] ?? null;
 
     // One layout per shard comes back, in the order they went in. Saying so

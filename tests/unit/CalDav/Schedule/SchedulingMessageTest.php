@@ -245,6 +245,87 @@ final class SchedulingMessageTest extends TestCase
     }
 
     /**
+     * **The `UID` the message is about**, which is what decides whether the
+     * recipient already has this event. RFC 5546 §3.2.2: "If the 'UID'
+     * property value in the 'REQUEST' is not found on the recipient's
+     * calendar, then the 'REQUEST' is for a new 'VEVENT' calendar component.
+     * If the 'UID' property value is found on the recipient's calendar, then
+     * the 'REQUEST' is for a rescheduling, an update, or a reconfirmation."
+     */
+    public function testItSaysWhichEventItIsAbout(): void
+    {
+        self::assertSame('1', $this->messageAbout(self::INVITATION)->uid());
+    }
+
+    /**
+     * **And null where it names no event at all.** An object of nothing but
+     * time zones carries no `UID` (RFC 5545 §3.6.5), and a message about
+     * nothing matches nothing on the recipient's calendar.
+     */
+    public function testAMessageAboutNoEventNamesNone(): void
+    {
+        $object = CalendarObject::in(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\n"
+            . "BEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\n"
+            . "END:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n",
+        );
+
+        self::assertInstanceOf(Component::class, $object);
+        self::assertNull(SchedulingMessage::requesting($object)->uid());
+    }
+
+    /**
+     * **What the recipient keeps is the message without its `METHOD`.** RFC
+     * 4791 §4.1: "Calendar object resources contained in calendar collections
+     * MUST NOT specify the iCalendar METHOD property." The property belongs to
+     * the message in transit — RFC 5546 §1.4 — and §4.1 of RFC 6638 has the
+     * server create "a new scheduling object resource" from it, which is a
+     * resource in a calendar collection like any other.
+     */
+    public function testWhatTheRecipientKeepsCarriesNoMethod(): void
+    {
+        $kept = $this->messageAbout(self::INVITATION)->whatTheRecipientKeeps();
+
+        self::assertStringNotContainsString('METHOD', $kept);
+        self::assertStringStartsWith("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n", $kept);
+    }
+
+    /**
+     * **And it keeps everything else**, because that is the event: the
+     * organizer, the attendees as the organizer wrote them, and every
+     * `VTIMEZONE` the times need (RFC 5545 §3.6.5).
+     */
+    public function testWhatTheRecipientKeepsIsTheRestOfTheMessage(): void
+    {
+        $kept = $this->messageAbout(
+            self::INVITATION,
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\n"
+            . "BEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\n"
+            . "END:STANDARD\r\nEND:VTIMEZONE\r\n",
+        )->whatTheRecipientKeeps();
+
+        self::assertStringContainsString("UID:1\r\n", $kept);
+        self::assertStringContainsString("ORGANIZER:mailto:bernard@example.com\r\n", $kept);
+        self::assertStringContainsString('CN=Cyrus Daboo', $kept);
+        self::assertStringContainsString("TZID:Europe/Berlin\r\n", $kept);
+    }
+
+    /**
+     * **The message itself still says what it is.** The two are different
+     * things — one is sent, the other is kept — and a server that stripped the
+     * `METHOD` from the message would have sent no iTIP message at all (RFC
+     * 5546 §3.2).
+     */
+    public function testTheMessageItselfKeepsItsMethod(): void
+    {
+        $message = $this->messageAbout(self::INVITATION);
+
+        self::assertStringContainsString("METHOD:REQUEST\r\n", $message->text());
+        self::assertStringNotContainsString('METHOD', $message->whatTheRecipientKeeps());
+    }
+
+    /**
      * **The name is the message**, and nothing in RFC 6638 says otherwise: §2.2
      * and §4 describe what an Inbox holds and never what a member of one is
      * called. A digest of the text is usable as a resource name whatever the

@@ -76,6 +76,8 @@ final class CalendarObject
 
     private const TZID = 'TZID';
 
+    private const UID = 'UID';
+
     /**
      * The one iCalendar object this node holds, or null where it holds none.
      */
@@ -156,6 +158,41 @@ final class CalendarObject
         ));
 
         return $besideTheZones === [] ? $kinds : $besideTheZones;
+    }
+
+    /**
+     * The one `UID` an object carries, or null where it carries none.
+     *
+     * **This is what identifies the event rather than the resource.** RFC 5545
+     * §3.8.4.7 calls it "the persistent, globally unique identifier", §4.1 of
+     * RFC 4791 makes it unique within a calendar collection, and RFC 5546
+     * §3.2.2 decides by it alone whether an incoming `REQUEST` is a new event
+     * or a change to one the recipient already has: "If the 'UID' property
+     * value in the 'REQUEST' is not found on the recipient's calendar, then the
+     * 'REQUEST' is for a new 'VEVENT' calendar component."
+     *
+     * One `UID` is all there is to ask for in a stored resource, which is what
+     * {@see mustBeOneResource()} holds an object to. Asked of anything else it
+     * answers with the first one it finds.
+     *
+     * **Null is the resource of nothing but time zones**: a `VTIMEZONE` has a
+     * `TZID` and no `UID` (RFC 5545 §3.6.5), and §5.2.3 licenses such a
+     * resource. A component carrying an empty `UID` is passed over for the
+     * same reason it is refused by {@see mustBeOneResource()} — the empty
+     * string identifies nothing, and reading it as an identifier would make
+     * every broken object the same event.
+     */
+    public static function uidIn(Component $object): ?string
+    {
+        foreach ($object->components() as $component) {
+            $uid = $component->property(self::UID)?->value();
+
+            if ($uid !== null && $uid !== '') {
+                return $uid;
+            }
+        }
+
+        return null;
     }
     /**
      * Holds an object to everything §4.1 asks of a calendar object resource.
@@ -256,7 +293,7 @@ final class CalendarObject
                 continue;
             }
 
-            $uid = $component->property('UID')?->value() ?? '';
+            $uid = $component->property(self::UID)?->value() ?? '';
 
             if ($uid === '') {
                 throw new Forbidden(

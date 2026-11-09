@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace DavServices\CalDav\Schedule;
 
+use DavServices\CalDav\CalendarObject;
 use DavServices\VObject\Component;
 use DavServices\VObject\Property;
 use DavServices\VObject\Serializer;
@@ -74,8 +75,15 @@ final class SchedulingMessage
      */
     private const SUFFIX = '.ics';
 
-    private function __construct(private readonly string $text)
-    {
+    /**
+     * @param Component $message The message itself, kept so that what the
+     *                           recipient is to keep can be told from it
+     *                           without reading the bytes back
+     */
+    private function __construct(
+        private readonly Component $message,
+        private readonly string $text,
+    ) {
     }
 
     /**
@@ -97,7 +105,7 @@ final class SchedulingMessage
         // file, which is where RFC 5546's own examples have it.
         $message->moveFirst(self::METHOD);
 
-        return new self((new Serializer())->write($message));
+        return new self($message, (new Serializer())->write($message));
     }
 
     /**
@@ -106,6 +114,43 @@ final class SchedulingMessage
     public function text(): string
     {
         return $this->text;
+    }
+
+    /**
+     * Which event this message is about, or null where it names none.
+     *
+     * **This is what decides whether the recipient already has it.** RFC 5546
+     * §3.2.2: "If the 'UID' property value in the 'REQUEST' is not found on the
+     * recipient's calendar, then the 'REQUEST' is for a new 'VEVENT' calendar
+     * component. If the 'UID' property value is found on the recipient's
+     * calendar, then the 'REQUEST' is for a rescheduling, an update, or a
+     * reconfirmation of the 'VEVENT' calendar component."
+     */
+    public function uid(): ?string
+    {
+        return CalendarObject::uidIn($this->message);
+    }
+
+    /**
+     * The bytes the recipient keeps: the message without its `METHOD`.
+     *
+     * RFC 4791 §4.1: "Calendar object resources contained in calendar
+     * collections MUST NOT specify the iCalendar METHOD property." The property
+     * belongs to a message in transit — RFC 5546 §1.4 — and §4.1 of RFC 6638
+     * has the server make "a new scheduling object resource" out of one, which
+     * is a resource in a calendar collection like any other.
+     *
+     * Everything else stays, because that is the event. Taken from a copy for
+     * the reason the message itself is: the message is sent as it stands, and a
+     * `METHOD` taken off in place would have taken it off what was sent.
+     */
+    public function whatTheRecipientKeeps(): string
+    {
+        $kept = self::copyOf($this->message);
+
+        unset($kept[self::METHOD]);
+
+        return (new Serializer())->write($kept);
     }
 
     /**

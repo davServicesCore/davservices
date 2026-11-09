@@ -530,7 +530,7 @@ final class CalDav
         string $path,
         ?string $leaving,
     ): void {
-        $uid = self::uidIn($object);
+        $uid = CalendarObject::uidIn($object);
 
         if ($uid === null) {
             return;
@@ -593,28 +593,8 @@ final class CalDav
 
             $object = CalendarObject::of($child);
 
-            if ($object !== null && self::uidIn($object) === $uid) {
+            if ($object !== null && CalendarObject::uidIn($object) === $uid) {
                 return $at;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * The one `UID` an object carries, or null where it carries none.
-     *
-     * Null is the resource of nothing but time zones: a `VTIMEZONE` has a
-     * `TZID` and no `UID` (RFC 5545 §3.6.5), and §5.2.3 licenses such a
-     * resource.
-     */
-    private static function uidIn(Component $object): ?string
-    {
-        foreach ($object->components() as $component) {
-            $uid = $component->property('UID')?->value();
-
-            if ($uid !== null && $uid !== '') {
-                return $uid;
             }
         }
 
