@@ -324,6 +324,106 @@ final class ShardedCoverageTest extends TestCase
     }
 
     /**
+     * **Two shards that both ran one function report two numberings of it, and
+     * they are the same function.** Measured on 08.11.2026 on
+     * `Plugin\Scheduling::guardTheCollections()`, in the two shards that each
+     * run a test file of that plugin:
+     *
+     *     shard 7   ids 0,13,14,20,25,26   lines 1100-1104 1104 1105 1106-1107 1104 1104-1113
+     *     shard 13  ids 0,14,15,21,26,27   lines 1100-1104 1104 1105 1106-1107 1104 1104-1113
+     *
+     * **The line spans are identical, in the same order**, because it is the
+     * same source compiled twice; only the opcode offsets the ids are differ.
+     * Unioned by id that came out as eleven branches of which one was unhit —
+     * the `throw` that only the shard running the `DELETE` cases takes.
+     *
+     * So the hits are folded into the first numbering **by position**, and the
+     * other is dropped. {@see ShardedCoverage::recordsWorthKeeping()} cannot
+     * answer this one: both shards ran the function, so both have something to
+     * say about it.
+     */
+    public function testTwoNumberingsOfOneFunctionBecomeOne(): void
+    {
+        $kept = ShardedCoverage::oneNumberingPerFunction([
+            [self::FILE => ['named' => self::shaped([0, 13, 20], [true, true, false])]],
+            [self::FILE => ['named' => self::shaped([0, 14, 21], [true, false, true])]],
+        ]);
+
+        self::assertSame([true, true, true], self::hitsIn(self::recordIn($kept, 0, 'named')));
+        self::assertSame([], self::functionsIn($kept, 1), 'the second numbering is gone');
+    }
+
+    /**
+     * **A numbering nobody ran folds in as nothing**, which is what makes this
+     * safe: it can only add hits, never take one away, so a branch no test
+     * reaches stays unhit and goes on counting against the floor.
+     */
+    public function testANumberingNobodyRanAddsNothing(): void
+    {
+        $kept = ShardedCoverage::oneNumberingPerFunction([
+            [self::FILE => ['named' => self::shaped([0, 13, 20], [true, true, false])]],
+            [self::FILE => ['named' => self::shaped([0, 14, 21], [false, false, false])]],
+        ]);
+
+        self::assertSame([true, true, false], self::hitsIn(self::recordIn($kept, 0, 'named')));
+    }
+
+    /**
+     * **Where the line spans differ, the records are left where they are.**
+     * Then they are not two numberings of one shape, and folding by position
+     * would be folding two different things together — which no measurement
+     * supports.
+     */
+    public function testRecordsOfAnotherShapeAreLeftAlone(): void
+    {
+        $theirs = self::shaped([0, 14, 21], [true, false, true]);
+        $theirs['branches'][21]['line_start'] = 500;
+
+        $kept = ShardedCoverage::oneNumberingPerFunction([
+            [self::FILE => ['named' => self::shaped([0, 13, 20], [true, true, false])]],
+            [self::FILE => ['named' => $theirs]],
+        ]);
+
+        self::assertSame([true, true, false], self::hitsIn(self::recordIn($kept, 0, 'named')));
+        self::assertSame(['named'], self::functionsIn($kept, 1), 'and the other shape stays');
+    }
+
+    /**
+     * And a function only one shard has at all is left exactly as it was.
+     */
+    public function testAFunctionOnlyOneShardHasIsLeftAlone(): void
+    {
+        $kept = ShardedCoverage::oneNumberingPerFunction([
+            [self::FILE => ['named' => self::shaped([0, 13], [true, false])]],
+            [self::OTHER => ['other' => self::shaped([0, 13], [true, true])]],
+        ]);
+
+        self::assertSame([true, false], self::hitsIn(self::recordIn($kept, 0, 'named')));
+        self::assertSame([true, true], self::hitsIn(self::recordIn($kept, 1, 'other', self::OTHER)));
+    }
+
+    /**
+     * **What is no record is passed through**, for the reason every other
+     * guard here exists: these reports come from another library, and its types
+     * promise nothing about their shape.
+     */
+    public function testWhatIsNoRecordIsPassedThroughByTheNumbering(): void
+    {
+        $kept = ShardedCoverage::oneNumberingPerFunction([
+            [self::FILE => 'not a list of functions'],
+            [self::FILE => ['named' => 'not a record']],
+            [self::FILE => ['named' => self::shaped([0], [true])]],
+        ]);
+
+        $files = $kept[0] ?? null;
+
+        self::assertIsArray($files);
+        self::assertSame('not a list of functions', $files[self::FILE] ?? null);
+        self::assertSame(['named'], self::functionsIn($kept, 1));
+        self::assertSame([true], self::hitsIn(self::recordIn($kept, 2, 'named')));
+    }
+
+    /**
      * **A method reached two ways is recorded twice**, and the second record
      * carries no class name. Measured on 15.10.2026 on
      * `Plugin\CalDav::refuseNesting`, which an event reaches through
@@ -560,6 +660,50 @@ final class ShardedCoverageTest extends TestCase
         }
 
         return $tests;
+    }
+
+    /**
+     * One shard's record for one function, read through the layers the way the
+     * static analysis this project runs insists on.
+     *
+     * @param list<array<array-key, mixed>> $kept
+     */
+    private static function recordIn(array $kept, int $shard, string $name, string $file = self::FILE): mixed
+    {
+        $files = $kept[$shard] ?? null;
+
+        self::assertIsArray($files);
+
+        $functions = $files[$file] ?? null;
+
+        self::assertIsArray($functions);
+
+        return $functions[$name] ?? null;
+    }
+
+    /**
+     * One function record whose branches carry those ids, with one line span
+     * per **position** rather than per id — which is what two numberings of
+     * one compiled function look like.
+     *
+     * @param list<int> $ids The opcode offsets the branches came out at
+     * @param list<bool> $hit Whether each of them was hit, in that order
+     *
+     * @return array{branches: array<int, array{hit: list<string>, line_start: int, line_end: int}>, paths: list<array{hit: list<string>}>}
+     */
+    private static function shaped(array $ids, array $hit): array
+    {
+        $branches = [];
+
+        foreach ($ids as $at => $id) {
+            $branches[$id] = [
+                'hit' => ($hit[$at] ?? false) ? ['a test'] : [],
+                'line_start' => 90 + $at,
+                'line_end' => 90 + $at,
+            ];
+        }
+
+        return ['branches' => $branches, 'paths' => []];
     }
 
     /**
