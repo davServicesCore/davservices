@@ -77,13 +77,12 @@ use DavServices\VObject\Property;
  *
  * ## What an instance is here
  *
- * The ones the data names: the master component, and each component carrying a
- * `RECURRENCE-ID`. An instance that exists only because of an `RRULE`, with no
- * override of its own, carries the master's attendee list, so the master's row
- * speaks for it.
+ * {@see Instances::between()} answers that, for this section and for §3.2.2.3
+ * alike: the master component and each component carrying a `RECURRENCE-ID`,
+ * with the master standing in for the side that does not name an instance.
  *
- * Two consequences are worth stating, and both are what the data says rather
- * than a simplification:
+ * Two consequences of that are worth stating here, because both are what the
+ * table says of this side rather than a simplification:
  *
  * - **An override the modification drops does not take its instance with it.**
  *   The `RRULE` still generates it and the master governs it again, so an
@@ -91,10 +90,6 @@ use DavServices\VObject\Property;
  * - **An `EXDATE` added, or an `RRULE` shortened, changes no `ATTENDEE`
  *   property at all**, so every cell reads `REQUEST` and the modified data
  *   travels — which is exactly how the attendee learns the instance is gone.
- *
- * Expanding the recurrence rule to enumerate instances would be a different
- * operation from the one §3.2.1.2 describes, which is a comparison of
- * "the original and modified iCalendar data".
  *
  * @see SchedulingMessage for the two messages this decides between
  */
@@ -109,10 +104,6 @@ final class Modification
      * 5545 §3.2.12 makes it the state an invitation starts in.
      */
     private const NEEDS_ACTION = 'NEEDS-ACTION';
-
-    private const RECURRENCE_ID = 'RECURRENCE-ID';
-
-    private const VTIMEZONE = 'VTIMEZONE';
 
     /**
      * What each calendar user either side names is to be told.
@@ -163,7 +154,7 @@ final class Modification
     {
         $found = [];
 
-        foreach (self::instancesBetween($original, $modified) as [$was, $is, $named]) {
+        foreach (Instances::between($original, $modified) as [$was, $is, $named]) {
             foreach (self::calendarUsersIn($was, $is) as $address) {
                 $found[$address] ??= [$address, false, [], null];
 
@@ -234,7 +225,7 @@ final class Modification
     {
         $set = [];
 
-        foreach (self::instancesBetween($original, $modified) as [$was, $is, ]) {
+        foreach (Instances::between($original, $modified) as [$was, $is, ]) {
             foreach (self::attendeesIn($is) as $attendee) {
                 if (ScheduleAgent::on($attendee) !== ScheduleAgent::Server) {
                     continue;
@@ -281,129 +272,6 @@ final class Modification
         }
 
         return $told;
-    }
-
-    /**
-     * Every instance the change touches, as the two components that govern it
-     * and the property that names it.
-     *
-     * The master comes first and is named by nothing, which is RFC 5546
-     * §3.2.5's own shape: "To cancel the complete range of a recurring event,
-     * the 'UID' property value for the event MUST be specified and a
-     * 'RECURRENCE-ID' MUST NOT be specified in the 'CANCEL' method."
-     *
-     * Then each instance either side names, with the master standing in for the
-     * side that does not name it — the fallback that makes this a comparison of
-     * instances rather than of components.
-     *
-     * **The name is the one on the component the cancellation will be built
-     * from**, which is the original's: its own `RECURRENCE-ID` where it
-     * overrode the instance, and the modification's where the master governed
-     * it and so carries none. A `RANGE` parameter travels with it for that
-     * reason — RFC 5545 §3.8.4.4 lets one say "this and all after", and the
-     * scope of the component being cancelled is the scope of the cancellation.
-     *
-     * @return list<array{?Component, ?Component, ?Property}>
-     */
-    private static function instancesBetween(?Component $original, Component $modified): array
-    {
-        $masterBefore = self::theMasterOf($original);
-        $masterAfter = self::theMasterOf($modified);
-        $before = self::theOverridesOf($original);
-        $after = self::theOverridesOf($modified);
-        $instances = [[$masterBefore, $masterAfter, null]];
-        $named = [];
-
-        foreach ($before as $key => [, $property]) {
-            $named[$key] = $property;
-        }
-
-        foreach ($after as $key => [, $property]) {
-            $named[$key] ??= $property;
-        }
-
-        foreach ($named as $key => $property) {
-            $instances[] = [
-                $before[$key][0] ?? $masterBefore,
-                $after[$key][0] ?? $masterAfter,
-                $property,
-            ];
-        }
-
-        return $instances;
-    }
-
-    /**
-     * The component the whole recurrence set starts from, or null where the
-     * object names none.
-     *
-     * The first without a `RECURRENCE-ID`, that property being what RFC 5545
-     * §3.8.4.4 makes an instance out of a component.
-     */
-    private static function theMasterOf(?Component $object): ?Component
-    {
-        foreach (self::componentsOf($object) as $component) {
-            if ($component->property(self::RECURRENCE_ID) === null) {
-                return $component;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * The overridden instances, by the value that names them, each with the
-     * property that names it.
-     *
-     * The property travels and not just its value, because a `RECURRENCE-ID`
-     * means one moment only together with its `TZID` (RFC 5545 §3.8.4.4), and
-     * the cancellation has to name the same moment.
-     *
-     * @return array<string, array{Component, Property}>
-     */
-    private static function theOverridesOf(?Component $object): array
-    {
-        $overrides = [];
-
-        foreach (self::componentsOf($object) as $component) {
-            $named = $component->property(self::RECURRENCE_ID);
-
-            if ($named !== null) {
-                $overrides[$named->value()] = [$component, $named];
-            }
-        }
-
-        return $overrides;
-    }
-
-    /**
-     * The components an instance can be, which is all of them but the zones.
-     *
-     * RFC 5545 §3.6.5 lists what a `VTIMEZONE` may hold, and neither
-     * `RECURRENCE-ID` nor `ATTENDEE` is among them. The same reading
-     * {@see SchedulingObject::in()} makes of §3.1's "all the calendar
-     * components".
-     *
-     * Only the object's own components, never what is inside them: a `VALARM`
-     * has attendees of its own — RFC 5545 §3.6.6 makes them "the attendees… to
-     * be sent an email" — and a reminder the organizer set is nobody's
-     * invitation.
-     *
-     * @return list<Component>
-     */
-    private static function componentsOf(?Component $object): array
-    {
-        $components = [];
-
-        foreach ($object?->components() ?? [] as $component) {
-            // Compared without regard to case, RFC 5545 §3.1 making component
-            // names case-insensitive.
-            if (strcasecmp($component->name(), self::VTIMEZONE) !== 0) {
-                $components[] = $component;
-            }
-        }
-
-        return $components;
     }
 
     /**
@@ -488,7 +356,7 @@ final class Modification
     {
         $found = [];
 
-        foreach (self::componentsOf($object) as $component) {
+        foreach (Instances::of($object) as $component) {
             foreach ($component->properties(self::ATTENDEE) as $attendee) {
                 if ($attendee->value() === $address) {
                     $found[] = $attendee;
