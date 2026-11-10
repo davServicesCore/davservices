@@ -468,6 +468,23 @@ final class SchedulingModifyTest extends TestCase
     }
 
     /**
+     * **And an answer behind their own is still refused.** The organizer
+     * answers for themselves, which the sentence allows, and for Cyrus, which
+     * it does not — in that order on the list. A server that stopped at the
+     * one it was allowed to pass over would store the other.
+     */
+    public function testAnAnswerBehindTheOrganizersOwnIsStillRefused(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::CYRUS));
+
+        self::assertSame(403, $this->put($this->anEvent(
+            self::ORGANISED,
+            'ATTENDEE;PARTSTAT=ACCEPTED:mailto:bernard@example.com',
+            'ATTENDEE;PARTSTAT=ACCEPTED:mailto:cyrus@example.com',
+        )));
+    }
+
+    /**
      * **What is underneath and cannot be read as one calendar object is no
      * original**, so the write is a creation: §3.2.3.1's rows turn on what the
      * existing resource *is*, and something no server can read as a calendar

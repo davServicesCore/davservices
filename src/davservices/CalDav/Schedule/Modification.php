@@ -410,7 +410,11 @@ final class Modification
      * Every calendar user named on either side of this instance, each once, in
      * the order they appear.
      *
-     * @return list<string>
+     * Keyed by the address, which nothing reads: it travels as the value, and a
+     * caller that took it from the key would find a number wherever an address
+     * looked like one.
+     *
+     * @return array<array-key, string>
      */
     private static function calendarUsersIn(?Component $was, ?Component $is): array
     {
@@ -422,7 +426,7 @@ final class Modification
             }
         }
 
-        return array_values($found);
+        return $found;
     }
 
     /**

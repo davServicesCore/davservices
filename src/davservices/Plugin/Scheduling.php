@@ -374,7 +374,7 @@ final class Scheduling
      */
     private function cancelTheWholeOf(SchedulingMessage $message, Component $object, array $addresses): void
     {
-        foreach (self::attendeesOf($object) as [$address, $agent, ]) {
+        foreach (self::attendeesOf($object) as [$address, $agent]) {
             if (in_array($address, $addresses, true) || $agent !== ScheduleAgent::Server) {
                 continue;
             }
@@ -454,18 +454,7 @@ final class Scheduling
             return;
         }
 
-        // Read once and put back at once: a body that arrives as a stream is
-        // gone after it has been looked at, and a listener that looked
-        // without putting anything back would store an empty file.
-        $bytes = $event->content();
-
-        if (!is_string($bytes)) {
-            $bytes = (string) stream_get_contents($bytes);
-
-            $event->writeInstead($bytes);
-        }
-
-        $object = CalendarObject::in($bytes);
+        $object = CalendarObject::in(self::bytesIn($event));
 
         if ($object === null) {
             return;
@@ -524,6 +513,33 @@ final class Scheduling
         }
 
         return SchedulingObject::in($original, $addresses) === SchedulingObject::Organizers ? $original : null;
+    }
+
+    /**
+     * The body as bytes, whichever of the two shapes it arrived in.
+     *
+     * **A stream that is read has to be put back**, and at once:
+     * {@see BeforeCreateFile} says what a listener owes — "A listener that
+     * means to look at it has to put back something the write can use […]
+     * reading the stream without replacing it is a way to store an empty
+     * file."
+     *
+     * The same shape {@see CalDav::bytesIn()} has, for the same reason: both
+     * plugins read the body of the same two events.
+     */
+    private static function bytesIn(BeforeCreateFile|BeforeWriteContent $event): string
+    {
+        $content = $event->content();
+
+        if (is_string($content)) {
+            return $content;
+        }
+
+        $bytes = (string) stream_get_contents($content);
+
+        $event->writeInstead($bytes);
+
+        return $bytes;
     }
 
     /**
@@ -658,8 +674,7 @@ final class Scheduling
      *
      * **One entry per calendar user and not per property**, because the
      * message is the whole resource: an attendee named in an overridden
-     * instance as well as in the master is one person to tell and two
-     * properties to stamp.
+     * instance as well as in the master is one person to tell.
      *
      * **And §7.1 is asked once of them**, which that section is what allows:
      * "The parameter value MUST be the same on each 'ATTENDEE' property whose
@@ -684,7 +699,7 @@ final class Scheduling
      * the record itself, and a caller that took it from the key would find a
      * number wherever an address looked like one.
      *
-     * @return array<array-key, array{string, ScheduleAgent, list<Property>}>
+     * @return array<array-key, array{string, ScheduleAgent}>
      */
     private static function attendeesOf(Component $object): array
     {
@@ -694,8 +709,7 @@ final class Scheduling
             foreach ($component->properties(self::ATTENDEE) as $attendee) {
                 $address = $attendee->value();
 
-                $found[$address] ??= [$address, ScheduleAgent::on($attendee), []];
-                $found[$address][2][] = $attendee;
+                $found[$address] ??= [$address, ScheduleAgent::on($attendee)];
             }
         }
 

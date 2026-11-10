@@ -95,6 +95,10 @@ final class ModificationTest extends TestCase
 
     private const NONE = 'ATTENDEE;SCHEDULE-AGENT=NONE:mailto:cyrus@example.com';
 
+    private const ERIC = 'ATTENDEE:mailto:eric@example.com';
+
+    private const ERIC_FOR_THE_CLIENT = 'ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:eric@example.com';
+
     private const INSTANCE = '20261102T100000Z';
 
     /**
@@ -510,6 +514,51 @@ final class ModificationTest extends TestCase
     }
 
     /**
+     * **And an attendee behind one who stays is still uninvited.** Cyrus keeps
+     * his place and Eric loses his, in that order on the list: a comparison
+     * that stopped at the first calendar user it had nothing to cancel for
+     * would never reach him.
+     */
+    public function testAnAttendeeBehindOneWhoStaysIsStillCancelled(): void
+    {
+        $told = Modification::whatEachCalendarUserIsTold(
+            $this->anObject($this->anEvent(self::SERVER . "\r\n" . self::ERIC)),
+            $this->anObject($this->anEvent(self::SERVER)),
+        );
+
+        self::assertSame([null], $this->instancesIn($this->theOneFor($told, 'mailto:eric@example.com')[2]));
+    }
+
+    /**
+     * **And one behind an attendee the client handles, likewise.** Eric is the
+     * client's business and Cyrus is this server's, in that order.
+     */
+    public function testAnAttendeeBehindOneTheClientHandlesIsStillCancelled(): void
+    {
+        $told = Modification::whatEachCalendarUserIsTold(
+            $this->anObject($this->anEvent(self::ERIC_FOR_THE_CLIENT . "\r\n" . self::SERVER)),
+            $this->anObject($this->anEvent('')),
+        );
+
+        self::assertSame([null], $this->instancesIn($this->theOneFor($told, self::CYRUS)[2]));
+    }
+
+    /**
+     * **And a calendar user with nothing to hear does not stop the next one.**
+     * Eric's cells are all empty, so he has no record at all — and the record
+     * after his is still there.
+     */
+    public function testACalendarUserWithNothingToHearDoesNotStopTheNextOne(): void
+    {
+        $told = Modification::whatEachCalendarUserIsTold(
+            $this->anObject($this->anEvent(self::ERIC_FOR_THE_CLIENT . "\r\n" . self::SERVER)),
+            $this->anObject($this->anEvent(self::ERIC_FOR_THE_CLIENT . "\r\n" . self::SERVER)),
+        );
+
+        self::assertTrue($this->theOneFor($told, self::CYRUS)[1]);
+    }
+
+    /**
      * **Nobody is told about a change that moves nobody**, and the record is
      * not there to be skipped: an attendee whose cell is `--` on every
      * instance is left out altogether.
@@ -751,6 +800,44 @@ final class ModificationTest extends TestCase
     }
 
     /**
+     * **An answer behind an attendee the client handles is still found.** Eric
+     * is the client's business, Cyrus is this server's, and they are on the
+     * list in that order.
+     */
+    public function testAnAnswerBehindAnAttendeeTheClientHandlesIsStillFound(): void
+    {
+        self::assertSame([self::CYRUS], Modification::whoseAnswerItSets(null, $this->anObject($this->anEvent(
+            "ATTENDEE;SCHEDULE-AGENT=CLIENT;PARTSTAT=ACCEPTED:mailto:eric@example.com\r\n"
+            . 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:cyrus@example.com',
+        ))));
+    }
+
+    /**
+     * **And one behind an attendee who has not answered.**
+     */
+    public function testAnAnswerBehindAnAttendeeWhoHasNotAnsweredIsStillFound(): void
+    {
+        self::assertSame([self::CYRUS], Modification::whoseAnswerItSets(null, $this->anObject($this->anEvent(
+            "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:eric@example.com\r\n"
+            . 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:cyrus@example.com',
+        ))));
+    }
+
+    /**
+     * **And one behind an answer the resource already carried.**
+     */
+    public function testAnAnswerBehindOneThatWasAlreadyThereIsStillFound(): void
+    {
+        self::assertSame([self::CYRUS], Modification::whoseAnswerItSets(
+            $this->anObject($this->anEvent('ATTENDEE;PARTSTAT=ACCEPTED:mailto:eric@example.com')),
+            $this->anObject($this->anEvent(
+                "ATTENDEE;PARTSTAT=ACCEPTED:mailto:eric@example.com\r\n"
+                . 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:cyrus@example.com',
+            )),
+        ));
+    }
+
+    /**
      * **An alarm's attendee has no answer to set.** The same reading
      * {@see self::testAnAlarmsAttendeeIsNotOnTheAttendeeList()} makes: RFC 5545
      * §3.6.6's attendees are there to be sent an email.
@@ -804,6 +891,24 @@ final class ModificationTest extends TestCase
         self::assertCount(1, $told);
 
         return $told[0] ?? self::fail('Nothing told.');
+    }
+
+    /**
+     * The record for that calendar user, which the case expects to be there.
+     *
+     * @param array<array-key, array{string, bool, list<array{Component, ?Property}>, list<Property>}> $told
+     *
+     * @return array{string, bool, list<array{Component, ?Property}>, list<Property>}
+     */
+    private function theOneFor(array $told, string $address): array
+    {
+        foreach ($told as $one) {
+            if ($one[0] === $address) {
+                return $one;
+            }
+        }
+
+        return self::fail(sprintf('Nothing told to "%s".', $address));
     }
 
     /**
