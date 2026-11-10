@@ -18,6 +18,7 @@ use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\Schedule\Inbox;
 use DavServices\Dav\Acl\PrincipalInfo;
+use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
@@ -511,6 +512,32 @@ final class SchedulingModifyTest extends TestCase
 
         self::assertSame('this is not a calendar object either', $this->theStoredObject(self::EVENT));
         self::assertSame([], $this->namesIn('calendars/cyrus/inbox'));
+    }
+
+    /**
+     * **A body that arrives as a string is read as one.**
+     * {@see BeforeWriteContent} declares its content `resource|string`, and
+     * {@see Put} hands over a stream — but a listener that only worked for one
+     * of the two shapes would break for any method that handed over the other,
+     * and the event is what says which shapes there are.
+     *
+     * The event is raised here rather than through a request for that reason:
+     * what is being held to its word is the listener's half of the event's
+     * contract.
+     */
+    public function testABodyThatArrivesAsAStringIsReadAsOne(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::CYRUS));
+
+        $raised = ($this->server ?? self::fail('No server.'))->events()->emit(new BeforeWriteContent(
+            self::EVENT,
+            $this->anEvent(self::ORGANISED, self::CYRUS, 'SUMMARY:Lunch'),
+        ));
+        $content = $raised->content();
+
+        self::assertStringContainsString("METHOD:REQUEST\r\n", $this->theOneResourceIn('calendars/cyrus/inbox'));
+        self::assertIsString($content);
+        self::assertStringContainsString('SCHEDULE-STATUS=1.2', $content);
     }
 
     /**
