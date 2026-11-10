@@ -17,8 +17,10 @@ use DavServices\Acl\Principal;
 use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
+use DavServices\CalDav\Schedule\Answer;
 use DavServices\CalDav\Schedule\DeliveryStatus;
 use DavServices\CalDav\Schedule\Inbox;
+use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
 use DavServices\CalDav\Schedule\Outbox;
 use DavServices\CalDav\Schedule\ScheduleAgent;
@@ -49,8 +51,8 @@ use DavServices\VObject\Serializer;
 use DavServices\Xml\Element;
 
 /**
- * Where a calendar user's scheduling collections are, and what an organizer's
- * new event sends (R-CAL-30, R-CAL-31, R-CAL-32).
+ * Where a calendar user's scheduling collections are, and what a change to an
+ * event sends (R-CAL-30, R-CAL-31, R-CAL-32).
  *
  *     $scheduling = new Scheduling($server, $calendarUsers);
  *
@@ -67,14 +69,20 @@ use DavServices\Xml\Element;
  *   `DAV:href` to the collection of that name.
  * - §2's "clients have no way to create or delete them", which is a `DELETE`
  *   refused.
- * - **§3.2.1.1's Create**: an organizer's new event reaches the Inbox of
- *   everybody on the attendee list, and the stored resource says what came of
- *   each delivery ({@see self::deliverOnCreate()}).
+ * - **§3.2.1.1's Create and §3.2.1.2's Modify**: an organizer's event reaches
+ *   the Inbox of everybody on the attendee list, a change to it tells each of
+ *   them what §3.2.1.2's table says they are to be told, and the stored
+ *   resource says what came of each delivery
+ *   ({@see self::deliverOnWrite()}).
  * - **§3.2.1.3's Remove**: and their removal of it sends the cancellation
  *   ({@see self::readWhatIsGoing()}), which §3.2.3.2 asks for of a `DELETE` of
  *   the resource and of a `DELETE` of the whole calendar collection alike.
- * - and **§4's processing** of what it delivers: the message becomes an event
- *   on a calendar of the recipient's own before it appears in their Inbox.
+ * - **§3.2.2.2 and §3.2.2.3**, the other side of that `PUT`: an attendee who
+ *   answers, or excludes an instance, sends the organizer the `REPLY`
+ *   §3.2.2.3 asks for ({@see self::tellTheOrganizerOf()}).
+ * - and **§4's processing** of what it delivers to an attendee: the message
+ *   becomes an event on a calendar of the recipient's own before it appears in
+ *   their Inbox.
  *
  * Both properties are withheld from `allprop`, both sections asking for that
  * in the same words.
@@ -112,16 +120,16 @@ use DavServices\Xml\Element;
  *
  * ## Five things this deliberately does not do
  *
- * **No `calendar-auto-schedule` token**, although §3.2.1.1 and §3.2.1.3 are
- * answered now. §2 puts the token on "any resource that supports any
- * scheduling operations, properties, privileges, or methods", and on those
- * words this plugin has earned it twice over. It is withheld all the same,
- * because of what the token is *read for*: a client that sees it stops sending
- * invitations itself and leaves that to the server. An invitation would arrive
- * and a cancellation would arrive, and every **change** in between would go
- * missing in silence — §3.2.1.2 is not here yet, and a meeting moved to another
- * day that nobody is told about is worse than one nobody was invited to. The
- * token goes in when all three operations are there.
+ * **No `calendar-auto-schedule` token**, although all three of the organizer's
+ * operations are answered now and the attendee's reply with them. §2 puts the
+ * token on "any resource that supports any scheduling operations, properties,
+ * privileges, or methods", and on those words this plugin has earned it several
+ * times over. It is withheld all the same, because of what the token is *read
+ * for*: a client that sees it stops doing the scheduling itself and leaves it
+ * to the server. The piece still missing is the one that closes the loop —
+ * §4.2, where an attendee's `REPLY` reaches the organizer's own copy. Until it
+ * is here the organizer's event never records who accepted, and a client that
+ * had stopped asking for itself would show a meeting nobody had answered.
  *
  * **The price of waiting is named too**: a client that keeps sending its own
  * invitations while this server also delivers makes two messages out of one.
@@ -129,13 +137,15 @@ use DavServices\Xml\Element;
  * on an attendee, and nothing is sent — and of the two ways to be wrong, an
  * invitation too many is the one a calendar user can see and tick off.
  *
- * **No automatic processing of what it delivers.** §4 asks for that in a MUST
- * of its own — "by creating or updating the corresponding scheduling object
- * resources on calendars owned by the owner of the scheduling Inbox
- * collection" — and that is §4.1 with §4.3's default calendar, a piece of work
- * in its own right. Until it is here a message waits in the Inbox, which is
- * what §4 has it there for ("an indicator to the client that a scheduling
- * operation has taken place"), and no copy appears in the attendee's calendar.
+ * **No processing of a `REPLY` once it arrives.** §4.2 asks for that in two
+ * MUSTs of its own — "update the 'PARTSTAT' iCalendar property parameter value
+ * of each 'ATTENDEE' iCalendar property in the scheduling object resource to
+ * match the changes indicated in the reply", and the `SCHEDULE-STATUS` that
+ * goes with it — and that is a piece of work in its own right, as §4.1 was for
+ * the other direction. Until it is here a reply waits in the organizer's
+ * Inbox, which is what §4 has it there for ("an indicator to the client that a
+ * scheduling operation has taken place"), and their own copy still says
+ * nobody has answered.
  *
  * **No `CALDAV:calendar-user-address-set`**, although §2.4.1 is this memo's
  * too. It is answered by {@see CalDav}, and it stays there: it is the map from
@@ -200,6 +210,8 @@ final class Scheduling
     private const HREF = '{DAV:}href';
 
     private const ATTENDEE = 'ATTENDEE';
+
+    private const ORGANIZER = 'ORGANIZER';
 
     /**
      * §3.2.4.3's precondition, "Use with: 403 Forbidden".
@@ -462,15 +474,31 @@ final class Scheduling
 
         [$where, $node] = $calendar;
         $addresses = $this->addressesOfTheOwnerOf($where, $node);
-        $original = $this->theOrganizersOwn($path, $addresses);
+        $original = $this->theOneAlreadyAt($path);
+        $was = $original === null ? null : SchedulingObject::in($original, $addresses);
         $becoming = SchedulingObject::in($object, $addresses);
 
         if ($becoming === SchedulingObject::Organizers) {
+            // Only where the original was the owner's to send: a resource that
+            // was an attendee's copy and is now an event of their own is this
+            // table's Create, with nothing to compare against.
+            $theirs = $was === SchedulingObject::Organizers ? $original : null;
+
             // Before anything is sent: a message delivered and then refused
             // would be about a resource that was never stored.
-            self::mustLeaveTheirAnswersAlone($original, $object, $addresses);
+            self::mustLeaveTheirAnswersAlone($theirs, $object, $addresses);
 
-            if ($this->tellTheAttendeesOf($original, $object, $addresses)) {
+            if ($this->tellTheAttendeesOf($theirs, $object, $addresses)) {
+                $event->writeInstead((new Serializer())->write($object));
+            }
+
+            return;
+        }
+
+        if ($becoming === SchedulingObject::Attendees) {
+            $theirs = $was === SchedulingObject::Attendees ? $original : null;
+
+            if ($this->tellTheOrganizerOf($theirs, $object, $addresses)) {
                 $event->writeInstead((new Serializer())->write($object));
             }
 
@@ -482,37 +510,35 @@ final class Scheduling
         // no longer organises leaves the attendees nothing either way. Nothing
         // is written back, §3.2.1.3 asking for no `SCHEDULE-STATUS` and what
         // the resource has become being nothing to carry one.
-        if ($becoming === null && $original !== null) {
+        //
+        // **An attendee's copy that stops being one is §3.2.2.4's Remove**,
+        // which turns on §8.1's `Schedule-Reply` request header and is not
+        // here yet. What it must not become is the sentence above it: an
+        // attendee editing their own copy does not cancel anybody's event.
+        if ($original !== null && $was === SchedulingObject::Organizers) {
             $this->cancelTheWholeOf(SchedulingMessage::cancelling($original), $original, $addresses);
         }
     }
 
     /**
-     * The resource at that path as it stands, where it is the owner's to send —
-     * and null where it is anybody else's, or no calendar object resource, or
-     * not there at all.
+     * The resource at that path as it stands, or null where there is none and
+     * where it is no calendar object resource.
      *
      * **Read while it is still there**, which is the whole reason this hangs
      * off a `Before…` event: {@see \DavServices\Dav\Method\Put} raises the event
      * and then writes, so this is the last moment the old content can be had.
      *
-     * Null for all three of those together, because §3.2.3.1's rows ask what
-     * the existing resource is and §3.2.1 only has an answer for one of them.
-     * An attendee's own copy is §3.2.2's, and a resource no server can read as
-     * a calendar object resource is neither of the two kinds the table names.
-     *
-     * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     * Which of §3.2.3.1's rows the write is, is decided by the caller, because
+     * the table asks two questions of it: what the existing resource is and
+     * what it is becoming. A resource no server can read as a calendar object
+     * resource is neither of the two kinds the table names, and that is what
+     * null says here.
      */
-    private function theOrganizersOwn(string $path, array $addresses): ?Component
+    private function theOneAlreadyAt(string $path): ?Component
     {
         $tree = $this->server->tree();
-        $original = $tree->exists($path) ? CalendarObject::of($tree->node($path)) : null;
 
-        if ($original === null) {
-            return null;
-        }
-
-        return SchedulingObject::in($original, $addresses) === SchedulingObject::Organizers ? $original : null;
+        return $tree->exists($path) ? CalendarObject::of($tree->node($path)) : null;
     }
 
     /**
@@ -666,6 +692,93 @@ final class Scheduling
         }
 
         return $stamped;
+    }
+
+    /**
+     * Sends the organizer what §3.2.2.3 asks for, and writes back what came of
+     * it.
+     *
+     * **One message and one recipient.** §3.2.2.3 asks for "an iTIP 'REPLY'
+     * scheduling message to the 'Organizer'" in both of its sentences, and
+     * §3.1's second sentence is what makes that one address: the `ORGANIZER`
+     * value "MUST be the same in every component". Every instance answered
+     * travels in the one message, RFC 5546 §3.2.3 having `VEVENT | 1+`.
+     *
+     * **Whether anything is sent at all is the organizer's parameter to
+     * decide.** The table §3.2.2.3 shares with §3.2.2.2 and §3.2.2.4 has
+     * `SERVER` — the default — "attempt to process the update", and `CLIENT`
+     * and `NONE` each do "no special processing of the resource". §7.1 adds
+     * the reading that lets one property answer for the resource: "The
+     * parameter value MUST be the same on every 'ORGANIZER' property in a
+     * scheduling object resource."
+     *
+     * **And the status goes on every one of them**, which is where §3.2.2.3
+     * puts it: "'SCHEDULE-STATUS' iCalendar property parameters are added or
+     * changed on 'ORGANIZER' iCalendar properties in the scheduling object
+     * resource being modified as described in Section 7.3". §7.3's MUST NOT is
+     * satisfied by there being nothing to write on where nothing was sent.
+     *
+     * **The owner is never the organizer here**, so §3.2.1's MUST NOT about
+     * sending a calendar user their own message needs no second guard:
+     * {@see SchedulingObject::in()} answers `Organizers` wherever every
+     * `ORGANIZER` is one of the owner's addresses, and this is the other case.
+     *
+     * @param Component|null $original The resource as it stands, where it is
+     *                                 the owner's own copy; null makes every
+     *                                 answer new, which is §3.2.2.2
+     * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     *
+     * @return bool Whether anything was written on the resource
+     */
+    private function tellTheOrganizerOf(?Component $original, Component $object, array $addresses): bool
+    {
+        $organizers = self::organizersOf($object);
+        $organizer = $organizers[0] ?? null;
+
+        if ($organizer === null || ScheduleAgent::on($organizer) !== ScheduleAgent::Server) {
+            return false;
+        }
+
+        $answered = Answer::whatTheOrganizerIsTold($original, $object, $addresses);
+
+        if ($answered === []) {
+            return false;
+        }
+
+        // Built before anything is written on the resource, because §7.3 keeps
+        // its parameter out of a message and the resource is about to carry
+        // one.
+        $reply = SchedulingMessage::replying($object, $answered);
+        $status = new Parameter(DeliveryStatus::NAME, [$this->deliver($reply, $organizer->value())->value]);
+
+        foreach ($organizers as $property) {
+            $property[DeliveryStatus::NAME] = $status;
+        }
+
+        return true;
+    }
+
+    /**
+     * Every `ORGANIZER` property the object's own components carry, in the
+     * order they appear.
+     *
+     * The components §3.1 asks about, which {@see Instances::of()} is: a
+     * `VTIMEZONE` may hold none of these (RFC 5545 §3.6.5), and what is inside
+     * a component is nobody's organizer.
+     *
+     * @return list<Property>
+     */
+    private static function organizersOf(Component $object): array
+    {
+        $found = [];
+
+        foreach (Instances::of($object) as $component) {
+            foreach ($component->properties(self::ORGANIZER) as $organizer) {
+                $found[] = $organizer;
+            }
+        }
+
+        return $found;
     }
 
     /**
