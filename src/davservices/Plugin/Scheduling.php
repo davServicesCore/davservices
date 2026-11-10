@@ -712,9 +712,19 @@ final class Scheduling
         Principal $node,
         string $inbox,
     ): ?DeliveryStatus {
+        $kept = $message->whatTheRecipientKeeps();
+
+        // **One message leaves their calendar alone**, and §4 is why: the two
+        // things it names are "creating or updating the corresponding
+        // scheduling object resources", and an uninvitation
+        // ({@see SchedulingMessage::uninviting()}) asks for neither. The notice
+        // in the Inbox is the whole of it, which is what §4 puts one there for.
+        if ($kept === null) {
+            return null;
+        }
+
         $calendars = $this->collectionsOf(Calendar::CALENDAR, $principal, $node);
         $uid = $message->uid();
-        $kept = $message->whatTheRecipientKeeps();
 
         // Whatever the recipient's store refuses — a listing, a read, a write
         // — is one answer: §3.2.9's `5.1`, "the server could not complete
