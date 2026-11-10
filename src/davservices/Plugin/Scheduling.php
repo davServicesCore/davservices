@@ -23,6 +23,7 @@ use DavServices\CalDav\Schedule\Outbox;
 use DavServices\CalDav\Schedule\ScheduleAgent;
 use DavServices\CalDav\Schedule\SchedulingMessage;
 use DavServices\CalDav\Schedule\SchedulingObject;
+use DavServices\Dav\Event\AfterUnbind;
 use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\PropertiesRequested;
@@ -64,9 +65,14 @@ use DavServices\Xml\Element;
  *   `DAV:href` to the collection of that name.
  * - §2's "clients have no way to create or delete them", which is a `DELETE`
  *   refused.
- * - and **§3.2.1.1's Create**: an organizer's new event reaches the Inbox of
+ * - **§3.2.1.1's Create**: an organizer's new event reaches the Inbox of
  *   everybody on the attendee list, and the stored resource says what came of
  *   each delivery ({@see self::deliverOnCreate()}).
+ * - **§3.2.1.3's Remove**: and their removal of it sends the cancellation
+ *   ({@see self::readWhatIsGoing()}), which §3.2.3.2 asks for of a `DELETE` of
+ *   the resource and of a `DELETE` of the whole calendar collection alike.
+ * - and **§4's processing** of what it delivers: the message becomes an event
+ *   on a calendar of the recipient's own before it appears in their Inbox.
  *
  * Both properties are withheld from `allprop`, both sections asking for that
  * in the same words.
@@ -104,16 +110,16 @@ use DavServices\Xml\Element;
  *
  * ## Five things this deliberately does not do
  *
- * **No `calendar-auto-schedule` token**, although §3.2.1.1 is answered now.
- * §2 puts the token on "any resource that supports any scheduling operations,
- * properties, privileges, or methods", and on those words this plugin has
- * earned it. It is withheld all the same, because of what the token is *read
- * for*: a client that sees it stops sending invitations itself and leaves that
- * to the server. With Create alone that would mean the invitation arriving and
- * every later **change** and every **cancellation** going missing in silence —
- * §3.2.1.2 and §3.2.1.3 are not here yet. What goes missing would be somebody's
- * meeting rather than a feature. The token goes in when all three operations
- * are.
+ * **No `calendar-auto-schedule` token**, although §3.2.1.1 and §3.2.1.3 are
+ * answered now. §2 puts the token on "any resource that supports any
+ * scheduling operations, properties, privileges, or methods", and on those
+ * words this plugin has earned it twice over. It is withheld all the same,
+ * because of what the token is *read for*: a client that sees it stops sending
+ * invitations itself and leaves that to the server. An invitation would arrive
+ * and a cancellation would arrive, and every **change** in between would go
+ * missing in silence — §3.2.1.2 is not here yet, and a meeting moved to another
+ * day that nobody is told about is worse than one nobody was invited to. The
+ * token goes in when all three operations are there.
  *
  * **The price of waiting is named too**: a client that keeps sending its own
  * invitations while this server also delivers makes two messages out of one.
@@ -209,6 +215,18 @@ final class Scheduling
         '{urn:ietf:params:xml:ns:caldav}allowed-organizer-scheduling-object-change';
 
     /**
+     * What a removal is to tell whom, between the two events that make one.
+     *
+     * Keyed by path, because a `DELETE` of a calendar collection takes its
+     * members apart one at a time and several removals can be in flight at
+     * once. An entry whose removal was refused is never collected, and goes
+     * when the request does.
+     *
+     * @var array<string, array{SchedulingMessage, Component, list<string>}>
+     */
+    private array $goingWith = [];
+
+    /**
      * @param ICalendarUserBackend|null $calendarUsers Who is reachable at
      *                                                 which calendar user
      *                                                 address (§2.4.1). With
@@ -234,6 +252,11 @@ final class Scheduling
      * `After…` listener would have to store the resource twice and would leave
      * a moment where it says nothing about a message already sent.
      *
+     * **Two listeners for one removal**, because §3.2.1.3 needs the resource
+     * read while it is still there and the cancellation sent only once it is
+     * gone. {@see self::readWhatIsGoing()} says why that order is the only
+     * safe one.
+     *
      * **No method and no report.** §2.3 extends two reports and §5 adds a
      * `POST` to the Outbox; both are still to come, and both are about reading
      * an Inbox or asking an Outbox for free time rather than about delivering.
@@ -253,7 +276,93 @@ final class Scheduling
 
         $events->on(PropertiesRequested::class, $this->describe(...));
         $events->on(BeforeUnbind::class, $this->guardTheCollections(...));
+        $events->on(BeforeUnbind::class, $this->readWhatIsGoing(...));
+        $events->on(AfterUnbind::class, $this->cancelOnRemove(...));
         $events->on(BeforeCreateFile::class, $this->deliverOnCreate(...));
+    }
+
+    /**
+     * §3.2.1.3: what the removal of this resource will have to tell whom.
+     *
+     * **Read here and sent after**, which is the one safe order and the reason
+     * this operation takes two listeners where the other took one. The
+     * resource can only be read while it is still there, and the cancellation
+     * may only go out once it really is gone: a store that refused the
+     * deletion would otherwise have left every attendee told that an event
+     * they can still see is off, and no second message would ever put that
+     * right. §3.2.1.3 orders the two nowhere, so the order is free to be the
+     * careful one.
+     *
+     * Nothing is refused here. The guard that does refuse a deletion is
+     * {@see self::guardTheCollections()}, registered before this.
+     */
+    private function readWhatIsGoing(BeforeUnbind $event): void
+    {
+        $path = $event->path();
+        $calendar = $this->calendarOver($path);
+
+        if ($calendar === null) {
+            return;
+        }
+
+        $node = $this->server->tree()->node($path);
+
+        // A collection going away takes its members with it, and each of them
+        // arrives here as its own removal — which is §3.2.3.2's second
+        // sentence, about a `DELETE` of a whole calendar collection.
+        if (!$node instanceof IFile) {
+            return;
+        }
+
+        $object = CalendarObject::in($node->get());
+
+        if ($object === null) {
+            return;
+        }
+
+        [$where, $collection] = $calendar;
+        $addresses = $this->addressesOfTheOwnerOf($where, $collection);
+
+        if (SchedulingObject::in($object, $addresses) !== SchedulingObject::Organizers) {
+            return;
+        }
+
+        $this->goingWith[$path] = [SchedulingMessage::cancelling($object), $object, $addresses];
+    }
+
+    /**
+     * §3.2.1.3: and now that it is gone, the attendees are told.
+     *
+     * The table is §3.2.1.1's with one word changed — `SERVER` sends a
+     * `CANCEL` where it sent a `REQUEST`, `CLIENT` and `NONE` send nothing —
+     * and §3.2.1's MUST NOT about the organizer's own `ATTENDEE` property
+     * holds here too.
+     *
+     * **Nothing is written back**, which is the one way this differs from the
+     * other two operations: §3.2.1.1 and §3.2.1.2 have the server record what
+     * came of each delivery in the resource, and §3.2.1.3 asks for no such
+     * thing — there is no resource left to record it in. What {@see
+     * self::deliver()} answers is read and let go.
+     */
+    private function cancelOnRemove(AfterUnbind $event): void
+    {
+        $going = $this->goingWith[$event->path()] ?? null;
+
+        if ($going === null) {
+            return;
+        }
+
+        unset($this->goingWith[$event->path()]);
+
+        [$message, $object, $addresses] = $going;
+
+        foreach (self::attendeesOf($object) as [$address, $agent, ]) {
+            if (in_array($address, $addresses, true) || $agent !== ScheduleAgent::Server) {
+                continue;
+            }
+
+            $this->deliver($message, $address);
+        }
     }
 
     /**
