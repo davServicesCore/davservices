@@ -386,6 +386,26 @@ final class SchedulingModifyTest extends TestCase
     }
 
     /**
+     * **And an attendee off a resource that was not the owner's is not
+     * uninvited by them.** Bernard turns a copy Cyrus organised into one of his
+     * own and leaves Eric off it. Nothing was ever Bernard's to cancel: the
+     * original is no original of §3.2.1.2's, so the write is the `<Absent>` row
+     * — and a cancellation from somebody who never invited him would be the
+     * first Eric ever heard of either of them.
+     */
+    public function testAnAttendeeOffAResourceThatWasNotTheOwnersIsNotUninvited(): void
+    {
+        $this->given($this->anEvent(
+            'ORGANIZER:mailto:cyrus@example.com',
+            'ATTENDEE:mailto:bernard@example.com',
+            self::ERIC,
+        ));
+        $this->put($this->anEvent(self::ORGANISED, 'ATTENDEE:mailto:bernard@example.com'));
+
+        self::assertSame([], $this->namesIn('calendars/eric/inbox'));
+    }
+
+    /**
      * **An attendee the client schedules for is left to the client** here too,
      * both `CLIENT` cells of the table reading `--`.
      */

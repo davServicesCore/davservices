@@ -240,6 +240,32 @@ final class ModificationTest extends TestCase
     }
 
     /**
+     * **And where both sides name it, the name is the original's**, because
+     * the component the cancellation is built from is the original's. A `RANGE`
+     * parameter comes with it for that reason: RFC 5545 §3.8.4.4 lets one say
+     * "this and all after", so it is the scope of the component being
+     * cancelled, and the scope of the cancellation is the same.
+     */
+    public function testTheInstanceIsNamedAsTheComponentBeingCancelledNamesIt(): void
+    {
+        $told = $this->theOneTold(
+            $this->anObject($this->anEvent(''), $this->anInstanceNamed(
+                'RECURRENCE-ID;RANGE=THISANDFUTURE:' . self::INSTANCE,
+                self::SERVER,
+            )),
+            $this->anObject($this->anEvent(''), $this->anInstanceNamed(
+                'RECURRENCE-ID:' . self::INSTANCE,
+                '',
+            )),
+        );
+
+        $named = $told[2][0][1] ?? self::fail('Nothing cancelled.');
+
+        self::assertInstanceOf(Property::class, $named);
+        self::assertSame('THISANDFUTURE', $named->parameter('RANGE')?->value());
+    }
+
+    /**
      * **An override the modification drops leaves the master speaking for the
      * instance.**
      *
@@ -411,6 +437,27 @@ final class ModificationTest extends TestCase
         );
 
         self::assertSame([], $told[3]);
+    }
+
+    /**
+     * **The master is the component without a `RECURRENCE-ID`, wherever it
+     * stands.** RFC 5545 §3.5 — "This memo imposes no ordering of properties
+     * within an iCalendar object" — and §3.6 names no order for the components
+     * either, so a client may write an overridden instance in front of the
+     * series it belongs to.
+     *
+     * A server that took the first component for the master would then read
+     * one instance's attendee list as the whole event's.
+     */
+    public function testTheMasterIsFoundBehindAnInstanceThatComesFirst(): void
+    {
+        $told = $this->theOneTold(
+            $this->anObject($this->anInstance(self::SERVER), $this->anEvent(self::SERVER)),
+            $this->anObject($this->anInstance(self::SERVER), $this->anEvent('')),
+        );
+
+        self::assertTrue($told[1]);
+        self::assertSame([], $told[2]);
     }
 
     /**
@@ -815,8 +862,17 @@ final class ModificationTest extends TestCase
      */
     private function anInstance(string $properties, string $id = self::INSTANCE): string
     {
+        return $this->anInstanceNamed('RECURRENCE-ID:' . $id, $properties);
+    }
+
+    /**
+     * The same, with the `RECURRENCE-ID` written out for the cases where the
+     * way the instance is named is the case.
+     */
+    private function anInstanceNamed(string $id, string $properties): string
+    {
         return "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
-            . 'RECURRENCE-ID:' . $id . "\r\nORGANIZER:mailto:bernard@example.com\r\n"
+            . $id . "\r\nORGANIZER:mailto:bernard@example.com\r\n"
             . ($properties === '' ? '' : $properties . "\r\n")
             . "END:VEVENT\r\n";
     }

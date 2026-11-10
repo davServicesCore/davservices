@@ -296,8 +296,12 @@ final class Modification
      * side that does not name it — the fallback that makes this a comparison of
      * instances rather than of components.
      *
-     * The name is taken from the modification where both sides have one, since
-     * that is the spelling the resource is about to carry.
+     * **The name is the one on the component the cancellation will be built
+     * from**, which is the original's: its own `RECURRENCE-ID` where it
+     * overrode the instance, and the modification's where the master governed
+     * it and so carries none. A `RANGE` parameter travels with it for that
+     * reason — RFC 5545 §3.8.4.4 lets one say "this and all after", and the
+     * scope of the component being cancelled is the scope of the cancellation.
      *
      * @return list<array{?Component, ?Component, ?Property}>
      */
@@ -310,10 +314,12 @@ final class Modification
         $instances = [[$masterBefore, $masterAfter, null]];
         $named = [];
 
-        foreach ([$before, $after] as $side) {
-            foreach ($side as $key => [, $property]) {
-                $named[$key] = $property;
-            }
+        foreach ($before as $key => [, $property]) {
+            $named[$key] = $property;
+        }
+
+        foreach ($after as $key => [, $property]) {
+            $named[$key] ??= $property;
         }
 
         foreach ($named as $key => $property) {
