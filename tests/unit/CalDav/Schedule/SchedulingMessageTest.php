@@ -16,6 +16,8 @@ namespace DavServices\Tests\Unit\CalDav\Schedule;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Schedule\SchedulingMessage;
 use DavServices\VObject\Component;
+use DavServices\VObject\Parameter;
+use DavServices\VObject\Property;
 use DavServices\VObject\Serializer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -812,6 +814,265 @@ final class SchedulingMessageTest extends TestCase
         yield 'a summary the first had not' => [
             self::INVITATION . "\r\nSUMMARY:Lunch",
         ];
+    }
+
+    /**
+     * **The whole reply, as RFC 5546 §3.2.3 asks for it**, which is the shape
+     * §4.2.2's example has: the one attendee replying with their answer, the
+     * organizer it goes to, the `UID` of the request it answers, the sequence
+     * number of that request, and the time stamp.
+     *
+     * Written out because what is *not* in it is the case: every other
+     * property of the event stays behind. §3.2.3 says why in a sentence —
+     * "The optional properties listed in the table below (those listed as
+     * '0+' or '0 or 1') MUST NOT be changed from those of the original
+     * request" — and a message that carries none of them cannot have changed
+     * one.
+     */
+    public function testTheReplyIsTheOneAnswerAndWhatNamesTheEvent(): void
+    {
+        $object = $this->objectWith(self::PLAIN_INVITATION . "\r\nSEQUENCE:4\r\nSUMMARY:Lunch");
+
+        self::assertSame(
+            "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\n"
+            . "ORGANIZER:mailto:bernard@example.com\r\nSEQUENCE:4\r\n"
+            . "ATTENDEE;PARTSTAT=ACCEPTED:mailto:cyrus@example.com\r\n"
+            . "END:VEVENT\r\nEND:VCALENDAR\r\n",
+            $this->replyAbout($object, null, 'ACCEPTED')->text(),
+        );
+    }
+
+    /**
+     * **One `ATTENDEE` and that is the one replying**, which §3.2.3's
+     * constraints make the only possibility: `ATTENDEE | 1 | MUST be the
+     * address of the Attendee replying.` Who else is coming is the
+     * organizer's own list, and a reply that sent it back would be answering
+     * for them.
+     */
+    public function testTheReplyCarriesNobodyButTheOneReplying(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION . "\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:eric@example.com",
+        );
+
+        $text = $this->replyAbout($object, null, 'DECLINED')->text();
+
+        self::assertStringContainsString("ATTENDEE;PARTSTAT=DECLINED:mailto:cyrus@example.com\r\n", $text);
+        self::assertStringNotContainsString('eric@example.com', $text);
+    }
+
+    /**
+     * **A reply about the series is named by nothing**, §3.2.3 putting the
+     * condition on the property itself: `RECURRENCE-ID | 0 or 1 | Only if
+     * referring to an instance of a recurring calendar component. Otherwise,
+     * it MUST NOT be present.`
+     */
+    public function testAReplyAboutTheSeriesNamesNoInstance(): void
+    {
+        $text = $this->replyAbout($this->aSeries(), null, 'ACCEPTED')->text();
+
+        self::assertStringNotContainsString('RECURRENCE-ID', $text);
+    }
+
+    /**
+     * **And one about an instance names it**, which is the other half of the
+     * same row.
+     */
+    public function testAReplyAboutAnInstanceNamesIt(): void
+    {
+        $text = $this->replyAbout($this->aSeries(), '20261102T100000Z', 'DECLINED')->text();
+
+        self::assertStringContainsString("RECURRENCE-ID:20261102T100000Z\r\n", $text);
+    }
+
+    /**
+     * **The revision is the one it answers, not the next one.** §3.2.3:
+     * `SEQUENCE | 0 or 1 | If non-zero, MUST be the sequence number of the
+     * original REQUEST.` Which is the opposite of what a `CANCEL` does —
+     * §2.1.4 has the organizer increment it "each time […] the 'ADD' or
+     * 'CANCEL' methods" — and for the same reason: an answer is about the
+     * revision it answers, and a revision of the event is the organizer's to
+     * make.
+     */
+    public function testTheReplyCarriesTheRevisionItAnswers(): void
+    {
+        $text = $this->replyAbout($this->aSeries(), '20261102T100000Z', 'ACCEPTED')->text();
+
+        self::assertStringContainsString("SEQUENCE:4\r\n", $text);
+    }
+
+    /**
+     * **And where there is none it carries none**, §3.2.3's row ending "MAY be
+     * present if 0". RFC 5545 §3.8.7.4 has the count start at nought — "When a
+     * calendar component is created, its sequence number is 0" — so a `0` the
+     * server wrote itself would say what the absence says, and a number it
+     * made up would be worse than either.
+     */
+    public function testAReplyToARequestWithoutARevisionCarriesNone(): void
+    {
+        $text = $this->replyAbout($this->objectWith(self::PLAIN_INVITATION), null, 'ACCEPTED')->text();
+
+        self::assertStringNotContainsString('SEQUENCE', $text);
+    }
+
+    /**
+     * **No alarm travels**, `VALARM | 0` in §3.2.3's constraints as in
+     * §3.2.5's: a reminder on the attendee's own copy is theirs, and an
+     * answer is no occasion to send anybody one.
+     */
+    public function testTheReplyCarriesNoAlarm(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION
+            . "
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER:-PT15M
+DESCRIPTION:Lunch
+END:VALARM",
+        );
+
+        self::assertStringNotContainsString('VALARM', $this->replyAbout($object, null, 'ACCEPTED')->text());
+    }
+
+    /**
+     * **The reply carries no `REQUEST-STATUS`**, which §3.2.3 allows at `0+`
+     * and §4.2.2's example says is not wanted: "'REQUEST-STATUS' is not
+     * required in successful transactions."
+     *
+     * It is not left out to save a line. §4.2 reads the property as what the
+     * organizer's copy is to record — "set its value to that of the
+     * 'REQUEST-STATUS' property in the reply, or to '2.0' if 'REQUEST-STATUS'
+     * is not present" — so its absence is the server saying the delivery went
+     * through, and a status copied off the attendee's resource would be an
+     * answer to some older message of the organizer's.
+     */
+    public function testTheReplyCarriesNoRequestStatus(): void
+    {
+        $object = $this->objectWith(self::PLAIN_INVITATION . "\r\nREQUEST-STATUS:3.7;Invalid calendar user");
+
+        self::assertStringNotContainsString('REQUEST-STATUS', $this->replyAbout($object, null, 'ACCEPTED')->text());
+    }
+
+    /**
+     * **The organizer keeps nothing of a reply**, which is what sets it apart
+     * from the two messages an organizer sends. §4.2 says what the processing
+     * does with one, and it is neither of §4's "creating or updating the
+     * corresponding scheduling object resources": it is an update of two
+     * parameters on a resource that is already there — "update the 'PARTSTAT'
+     * iCalendar property parameter value of each 'ATTENDEE' iCalendar property
+     * […] to match the changes indicated in the reply".
+     */
+    public function testTheOrganizerKeepsNothingOfAReply(): void
+    {
+        $reply = $this->replyAbout($this->objectWith(self::PLAIN_INVITATION), null, 'ACCEPTED');
+
+        self::assertNull($reply->whatTheRecipientKeeps());
+    }
+
+    /**
+     * **The zone an instance is named in travels with it.** §3.2.3:
+     * `VTIMEZONE | 0 or 1 | MUST be present if any date/time refers to a
+     * timezone`, and RFC 5545 §3.8.4.4 makes a `RECURRENCE-ID` mean one
+     * moment only together with its `TZID`.
+     */
+    public function testTheZoneAnInstanceIsNamedInTravels(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION . "\r\nRRULE:FREQ=DAILY;COUNT=3\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID;TZID=Europe/Berlin:20261102T100000\r\n" . self::PLAIN_INVITATION,
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nEND:VTIMEZONE\r\n"
+            . "BEGIN:VTIMEZONE\r\nTZID:America/New_York\r\nEND:VTIMEZONE\r\n",
+        );
+
+        $text = $this->replyAbout($object, '20261102T100000', 'DECLINED')->text();
+
+        self::assertStringContainsString("TZID:Europe/Berlin\r\n", $text);
+        self::assertStringNotContainsString('America/New_York', $text);
+    }
+
+    /**
+     * **And a reply that names no moment in a zone carries none.** The only
+     * other time in the message is its `DTSTAMP`, which RFC 5545 §3.8.7.2
+     * makes a UTC value: "The value MUST be specified in the UTC time format."
+     * A zone sent with nothing referring to it would be the one thing §3.2.3
+     * counts: `VTIMEZONE | 0 or 1`.
+     */
+    public function testAReplyThatNamesNoMomentInAZoneCarriesNoZone(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION,
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nEND:VTIMEZONE\r\n",
+        );
+
+        self::assertStringNotContainsString('VTIMEZONE', $this->replyAbout($object, null, 'ACCEPTED')->text());
+    }
+
+    /**
+     * **Two instances answered are two components of one message**, §3.2.3
+     * having `VEVENT | 1+ | All components MUST have the same UID.`
+     */
+    public function testTwoInstancesAnsweredAreTwoComponentsOfOneReply(): void
+    {
+        $object = $this->aSeries();
+        $instances = [];
+
+        foreach (['20261102T100000Z', '20261103T100000Z'] as $id) {
+            $component = $this->theComponentNamed($object, $id);
+            $instances[] = [
+                $component,
+                $component->property('RECURRENCE-ID'),
+                new Property('ATTENDEE', 'mailto:cyrus@example.com', [new Parameter('PARTSTAT', ['DECLINED'])]),
+            ];
+        }
+
+        $text = SchedulingMessage::replying($object, $instances)->text();
+
+        self::assertSame(2, substr_count($text, "BEGIN:VEVENT\r\n"));
+        self::assertStringContainsString("RECURRENCE-ID:20261102T100000Z\r\n", $text);
+        self::assertStringContainsString("RECURRENCE-ID:20261103T100000Z\r\n", $text);
+    }
+
+    /**
+     * **And the two parameters the server keeps to itself do not travel in a
+     * reply either**, §7.1 and §7.3 saying it of "any scheduling messages sent
+     * as the result of a scheduling operation" without naming a direction.
+     */
+    public function testTheReplyCarriesNeitherOfTheServersOwnParameters(): void
+    {
+        $object = $this->objectWith(
+            "ORGANIZER;SCHEDULE-STATUS=2.0:mailto:bernard@example.com\r\n"
+            . 'ATTENDEE;SCHEDULE-AGENT=SERVER:mailto:cyrus@example.com',
+        );
+
+        $text = $this->replyAbout($object, null, 'ACCEPTED')->text();
+
+        self::assertStringNotContainsString('SCHEDULE-STATUS', $text);
+        self::assertStringNotContainsString('SCHEDULE-AGENT', $text);
+    }
+
+    /**
+     * The reply this object sends about that instance, with that answer.
+     *
+     * The record is {@see \DavServices\CalDav\Schedule\Answer}'s: the
+     * component the message is built from, the property naming the instance,
+     * and the one `ATTENDEE` property that travels.
+     */
+    private function replyAbout(Component $object, ?string $id, string $answer): SchedulingMessage
+    {
+        $component = $this->theComponentNamed($object, $id);
+        $attendee = new Property(
+            'ATTENDEE',
+            'mailto:cyrus@example.com',
+            [new Parameter('PARTSTAT', [$answer])],
+        );
+
+        return SchedulingMessage::replying(
+            $object,
+            [[$component, $component->property('RECURRENCE-ID'), $attendee]],
+        );
     }
 
     /**
