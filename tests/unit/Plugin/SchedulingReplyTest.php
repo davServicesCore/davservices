@@ -355,6 +355,56 @@ final class SchedulingReplyTest extends TestCase
     }
 
     /**
+     * **A resource nothing was sent about is stored exactly as it arrived.**
+     * §3.2.2.3 says what a delivery does to it — "This will result in the
+     * updated calendar object resource differing from the calendar data sent
+     * in the HTTP request" — and §7.3's MUST NOT is the other side of that
+     * sentence: where nothing was delivered there is nothing to differ by.
+     *
+     * The body carries a line longer than RFC 5545 §3.1's "75 octets" wants,
+     * written out in one piece, because that is what makes the difference
+     * visible: the serialiser folds it, so a resource written back at all
+     * comes back changed whether anything was stamped on it or not.
+     *
+     * @param string $organizer The `ORGANIZER` line, which decides whether the
+     *                          server is acting at all
+     * @param string $answer Cyrus's answer, unchanged from the original where
+     *                       the case is about there being nothing to say
+     */
+    #[DataProvider('theWritesThatSendNothing')]
+    public function testAResourceNothingWasSentAboutIsStoredAsItArrived(
+        string $organizer,
+        string $answer,
+    ): void {
+        $original = $this->anEvent($organizer, $this->answering('ACCEPTED'));
+        $body = $this->anEvent(
+            $organizer,
+            $this->answering($answer),
+            'SUMMARY:Lunch with Bernard, Cyrus, Eric and whoever else can make it on the day',
+        );
+
+        $this->given($original);
+
+        self::assertSame(204, $this->put($body));
+        self::assertSame($body, $this->theStoredObject(self::EVENT));
+    }
+
+    /**
+     * The two reasons nothing goes: nothing to say, and nobody asking the
+     * server to say it.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function theWritesThatSendNothing(): iterable
+    {
+        yield 'the answer is the one that was there' => [self::ORGANISED, 'ACCEPTED'];
+        yield 'the client is doing the scheduling' => [
+            'ORGANIZER;SCHEDULE-AGENT=CLIENT:mailto:bernard@example.com',
+            'DECLINED',
+        ];
+    }
+
+    /**
      * **An organizer this server knows nothing about is reported rather than
      * refused.** §3.2.9's `3.7` is the code for it — "invalid calendar user" —
      * and §3.2.2.3 has the parameter say what came of the attempt, whatever

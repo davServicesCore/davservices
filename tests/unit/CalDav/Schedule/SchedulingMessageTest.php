@@ -1011,6 +1011,33 @@ END:VALARM",
     }
 
     /**
+     * **A zone with no name is no zone the message can be about.** RFC 5545
+     * §3.6.5 makes `TZID` REQUIRED in a `VTIMEZONE` — "'tzid' is REQUIRED, but
+     * MUST NOT occur more than once" — so a component without one was never
+     * valid; `CALDAV:valid-calendar-data` is what refuses it, and that happens
+     * in another plugin on the same request.
+     *
+     * Which is why it is asked rather than assumed here: a message built while
+     * such a component is still in the tree may not take the server down, and
+     * the zone the instance really names still has to travel.
+     */
+    public function testAZoneWithNoNameIsPassedOver(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION . "\r\nRRULE:FREQ=DAILY;COUNT=3\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID;TZID=Europe/Berlin:20261102T100000\r\n" . self::PLAIN_INVITATION,
+            "BEGIN:VTIMEZONE\r\nEND:VTIMEZONE\r\n"
+            . "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nEND:VTIMEZONE\r\n",
+        );
+
+        $text = $this->replyAbout($object, '20261102T100000', 'DECLINED')->text();
+
+        self::assertSame(1, substr_count($text, "BEGIN:VTIMEZONE\r\n"));
+        self::assertStringContainsString("TZID:Europe/Berlin\r\n", $text);
+    }
+
+    /**
      * **Two instances answered are two components of one message**, §3.2.3
      * having `VEVENT | 1+ | All components MUST have the same UID.`
      */

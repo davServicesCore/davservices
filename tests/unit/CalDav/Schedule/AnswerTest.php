@@ -511,6 +511,70 @@ final class AnswerTest extends TestCase
     }
 
     /**
+     * **An instance behind one this calendar user is not on is still read.**
+     * §3.2.2.3 asks about a `PARTSTAT` changed "on any component", so a
+     * component that says nothing about them is passed over and the next one
+     * is answered all the same — a resource can invite somebody to one
+     * instance of a series and to no other.
+     */
+    public function testAnInstanceBehindOneWithoutThemIsStillRead(): void
+    {
+        $told = $this->whatTheOrganizerIsTold(
+            $this->anObject(
+                $this->anEvent('ATTENDEE:mailto:eric@example.com'),
+                $this->anInstance('ATTENDEE;PARTSTAT=NEEDS-ACTION:' . self::CYRUS),
+            ),
+            $this->anObject(
+                $this->anEvent('ATTENDEE:mailto:eric@example.com'),
+                $this->anInstance('ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS),
+            ),
+        );
+
+        self::assertSame([self::INSTANCE => 'ACCEPTED'], $told);
+    }
+
+    /**
+     * **And an exclusion behind such a component is still read.** The same
+     * rule for the other sentence, and the `EXDATE` is where it belongs — on
+     * the master — with an overridden instance this calendar user is not on
+     * written before it, RFC 5545 §3.6 imposing no order on the components of
+     * an object.
+     */
+    public function testAnExclusionBehindAComponentWithoutThemIsStillRead(): void
+    {
+        $told = $this->whatTheOrganizerIsTold(
+            $this->anObject(
+                $this->anInstance('ATTENDEE:mailto:eric@example.com', '20261103T100000Z'),
+                $this->anEvent('ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS),
+            ),
+            $this->anObject(
+                $this->anInstance('ATTENDEE:mailto:eric@example.com', '20261103T100000Z'),
+                $this->anEvent(
+                    'ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS . "\r\nEXDATE:" . self::INSTANCE,
+                ),
+            ),
+        );
+
+        self::assertSame([self::INSTANCE => 'DECLINED'], $told);
+    }
+
+    /**
+     * **Every instance the original left out was left out, not just the first
+     * of them.** The set the comparison is made against is the whole of the
+     * original's, and a resource written back as it stood declines nothing
+     * however many instances it excludes.
+     */
+    public function testInstancesTheOriginalAlreadyLeftOutDeclineNothing(): void
+    {
+        $object = $this->anObject($this->anEvent(
+            'ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS
+            . "\r\nEXDATE:" . self::INSTANCE . ',20261103T100000Z',
+        ));
+
+        self::assertSame([], $this->whatTheOrganizerIsTold($object, $object));
+    }
+
+    /**
      * **Any of the owner's own addresses is theirs.** §2.4.1 makes
      * `CALDAV:calendar-user-address-set` a set of them — "the URI(s) …
      * associated with the calendar user" — so which one the organizer wrote

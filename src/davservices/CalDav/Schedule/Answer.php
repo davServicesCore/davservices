@@ -216,7 +216,11 @@ final class Answer
     /**
      * Every instance the object leaves out, by the value that names it.
      *
-     * @return array<string, true>
+     * Each value stands as its own key and as its own entry, which is what
+     * makes this a set: there is nothing in it to read but the names, and
+     * `isset()` on the key is the whole question asked of it.
+     *
+     * @return array<string, string>
      */
     private static function exclusionsIn(?Component $object): array
     {
@@ -225,7 +229,7 @@ final class Answer
         foreach (Instances::of($object) as $component) {
             foreach ($component->properties(self::EXDATE) as $property) {
                 foreach (self::valuesOf($property) as $value) {
-                    $exclusions[$value] = true;
+                    $exclusions[$value] = $value;
                 }
             }
         }

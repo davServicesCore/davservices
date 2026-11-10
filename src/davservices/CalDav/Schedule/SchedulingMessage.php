@@ -428,9 +428,12 @@ final class SchedulingMessage
     /**
      * The zones the instances of a reply refer to, each once.
      *
+     * Keyed by the name, which nothing reads: it travels as the value, and the
+     * key is only what makes two instances in one zone one zone.
+     *
      * @param list<array{Component, ?Property, Property}> $instances
      *
-     * @return list<string>
+     * @return array<array-key, string>
      */
     private static function theZonesNamedIn(array $instances): array
     {
@@ -444,7 +447,7 @@ final class SchedulingMessage
             }
         }
 
-        return array_values($named);
+        return $named;
     }
 
     /**
