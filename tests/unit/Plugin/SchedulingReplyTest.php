@@ -156,6 +156,54 @@ final class SchedulingReplyTest extends TestCase
     }
 
     /**
+     * **Every `ORGANIZER` property is stamped and not just the first.**
+     * §3.2.2.3 asks for the parameter "on 'ORGANIZER' iCalendar properties" in
+     * the plural, and a recurring event with an overridden instance carries
+     * one in each component — RFC 5546 §3.2.3's `ORGANIZER | 1` is per
+     * component too.
+     */
+    public function testEveryOrganizerPropertyIsStamped(): void
+    {
+        $this->given($this->aSeriesAndAnInstance($this->answering('NEEDS-ACTION')));
+
+        $this->put($this->aSeriesAndAnInstance($this->answering('ACCEPTED')));
+
+        self::assertSame(
+            2,
+            substr_count($this->theStoredObject(self::EVENT), 'ORGANIZER;SCHEDULE-STATUS=1.2:'),
+        );
+    }
+
+    /**
+     * **A resource that stops being the owner's own event is compared against
+     * nothing.** §3.2.3.1 calls this a Modify and RFC 5546 §3.2.2.4 calls it
+     * "Changing the Organizer", which is a piece of work of its own; what has
+     * to be decided here is which original §3.2.2.3's comparison reads.
+     *
+     * The answer is none. The comparison is between what this calendar user
+     * said about an instance before and what they say now, and an answer on a
+     * resource they organised themselves is not an answer to anybody's
+     * invitation — §3.2.1 lets an organizer be an attendee of their own event.
+     * So the copy they now have as an attendee is new, which is §3.2.2.2, and
+     * what they say in it is theirs to say.
+     *
+     * The other reading is what makes this worth a case: an old answer of
+     * their own, read as an answer they had already given, would keep the new
+     * organizer from ever hearing it.
+     */
+    public function testAResourceThatStopsBeingTheOwnersOwnEventIsComparedAgainstNothing(): void
+    {
+        $this->given($this->anEvent(
+            'ORGANIZER:mailto:cyrus@example.com',
+            $this->answering('ACCEPTED'),
+        ));
+
+        self::assertSame(204, $this->put($this->anEvent(self::ORGANISED, $this->answering('ACCEPTED'))));
+
+        self::assertStringContainsString("METHOD:REPLY\r\n", $this->theOneResourceIn('calendars/bernard/inbox'));
+    }
+
+    /**
      * **An answer unchanged sends nothing and writes nothing.** A client that
      * reads the resource, sets an alarm of its own and writes it back has
      * changed no `PARTSTAT` — §3.2.2.1 allows that change expressly — and
@@ -429,6 +477,23 @@ final class SchedulingReplyTest extends TestCase
             . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\n"
             . "SEQUENCE:2\r\nRRULE:FREQ=DAILY;COUNT=3\r\n"
             . self::lines([self::ORGANISED, ...$properties])
+            . "END:VEVENT\r\nEND:VCALENDAR\r\n";
+    }
+
+    /**
+     * A recurring event and one overridden instance, each organised by Bernard
+     * and each carrying that property.
+     */
+    private function aSeriesAndAnInstance(string $attendee): string
+    {
+        return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\n"
+            . "SEQUENCE:2\r\nRRULE:FREQ=DAILY;COUNT=3\r\n"
+            . self::lines([self::ORGANISED, $attendee])
+            . "END:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID:20261102T100000Z\r\nSEQUENCE:2\r\n"
+            . self::lines([self::ORGANISED, $attendee])
             . "END:VEVENT\r\nEND:VCALENDAR\r\n";
     }
 

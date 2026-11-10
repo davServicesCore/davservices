@@ -125,6 +125,12 @@ final class Answer
      * leave the organizer's server, which reads them in whatever order they
      * arrive, to pick between two contradictory answers.
      *
+     * The records are therefore held against the instance they are about, and
+     * the exclusions go in last: one key, and the answer that is still true of
+     * it. Which instance a record is about is all the order there is here —
+     * RFC 5545 §3.6 imposes none on the components of an object, so the order
+     * they come back in is nobody's promise.
+     *
      * @param Component|null $original The `VCALENDAR` as it stands, or null
      *                                 where there is none — §3.2.2.2's
      *                                 creation
@@ -142,7 +148,7 @@ final class Answer
         foreach (Instances::between($original, $modified) as [$was, $is, $named]) {
             $attendee = $is === null ? null : self::theirs($is, $addresses);
 
-            if ($is === null || $attendee === null || isset($declined[$named?->value() ?? ''])) {
+            if ($is === null || $attendee === null) {
                 continue;
             }
 
@@ -153,6 +159,8 @@ final class Answer
             $told[$named?->value() ?? ''] = [$is, $named, $attendee];
         }
 
+        // Last, and keyed by the same instance, so that an instance both
+        // excluded and answered is left declined.
         foreach ($declined as $key => $one) {
             $told[$key] = $one;
         }

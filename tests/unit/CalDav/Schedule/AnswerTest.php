@@ -392,17 +392,18 @@ final class AnswerTest extends TestCase
      */
     public function testAnInstanceExcludedIsDeclinedAndNotAlsoAnswered(): void
     {
-        $told = $this->whatTheOrganizerIsTold(
-            $this->anObject(
-                $this->anEvent('ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS),
-                $this->anInstance('ATTENDEE;PARTSTAT=TENTATIVE:' . self::CYRUS),
-            ),
-            $this->anObject($this->anEvent(
-                'ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS . "\r\nEXDATE:" . self::INSTANCE,
-            )),
+        $original = $this->anObject(
+            $this->anEvent('ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS),
+            $this->anInstance('ATTENDEE;PARTSTAT=TENTATIVE:' . self::CYRUS),
         );
+        $modified = $this->anObject($this->anEvent(
+            'ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS . "\r\nEXDATE:" . self::INSTANCE,
+        ));
 
-        self::assertSame([self::INSTANCE => 'DECLINED'], $told);
+        // Counted rather than read off a map by instance, because what the
+        // case is about is that there is no second record for the instance.
+        self::assertCount(1, Answer::whatTheOrganizerIsTold($original, $modified, [self::CYRUS]));
+        self::assertSame([self::INSTANCE => 'DECLINED'], $this->whatTheOrganizerIsTold($original, $modified));
     }
 
     /**
@@ -482,6 +483,31 @@ final class AnswerTest extends TestCase
         );
 
         self::assertSame([self::INSTANCE => 'DECLINED'], $told);
+    }
+
+    /**
+     * **The first property naming them answers for the rest of them.** RFC
+     * 5545 §3.6.1 does not forbid a component from naming one calendar user
+     * twice, and §3.5 imposes no order, so a resource can say two things about
+     * one person — and RFC 5546 §3.2.3 leaves room for only one of them:
+     * `ATTENDEE | 1`.
+     *
+     * The first is taken, which is the reading §7.1 asks for of its own
+     * parameter — "The parameter value MUST be the same on each 'ATTENDEE'
+     * property whose values match in a scheduling object resource" — and the
+     * only one left for a resource that broke that rule.
+     */
+    public function testTheFirstPropertyNamingThemAnswersForTheRest(): void
+    {
+        $told = $this->whatTheOrganizerIsTold(
+            $this->anObject($this->anEvent('ATTENDEE;PARTSTAT=NEEDS-ACTION:' . self::CYRUS)),
+            $this->anObject($this->anEvent(
+                'ATTENDEE;PARTSTAT=ACCEPTED:' . self::CYRUS
+                . "\r\nATTENDEE;PARTSTAT=DECLINED:" . self::CYRUS,
+            )),
+        );
+
+        self::assertSame(['' => 'ACCEPTED'], $told);
     }
 
     /**
