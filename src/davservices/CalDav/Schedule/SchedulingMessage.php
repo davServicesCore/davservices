@@ -64,7 +64,20 @@ final class SchedulingMessage
      */
     public const REQUEST = 'REQUEST';
 
+    /**
+     * The iTIP method §3.2.1.3's table names for a removal.
+     */
+    public const CANCEL = 'CANCEL';
+
     private const METHOD = 'METHOD';
+
+    private const STATUS = 'STATUS';
+
+    private const CANCELLED = 'CANCELLED';
+
+    private const SEQUENCE = 'SEQUENCE';
+
+    private const VTIMEZONE = 'VTIMEZONE';
 
     /**
      * What a resource in a scheduling Inbox collection is called here.
@@ -96,16 +109,58 @@ final class SchedulingMessage
      */
     public static function requesting(Component $object): self
     {
+        return self::saying(self::copyOf($object), self::REQUEST);
+    }
+
+    /**
+     * The `CANCEL` that tells an attendee the event is off.
+     *
+     * §3.2.1.3's table names it for a removal, and RFC 5546 §3.2.5 says what
+     * one is: "used to send a cancellation notice of an existing event request
+     * to the affected 'Attendees'". Two of its rules are kept here and nowhere
+     * else, because nothing else knows that this is a cancellation:
+     *
+     * - **The whole event is cancelled, so it says so.** §3.2.5's constraints
+     *   have `STATUS` at "0 or 1" with the condition attached: "MUST be set to
+     *   CANCELLED to cancel the entire event. If uninviting specific
+     *   Attendees, then MUST NOT be included." This message is the first of
+     *   those; uninviting one attendee while the event stands is §3.2.1.2's
+     *   `<Removed>` column, and a different message.
+     * - **The revision moves on.** RFC 5546 §2.1.4: "The 'SEQUENCE' property
+     *   value MUST be incremented each time the 'Organizer' uses the 'ADD' or
+     *   'CANCEL' methods." RFC 5545 §3.8.7.4 is where it starts: "When a
+     *   calendar component is created, its sequence number is 0." Without the
+     *   increment an attendee's client has no way to tell the cancellation
+     *   from the invitation it already has.
+     *
+     * Both go on every component the resource holds — a recurring event and
+     * its overridden instances are one event going together — and on no
+     * `VTIMEZONE`: RFC 5545 §3.6.5 lists what one may hold, and neither
+     * property is among them.
+     *
+     * @param Component $object The `VCALENDAR` of the organizer's scheduling
+     *                          object resource, as it stands before it goes.
+     *                          It is left exactly as it was
+     */
+    public static function cancelling(Component $object): self
+    {
         $message = self::copyOf($object);
 
-        $message[self::METHOD] = new Property(self::METHOD, self::REQUEST);
+        foreach ($message->components() as $component) {
+            // Compared without regard to case, RFC 5545 §3.1 making component
+            // names case-insensitive.
+            if (strcasecmp($component->name(), self::VTIMEZONE) === 0) {
+                continue;
+            }
 
-        // RFC 5545 §3.5: "This memo imposes no ordering of properties within
-        // an iCalendar object." The method goes in front for whoever reads the
-        // file, which is where RFC 5546's own examples have it.
-        $message->moveFirst(self::METHOD);
+            $component[self::STATUS] = new Property(self::STATUS, self::CANCELLED);
+            $component[self::SEQUENCE] = new Property(
+                self::SEQUENCE,
+                (string) (((int) ($component->property(self::SEQUENCE)?->value() ?? '0')) + 1),
+            );
+        }
 
-        return new self($message, (new Serializer())->write($message));
+        return self::saying($message, self::CANCEL);
     }
 
     /**
@@ -114,6 +169,24 @@ final class SchedulingMessage
     public function text(): string
     {
         return $this->text;
+    }
+
+    /**
+     * The message this object becomes under that iTIP method.
+     *
+     * RFC 5546 §3.2 makes `METHOD` the property that says which message this
+     * is, and every one of its constraint tables asks for exactly one.
+     *
+     * RFC 5545 §3.5: "This memo imposes no ordering of properties within an
+     * iCalendar object." The method goes in front for whoever reads the file,
+     * which is where RFC 5546's own examples have it.
+     */
+    private static function saying(Component $message, string $method): self
+    {
+        $message[self::METHOD] = new Property(self::METHOD, $method);
+        $message->moveFirst(self::METHOD);
+
+        return new self($message, (new Serializer())->write($message));
     }
 
     /**

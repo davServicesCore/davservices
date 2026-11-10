@@ -326,6 +326,171 @@ final class SchedulingMessageTest extends TestCase
     }
 
     /**
+     * **§3.2.1.3's table: a removal sends a `CANCEL`**, and RFC 5546 §3.2.5
+     * says what one is: "used to send a cancellation notice of an existing
+     * event request to the affected 'Attendees'".
+     */
+    public function testACancellationNamesItsMethod(): void
+    {
+        self::assertStringContainsString(
+            "METHOD:CANCEL\r\n",
+            SchedulingMessage::cancelling($this->objectWith(self::INVITATION))->text(),
+        );
+    }
+
+    /**
+     * **RFC 5546 §3.2.5: the whole event is cancelled, so it says so.** Its
+     * table of constraints for a `METHOD:CANCEL` has `STATUS` at "0 or 1" with
+     * the condition attached: "MUST be set to CANCELLED to cancel the entire
+     * event. If uninviting specific Attendees, then MUST NOT be included."
+     *
+     * This message is the first of those two: the organizer's resource is
+     * gone, so there is no event left for anybody. Uninviting one attendee
+     * while the event stands is §3.2.1.2's `<Removed>` column, and a different
+     * message.
+     *
+     * **It is also what makes the recipient's copy honest**: §4.1 has the
+     * server update their resource "to reflect the changes sent by the
+     * 'Organizer'", and an event stored without this would look like any
+     * other.
+     */
+    public function testACancellationSaysTheEventIsCancelled(): void
+    {
+        self::assertStringContainsString(
+            "STATUS:CANCELLED\r\n",
+            SchedulingMessage::cancelling($this->objectWith(self::INVITATION))->text(),
+        );
+    }
+
+    /**
+     * **And a status the organizer had set is replaced**, not doubled: RFC
+     * 5545 §3.8.1.11 allows one `STATUS` in a component, and a cancelled event
+     * is not also confirmed.
+     */
+    public function testAStatusTheEventAlreadyHadIsReplaced(): void
+    {
+        $message = SchedulingMessage::cancelling(
+            $this->objectWith(self::INVITATION . "\r\nSTATUS:CONFIRMED"),
+        )->text();
+
+        self::assertStringNotContainsString('CONFIRMED', $message);
+        self::assertSame(1, substr_count($message, 'STATUS:'));
+    }
+
+    /**
+     * **RFC 5546 §2.1.4: "The 'SEQUENCE' property value MUST be incremented
+     * each time the 'Organizer' uses the 'ADD' or 'CANCEL' methods."** Without
+     * it an attendee's client has no way to tell the cancellation from the
+     * invitation it already has, and §3.2.5's constraints make the property
+     * REQUIRED in a `CANCEL`.
+     */
+    #[DataProvider('theSequencesBefore')]
+    public function testTheSequenceIsIncremented(string $properties, string $expected): void
+    {
+        $message = SchedulingMessage::cancelling($this->objectWith($properties))->text();
+
+        self::assertStringContainsString($expected, $message);
+        self::assertSame(1, substr_count($message, 'SEQUENCE:'));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function theSequencesBefore(): iterable
+    {
+        yield 'none at all' => [self::INVITATION, "SEQUENCE:1\r\n"];
+        yield 'the first revision' => [self::INVITATION . "\r\nSEQUENCE:1", "SEQUENCE:2\r\n"];
+        yield 'the ninth' => [self::INVITATION . "\r\nSEQUENCE:9", "SEQUENCE:10\r\n"];
+        yield 'one nobody can read' => [self::INVITATION . "\r\nSEQUENCE:later", "SEQUENCE:1\r\n"];
+    }
+
+    /**
+     * **Every component of the resource is cancelled**, because the whole
+     * resource is going: a recurring event and its overridden instance are one
+     * event, and RFC 5546 §3.2.5's constraints ask for `VEVENT` at "1+" with
+     * "All must have the same UID".
+     */
+    public function testEveryComponentOfTheResourceIsCancelled(): void
+    {
+        $message = SchedulingMessage::cancelling($this->objectWith(
+            self::INVITATION . "\r\nRRULE:FREQ=DAILY;COUNT=3\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID:20261102T100000Z\r\nSEQUENCE:4\r\n"
+            . 'ORGANIZER:mailto:bernard@example.com',
+        ))->text();
+
+        self::assertSame(2, substr_count($message, "STATUS:CANCELLED\r\n"));
+        self::assertStringContainsString("SEQUENCE:1\r\n", $message);
+        self::assertStringContainsString("SEQUENCE:5\r\n", $message);
+    }
+
+    /**
+     * **A `VTIMEZONE` is cancelled by nothing**, and RFC 5545 §3.6.5 is why:
+     * it lists what one may hold, and neither `STATUS` nor `SEQUENCE` is among
+     * them. A zone that came back carrying either would make the message
+     * invalid iCalendar — and the zone still has to travel, because the times
+     * refer to it.
+     */
+    public function testATimeZoneIsNotCancelled(): void
+    {
+        $message = SchedulingMessage::cancelling($this->objectWith(
+            self::INVITATION,
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\n"
+            . "BEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\n"
+            . "END:STANDARD\r\nEND:VTIMEZONE\r\n",
+        ))->text();
+
+        self::assertStringContainsString("BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\n", $message);
+        self::assertSame(1, substr_count($message, "STATUS:CANCELLED\r\n"));
+        self::assertSame(1, substr_count($message, 'SEQUENCE:'));
+    }
+
+    /**
+     * **A cancellation keeps §7.1's and §7.3's parameters out too**, both
+     * sections saying it of "any scheduling messages sent as the result of a
+     * scheduling operation" rather than of one method.
+     */
+    public function testACancellationCarriesNeitherParameter(): void
+    {
+        $message = SchedulingMessage::cancelling($this->objectWith(
+            "ORGANIZER;SCHEDULE-STATUS=1.2:mailto:bernard@example.com\r\n"
+            . 'ATTENDEE;SCHEDULE-AGENT=SERVER;SCHEDULE-STATUS=1.2:mailto:cyrus@example.com',
+        ))->text();
+
+        self::assertStringNotContainsString('SCHEDULE-', $message);
+    }
+
+    /**
+     * **And the object it was built from is not touched**, which matters more
+     * here than anywhere: the resource is being deleted, and a server that
+     * had written a cancellation into it on the way out would be handing a
+     * store something nobody asked it to keep.
+     */
+    public function testTheObjectACancellationWasBuiltFromIsNotTouched(): void
+    {
+        $object = $this->objectWith(self::INVITATION . "\r\nSEQUENCE:3");
+        $before = (new Serializer())->write($object);
+
+        SchedulingMessage::cancelling($object);
+
+        self::assertSame($before, (new Serializer())->write($object));
+    }
+
+    /**
+     * **What the recipient keeps of a cancellation is the cancelled event.**
+     * No `METHOD`, RFC 4791 §4.1 forbidding it in a stored resource — and the
+     * `STATUS` stays, because that is the change §4.1 has the server reflect.
+     */
+    public function testWhatTheRecipientKeepsOfACancellationIsTheCancelledEvent(): void
+    {
+        $kept = SchedulingMessage::cancelling($this->objectWith(self::INVITATION))->whatTheRecipientKeeps();
+
+        self::assertStringNotContainsString('METHOD', $kept);
+        self::assertStringContainsString("STATUS:CANCELLED\r\n", $kept);
+        self::assertStringContainsString("SEQUENCE:1\r\n", $kept);
+    }
+
+    /**
      * **The name is the message**, and nothing in RFC 6638 says otherwise: §2.2
      * and §4 describe what an Inbox holds and never what a member of one is
      * called. A digest of the text is usable as a resource name whatever the
