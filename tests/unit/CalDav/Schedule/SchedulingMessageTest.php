@@ -1038,6 +1038,58 @@ END:VALARM",
     }
 
     /**
+     * **A zone named that the object does not hold is no zone at all.** RFC
+     * 5545 §3.6.5 has a `TZID` be "a reference to the unique time zone
+     * identifier" of a component in the same object, so a resource naming one
+     * it does not carry was never valid — and a reply about it is still built,
+     * carrying no zone rather than failing.
+     */
+    public function testAZoneNamedButNotHeldIsNoZone(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION . "\r\nRRULE:FREQ=DAILY;COUNT=3\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID;TZID=Europe/Berlin:20261102T100000\r\n" . self::PLAIN_INVITATION,
+        );
+
+        $text = $this->replyAbout($object, '20261102T100000', 'DECLINED')->text();
+
+        self::assertStringNotContainsString('VTIMEZONE', $text);
+        self::assertStringContainsString("RECURRENCE-ID;TZID=Europe/Berlin:20261102T100000\r\n", $text);
+    }
+
+    /**
+     * **And the zone is looked for behind an instance that names none.** A
+     * reply can carry the series and an instance of it at once — the series is
+     * named by nothing at all, so the first record has no zone to offer and
+     * the second one's still has to travel.
+     */
+    public function testTheZoneIsFoundBehindAnInstanceThatNamesNone(): void
+    {
+        $object = $this->objectWith(
+            self::PLAIN_INVITATION . "\r\nRRULE:FREQ=DAILY;COUNT=3\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID;TZID=Europe/Berlin:20261102T100000\r\n" . self::PLAIN_INVITATION,
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nEND:VTIMEZONE\r\n",
+        );
+        $instances = [];
+
+        foreach ([null, '20261102T100000'] as $id) {
+            $component = $this->theComponentNamed($object, $id);
+            $instances[] = [
+                $component,
+                $component->property('RECURRENCE-ID'),
+                new Property('ATTENDEE', 'mailto:cyrus@example.com', [new Parameter('PARTSTAT', ['ACCEPTED'])]),
+            ];
+        }
+
+        self::assertStringContainsString(
+            "TZID:Europe/Berlin\r\n",
+            SchedulingMessage::replying($object, $instances)->text(),
+        );
+    }
+
+    /**
      * **Two instances answered are two components of one message**, §3.2.3
      * having `VEVENT | 1+ | All components MUST have the same UID.`
      */

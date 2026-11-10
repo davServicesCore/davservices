@@ -355,12 +355,10 @@ final class SchedulingMessage
             $message->add(self::withoutTheServersOwn($property));
         }
 
-        foreach (self::theZonesNamedIn($instances) as $name) {
-            foreach ($object->components(self::VTIMEZONE) as $zone) {
-                if ($zone->property(self::TZID)?->value() === $name) {
-                    $message->add(self::copyOf($zone));
-                }
-            }
+        $zone = self::theZoneOf($object, $instances);
+
+        if ($zone !== null) {
+            $message->add(self::copyOf($zone));
         }
 
         foreach ($instances as [$instance, $named, $attendee]) {
@@ -426,28 +424,50 @@ final class SchedulingMessage
     }
 
     /**
-     * The zones the instances of a reply refer to, each once.
+     * The one zone a reply can carry, or null where its instances name none.
      *
-     * Keyed by the name, which nothing reads: it travels as the value, and the
-     * key is only what makes two instances in one zone one zone.
+     * **§3.2.3's row is a type here rather than a count to keep to**:
+     * `VTIMEZONE | 0 or 1 | MUST be present if any date/time refers to a
+     * timezone`. One is all a reply can need — its `DTSTAMP` is a UTC value by
+     * RFC 5545 §3.8.7.2, so a `RECURRENCE-ID` is the only time in it that can
+     * name a zone, and §3.8.4.4 ties each of those to the `DTSTART` it
+     * overrides. The first instance that names a zone therefore names it for
+     * the message.
      *
      * @param list<array{Component, ?Property, Property}> $instances
-     *
-     * @return array<array-key, string>
      */
-    private static function theZonesNamedIn(array $instances): array
+    private static function theZoneOf(Component $object, array $instances): ?Component
     {
-        $named = [];
-
         foreach ($instances as [, $property, ]) {
-            $zone = $property?->parameter(self::TZID)?->value();
+            $named = $property?->parameter(self::TZID)?->value();
 
-            if ($zone !== null) {
-                $named[$zone] = $zone;
+            if ($named !== null) {
+                return self::theZoneCalled($named, $object);
             }
         }
 
-        return $named;
+        return null;
+    }
+
+    /**
+     * The object's own zone of that name, or null where it holds none.
+     *
+     * Which is data RFC 5545 §3.6.5 does not allow — a `TZID` is "a reference
+     * to the unique time zone identifier" of a component that has to be in the
+     * same object — and `CALDAV:valid-calendar-data` is what refuses it, in
+     * another plugin on the same request. Asked rather than assumed, because a
+     * message built while such a resource is still in the tree may not take
+     * the server down.
+     */
+    private static function theZoneCalled(string $named, Component $object): ?Component
+    {
+        foreach ($object->components(self::VTIMEZONE) as $zone) {
+            if ($zone->property(self::TZID)?->value() === $named) {
+                return $zone;
+            }
+        }
+
+        return null;
     }
 
     /**
