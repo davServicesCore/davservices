@@ -79,6 +79,23 @@ final class SchedulingMessage
 
     private const VTIMEZONE = 'VTIMEZONE';
 
+    private const VALARM = 'VALARM';
+
+    private const UID = 'UID';
+
+    private const DTSTAMP = 'DTSTAMP';
+
+    private const ORGANIZER = 'ORGANIZER';
+
+    private const ATTENDEE = 'ATTENDEE';
+
+    /**
+     * How an attendee reports on a message they received (RFC 5546 §3.6), and
+     * so a property no message an organizer sends may carry: both constraint
+     * tables put it at `0`.
+     */
+    private const REQUEST_STATUS = 'REQUEST-STATUS';
+
     /**
      * What a resource in a scheduling Inbox collection is called here.
      *
@@ -92,10 +109,15 @@ final class SchedulingMessage
      * @param Component $message The message itself, kept so that what the
      *                           recipient is to keep can be told from it
      *                           without reading the bytes back
+     * @param bool $forTheirCalendar Whether this message is one the recipient
+     *                               keeps a copy of at all. Two of the three
+     *                               are; {@see self::uninviting()} says why
+     *                               the third is not
      */
     private function __construct(
         private readonly Component $message,
         private readonly string $text,
+        private readonly bool $forTheirCalendar,
     ) {
     }
 
@@ -109,7 +131,7 @@ final class SchedulingMessage
      */
     public static function requesting(Component $object): self
     {
-        return self::saying(self::copyOf($object), self::REQUEST);
+        return self::saying(self::copyOf($object), self::REQUEST, true);
     }
 
     /**
@@ -138,6 +160,14 @@ final class SchedulingMessage
      * `VTIMEZONE`: RFC 5545 §3.6.5 lists what one may hold, and neither
      * property is among them.
      *
+     * **And the alarms stay behind**, which is the one row of §3.2.5's
+     * constraints a message built from a stored resource breaks by itself:
+     * `VALARM | 0`. RFC 5545 §3.6.1 lets an event hold as many as it likes, so
+     * a perfectly good calendar object resource makes an invalid `CANCEL` the
+     * moment it is copied whole. A `REQUEST` keeps them, §3.2.2's constraints
+     * having `VALARM | 0+`: a reminder the organizer set is part of the
+     * invitation, and a cancellation is no occasion for one.
+     *
      * @param Component $object The `VCALENDAR` of the organizer's scheduling
      *                          object resource, as it stands before it goes.
      *                          It is left exactly as it was
@@ -153,14 +183,92 @@ final class SchedulingMessage
                 continue;
             }
 
+            unset($component[self::VALARM]);
+
             $component[self::STATUS] = new Property(self::STATUS, self::CANCELLED);
-            $component[self::SEQUENCE] = new Property(
-                self::SEQUENCE,
-                (string) (((int) ($component->property(self::SEQUENCE)?->value() ?? '0')) + 1),
-            );
+            $component[self::SEQUENCE] = new Property(self::SEQUENCE, self::theNextRevisionOf($component));
         }
 
-        return self::saying($message, self::CANCEL);
+        return self::saying($message, self::CANCEL, true);
+    }
+
+    /**
+     * The `CANCEL` that tells one calendar user they are off the list, while
+     * the event itself goes on.
+     *
+     * §3.2.1.2's `<Removed>` column sends this, and RFC 5546 §4.2.10 is the
+     * example of one — "Removing Attendees" — with the note that tells the two
+     * cancellations apart:
+     *
+     * > Note that in the example below, the "STATUS" property is omitted. This
+     * > is used when the meeting itself is cancelled and not when the intent is
+     * > to remove an "Attendee" from the event.
+     *
+     * So this message is built to that example rather than out of the resource:
+     *
+     * - **No `STATUS`**, which §3.2.5's constraints make the condition it is:
+     *   "MUST be set to CANCELLED to cancel the entire event. If uninviting
+     *   specific Attendees, then MUST NOT be included."
+     * - **Only the calendar user it goes to**, which is what §3.2.5 asks for —
+     *   `ATTENDEE | 0+ | MUST include some or all Attendees being removed from
+     *   the event` — and nobody else: who is still coming is no part of a
+     *   message about somebody who is not.
+     * - **What the constraints make REQUIRED and nothing more**: `UID`,
+     *   `DTSTAMP`, `ORGANIZER` and `SEQUENCE`, plus the `RECURRENCE-ID` that
+     *   names the instance where one instance is meant. A property the resource
+     *   never carried is not invented — RFC 5545 §3.6.1 makes `DTSTAMP`
+     *   REQUIRED in a `VEVENT`, so a resource without one was never a valid
+     *   calendar object resource, and a server that filled the gap would be
+     *   sending a time it made up.
+     * - **The revision moves on**, §2.1.4 asking that of the method rather
+     *   than of the reason: "each time the 'Organizer' uses the 'ADD' or
+     *   'CANCEL' methods".
+     *
+     * And the zones travel, because `VTIMEZONE | 0+ | MUST be present if any
+     * date/time refers to a timezone` and a `RECURRENCE-ID` that names a zone
+     * refers to one.
+     *
+     * **The recipient keeps nothing of this one**, which is what sets it apart
+     * from the other two. §4 names the two things the processing does —
+     * "creating or updating the corresponding scheduling object resources" —
+     * and an uninvitation is neither. There is nothing to create, and updating
+     * their copy "to reflect the changes sent by the 'Organizer'" (§4.1) would
+     * put this message's own shape in place of their event. Removing it is not
+     * among the two either, and would throw away what §3.2.2.1 lets an attendee
+     * keep there. So the Inbox notice is the whole of it, which is what §4 puts
+     * one there for: "an indicator to the client that a scheduling operation
+     * has taken place".
+     *
+     * @param Component $object The `VCALENDAR` the instances were read from,
+     *                          for the `PRODID` and `VERSION` RFC 5545 §3.6
+     *                          makes REQUIRED and the zones its times name. It
+     *                          is left exactly as it was
+     * @param list<array{Component, ?Property}> $instances What to cancel: the
+     *                                                     component that
+     *                                                     governed the
+     *                                                     instance, and the
+     *                                                     property naming it,
+     *                                                     or null for §3.2.5's
+     *                                                     complete range
+     * @param string $address The calendar user this goes to
+     */
+    public static function uninviting(Component $object, array $instances, string $address): self
+    {
+        $message = new Component($object->name());
+
+        foreach ($object->properties() as $property) {
+            $message->add(self::withoutTheServersOwn($property));
+        }
+
+        foreach ($object->components(self::VTIMEZONE) as $zone) {
+            $message->add(self::copyOf($zone));
+        }
+
+        foreach ($instances as [$instance, $named]) {
+            $message->add(self::uninvitingFrom($instance, $named, $address));
+        }
+
+        return self::saying($message, self::CANCEL, false);
     }
 
     /**
@@ -181,12 +289,59 @@ final class SchedulingMessage
      * iCalendar object." The method goes in front for whoever reads the file,
      * which is where RFC 5546's own examples have it.
      */
-    private static function saying(Component $message, string $method): self
+    private static function saying(Component $message, string $method, bool $forTheirCalendar): self
     {
         $message[self::METHOD] = new Property(self::METHOD, $method);
         $message->moveFirst(self::METHOD);
 
-        return new self($message, (new Serializer())->write($message));
+        return new self($message, (new Serializer())->write($message), $forTheirCalendar);
+    }
+
+    /**
+     * The one component that says that calendar user is off this instance.
+     */
+    private static function uninvitingFrom(Component $instance, ?Property $named, string $address): Component
+    {
+        $component = new Component($instance->name());
+
+        foreach ([self::UID, self::DTSTAMP, self::ORGANIZER] as $name) {
+            $property = $instance->property($name);
+
+            if ($property !== null) {
+                $component->add(self::withoutTheServersOwn($property));
+            }
+        }
+
+        // Null is §3.2.5's complete range, which that section describes by
+        // what it does not carry: "a 'RECURRENCE-ID' MUST NOT be specified".
+        if ($named !== null) {
+            $component->add(self::withoutTheServersOwn($named));
+        }
+
+        $component->add(new Property(self::SEQUENCE, self::theNextRevisionOf($instance)));
+
+        foreach ($instance->properties(self::ATTENDEE) as $attendee) {
+            if ($attendee->value() === $address) {
+                $component->add(self::withoutTheServersOwn($attendee));
+            }
+        }
+
+        return $component;
+    }
+
+    /**
+     * The revision after this component's, as RFC 5546 §2.1.4 asks for it.
+     *
+     * RFC 5545 §3.8.7.4 is where the count starts — "When a calendar component
+     * is created, its sequence number is 0" — so a component that carried none
+     * leaves with a `1`. A value nobody can read counts as none, which is the
+     * only answer left: §3.8.7.4 gives the property an INTEGER value, and a
+     * server that passed something else through would be sending the client's
+     * own invalid data back out under its own name.
+     */
+    private static function theNextRevisionOf(Component $component): string
+    {
+        return (string) (((int) ($component->property(self::SEQUENCE)?->value() ?? '0')) + 1);
     }
 
     /**
@@ -216,9 +371,18 @@ final class SchedulingMessage
      * Everything else stays, because that is the event. Taken from a copy for
      * the reason the message itself is: the message is sent as it stands, and a
      * `METHOD` taken off in place would have taken it off what was sent.
+     *
+     * **Null where the recipient keeps nothing**, which is the one message of
+     * the three that leaves their calendar alone: {@see self::uninviting()}
+     * says why §4's "creating or updating" is neither of the two things an
+     * uninvitation could ask for.
      */
-    public function whatTheRecipientKeeps(): string
+    public function whatTheRecipientKeeps(): ?string
     {
+        if (!$this->forTheirCalendar) {
+            return null;
+        }
+
         $kept = self::copyOf($this->message);
 
         unset($kept[self::METHOD]);
@@ -248,17 +412,34 @@ final class SchedulingMessage
 
     /**
      * The same component again, without the two parameters §7.1 and §7.3
-     * keep out of a message.
+     * keep out of a message, and without the one property no method an
+     * organizer sends may carry.
      *
      * Down through the sub-components, because RFC 5545 §3.6.6 lets a
      * `VALARM` carry an `ATTENDEE` of its own.
+     *
+     * `REQUEST-STATUS` is at `0` in RFC 5546 §3.2.2's constraints and in
+     * §3.2.5's alike, and for the same reason: RFC 5546 §3.6 makes it how an
+     * attendee reports on a message they received. One left lying on an
+     * organizer's resource — §4.2 is where it would have come from — would have
+     * the server sending an attendee their own old answer back out.
      */
     private static function copyOf(Component $component): Component
     {
         $copy = new Component($component->name());
 
         foreach ($component->children() as $child) {
-            $copy->add($child instanceof Component ? self::copyOf($child) : self::withoutTheServersOwn($child));
+            if ($child instanceof Component) {
+                $copy->add(self::copyOf($child));
+
+                continue;
+            }
+
+            // Compared without regard to case, RFC 5545 §3.1 making property
+            // names case-insensitive.
+            if (strcasecmp($child->name(), self::REQUEST_STATUS) !== 0) {
+                $copy->add(self::withoutTheServersOwn($child));
+            }
         }
 
         return $copy;

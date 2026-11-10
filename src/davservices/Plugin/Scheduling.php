@@ -19,6 +19,7 @@ use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Schedule\DeliveryStatus;
 use DavServices\CalDav\Schedule\Inbox;
+use DavServices\CalDav\Schedule\Modification;
 use DavServices\CalDav\Schedule\Outbox;
 use DavServices\CalDav\Schedule\ScheduleAgent;
 use DavServices\CalDav\Schedule\SchedulingMessage;
@@ -26,6 +27,7 @@ use DavServices\CalDav\Schedule\SchedulingObject;
 use DavServices\Dav\Event\AfterUnbind;
 use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeUnbind;
+use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
@@ -199,15 +201,6 @@ final class Scheduling
 
     private const ATTENDEE = 'ATTENDEE';
 
-    private const PARTSTAT = 'PARTSTAT';
-
-    /**
-     * The answer §3.2.1 lets an organizer write for somebody else, which is
-     * the one that answers nothing: RFC 5545 §3.2.12 makes it the state an
-     * invitation starts in.
-     */
-    private const NEEDS_ACTION = 'NEEDS-ACTION';
-
     /**
      * §3.2.4.3's precondition, "Use with: 403 Forbidden".
      */
@@ -244,13 +237,15 @@ final class Scheduling
      * Switches the two properties on, the guard on the two collections, and
      * §3.2.1.1's delivery.
      *
-     * **The delivery hangs off {@see BeforeCreateFile} and could hang
-     * nowhere else.** §3.2.1.1 says what a creation does to the resource being
-     * created — "This will result in the created calendar object resource
-     * differing from the calendar data sent in the HTTP request" — so the
-     * stamp has to be written before the write rather than after it. An
-     * `After…` listener would have to store the resource twice and would leave
-     * a moment where it says nothing about a message already sent.
+     * **The delivery hangs off {@see BeforeCreateFile} and
+     * {@see BeforeWriteContent} and could hang nowhere else.** §3.2.1.1 and
+     * §3.2.1.2 both say what the operation does to the resource being written —
+     * "This will result in the created calendar object resource differing from
+     * the calendar data sent in the HTTP request" — so the stamp has to be
+     * written before the write rather than after it. An `After…` listener would
+     * have to store the resource twice and would leave a moment where it says
+     * nothing about a message already sent. And a Modify needs the old content,
+     * which is only there until the write happens.
      *
      * **Two listeners for one removal**, because §3.2.1.3 needs the resource
      * read while it is still there and the cancellation sent only once it is
@@ -278,7 +273,8 @@ final class Scheduling
         $events->on(BeforeUnbind::class, $this->guardTheCollections(...));
         $events->on(BeforeUnbind::class, $this->readWhatIsGoing(...));
         $events->on(AfterUnbind::class, $this->cancelOnRemove(...));
-        $events->on(BeforeCreateFile::class, $this->deliverOnCreate(...));
+        $events->on(BeforeCreateFile::class, $this->deliverOnWrite(...));
+        $events->on(BeforeWriteContent::class, $this->deliverOnWrite(...));
     }
 
     /**
@@ -356,7 +352,29 @@ final class Scheduling
 
         [$message, $object, $addresses] = $going;
 
-        foreach (self::attendeesOf($object) as [$address, $agent, ]) {
+        $this->cancelTheWholeOf($message, $object, $addresses);
+    }
+
+    /**
+     * §3.2.1.3: that cancellation to every calendar user on the list it is for.
+     *
+     * The table is §3.2.1.1's with one word changed — `SERVER` sends a `CANCEL`
+     * where it sent a `REQUEST`, `CLIENT` and `NONE` send nothing — and
+     * §3.2.1's MUST NOT about the organizer's own `ATTENDEE` property holds
+     * here too.
+     *
+     * One message for everybody, which is the first of the two forms RFC 5546
+     * §3.2.5 allows: "This can be done using a single 'CANCEL' message for all
+     * 'Attendees' or by using multiple messages with different subsets of the
+     * affected 'Attendees' in each."
+     *
+     * @param Component $object The resource the attendee list is read from,
+     *                          which is the one the message was built from
+     * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     */
+    private function cancelTheWholeOf(SchedulingMessage $message, Component $object, array $addresses): void
+    {
+        foreach (self::attendeesOf($object) as [$address, $agent]) {
             if (in_array($address, $addresses, true) || $agent !== ScheduleAgent::Server) {
                 continue;
             }
@@ -366,30 +384,60 @@ final class Scheduling
     }
 
     /**
-     * §3.2.1.1: an organizer creating a scheduling object resource tells the
-     * attendees.
+     * §3.2.1.1 and §3.2.1.2: an organizer writing a scheduling object resource
+     * tells the attendees.
      *
-     * §3.2.3.1's table says this is the request that does it — "None →
-     * Scheduling object resource: Create" — and §3.2.1.1 says what Create
-     * means:
+     * §3.2.3.1's table says which operation a `PUT` is, and four of its six
+     * rows turn on what was there before:
      *
-     * > When an "Organizer" creates a scheduling object resource, the server
-     * > MUST inspect each "ATTENDEE" property to determine whether to send a
-     * > scheduling message.
+     * > +------------------------+--------------------------+---------------+
+     * > | Existing Destination   | Resulting Destination    | Server        |
+     * > | Resource               | Resource                 | Operation     |
+     * > +------------------------+--------------------------+---------------+
+     * > | None                   | Calendar object resource | None          |
+     * > | None                   | Scheduling object        | Create        |
+     * > |                        | resource                 |               |
+     * > | Calendar object        | Calendar object resource | None          |
+     * > | resource               |                          |               |
+     * > | Calendar object        | Scheduling object        | Create        |
+     * > | resource               | resource                 |               |
+     * > | Scheduling object      | Calendar object resource | Remove        |
+     * > | resource               |                          |               |
+     * > | Scheduling object      | Scheduling object        | Modify        |
+     * > | resource               | resource                 |               |
+     * > +------------------------+--------------------------+---------------+
+     *
+     * **Create and Modify are one table and so one path**, which is
+     * {@see Modification}: §3.2.1.1's three rows are §3.2.1.2's `<Absent>` row
+     * read off, so a creation is a modification with nothing to compare
+     * against.
+     *
+     * **"Scheduling object resource" is either kind** (§3.1), and whose it is
+     * picks the section: §3.2.1's operations are the organizer's, §3.2.2's the
+     * attendee's. An attendee's own copy being modified is §3.2.2.3's and is
+     * not here yet — which also settles the row that reads oddest. A resource
+     * whose `ORGANIZER` moves from the owner to somebody else is a Modify by
+     * this table, and RFC 5546 §3.2.2.4 calls it "Changing the Organizer":
+     * neither §3.2.1.2 nor §3.2.2.3 describes it on its own, so nothing is sent
+     * for it yet.
      *
      * The order below is the order the sections are read in, and each step
      * answers a question the next one would otherwise have to guess at:
      *
      * 1. is this a calendar collection's member at all (§3.1),
      * 2. is it one calendar object resource (RFC 4791 §5.3.2.1),
-     * 3. is it the owner's to send (§3.1's first sentence),
+     * 3. was what is there the owner's to send, and is this (§3.1),
      * 4. does it answer for anybody else (§3.2.1's SHOULD),
-     * 5. and then, for each calendar user on the attendee list, §7.1's table.
+     * 5. and then, per calendar user and per instance, §3.2.1.2's table.
      *
      * **A body that is no calendar object is left alone**, and left to
      * {@see CalDav}: refusing it is that plugin's
      * `CALDAV:valid-calendar-data` precondition, and two plugins refusing one
-     * request in their own words would answer it twice.
+     * request in their own words would answer it twice. What is *underneath*
+     * and cannot be read is no original either, so the write is a creation:
+     * §3.2.3.1's rows ask what the existing resource is, and something no
+     * server can read as a calendar object resource is neither of the two kinds
+     * it names.
      *
      * **One thing here refuses the write, and a failed delivery is not it.**
      * §3.2.1's SHOULD about somebody else's `PARTSTAT` is a refusal; §3.2.9
@@ -397,26 +445,16 @@ final class Scheduling
      * instead, and an organizer's event is not lost because one attendee's
      * Inbox would not take a message.
      */
-    private function deliverOnCreate(BeforeCreateFile $event): void
+    private function deliverOnWrite(BeforeCreateFile|BeforeWriteContent $event): void
     {
-        $calendar = $this->calendarOver($event->path());
+        $path = $event->path();
+        $calendar = $this->calendarOver($path);
 
         if ($calendar === null) {
             return;
         }
 
-        // Read once and put back at once: a body that arrives as a stream is
-        // gone after it has been looked at, and a listener that looked
-        // without putting anything back would store an empty file.
-        $bytes = $event->content();
-
-        if (!is_string($bytes)) {
-            $bytes = (string) stream_get_contents($bytes);
-
-            $event->writeInstead($bytes);
-        }
-
-        $object = CalendarObject::in($bytes);
+        $object = CalendarObject::in(self::bytesIn($event));
 
         if ($object === null) {
             return;
@@ -424,22 +462,84 @@ final class Scheduling
 
         [$where, $node] = $calendar;
         $addresses = $this->addressesOfTheOwnerOf($where, $node);
+        $original = $this->theOrganizersOwn($path, $addresses);
+        $becoming = SchedulingObject::in($object, $addresses);
 
-        // §3.2.1 is about the organizer's own copy. An attendee's is §3.2.2's,
-        // and anything else is nobody's to send.
-        if (SchedulingObject::in($object, $addresses) !== SchedulingObject::Organizers) {
+        if ($becoming === SchedulingObject::Organizers) {
+            // Before anything is sent: a message delivered and then refused
+            // would be about a resource that was never stored.
+            self::mustLeaveTheirAnswersAlone($original, $object, $addresses);
+
+            if ($this->tellTheAttendeesOf($original, $object, $addresses)) {
+                $event->writeInstead((new Serializer())->write($object));
+            }
+
             return;
         }
 
-        $attendees = self::attendeesOf($object);
-
-        // Before anything is sent: an invitation delivered and then refused
-        // would be a message about a resource that was never stored.
-        self::mustLeaveTheirAnswersAlone($attendees, $addresses);
-
-        if ($this->tellTheAttendeesOf($object, $attendees, $addresses)) {
-            $event->writeInstead((new Serializer())->write($object));
+        // "Scheduling object resource → Calendar object resource: Remove", and
+        // §3.2.1.3's Remove is the whole-event cancellation: an event the owner
+        // no longer organises leaves the attendees nothing either way. Nothing
+        // is written back, §3.2.1.3 asking for no `SCHEDULE-STATUS` and what
+        // the resource has become being nothing to carry one.
+        if ($becoming === null && $original !== null) {
+            $this->cancelTheWholeOf(SchedulingMessage::cancelling($original), $original, $addresses);
         }
+    }
+
+    /**
+     * The resource at that path as it stands, where it is the owner's to send —
+     * and null where it is anybody else's, or no calendar object resource, or
+     * not there at all.
+     *
+     * **Read while it is still there**, which is the whole reason this hangs
+     * off a `Before…` event: {@see \DavServices\Dav\Method\Put} raises the event
+     * and then writes, so this is the last moment the old content can be had.
+     *
+     * Null for all three of those together, because §3.2.3.1's rows ask what
+     * the existing resource is and §3.2.1 only has an answer for one of them.
+     * An attendee's own copy is §3.2.2's, and a resource no server can read as
+     * a calendar object resource is neither of the two kinds the table names.
+     *
+     * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     */
+    private function theOrganizersOwn(string $path, array $addresses): ?Component
+    {
+        $tree = $this->server->tree();
+        $original = $tree->exists($path) ? CalendarObject::of($tree->node($path)) : null;
+
+        if ($original === null) {
+            return null;
+        }
+
+        return SchedulingObject::in($original, $addresses) === SchedulingObject::Organizers ? $original : null;
+    }
+
+    /**
+     * The body as bytes, whichever of the two shapes it arrived in.
+     *
+     * **A stream that is read has to be put back**, and at once:
+     * {@see BeforeCreateFile} says what a listener owes — "A listener that
+     * means to look at it has to put back something the write can use […]
+     * reading the stream without replacing it is a way to store an empty
+     * file."
+     *
+     * The same shape {@see CalDav::bytesIn()} has, for the same reason: both
+     * plugins read the body of the same two events.
+     */
+    private static function bytesIn(BeforeCreateFile|BeforeWriteContent $event): string
+    {
+        $content = $event->content();
+
+        if (is_string($content)) {
+            return $content;
+        }
+
+        $bytes = (string) stream_get_contents($content);
+
+        $event->writeInstead($bytes);
+
+        return $bytes;
     }
 
     /**
@@ -456,98 +556,112 @@ final class Scheduling
      * setting the 'PARTSTAT' property parameter to a value other than
      * 'NEEDS-ACTION'".
      *
-     * **Two attendees are none of its business**, and both exceptions are in
-     * the sentence: the owner's own participation is not that "of other
-     * users", and §7.1's `CLIENT` or `NONE` is the condition it states — a
-     * client handling its own invitations knows answers this server never saw,
-     * which §7.3 says in its own words: "the client MAY add, change, or remove
-     * this parameter to indicate the last scheduling message status it
-     * received".
+     * **The owner's own participation is none of its business**, the sentence
+     * being about "the 'ATTENDEE' iCalendar property of other users".
+     * {@see Modification::whoseAnswerItSets()} keeps the rest: §7.1's `CLIENT`
+     * and `NONE` are the condition the sentence states, and an answer the
+     * resource already carried is nobody's attempt to set one — §4.2 writes
+     * those onto the organizer's own copy, and they come back with every
+     * modification a client makes.
      *
-     * `PARTSTAT` is compared without regard to case, RFC 5545 §3.5 making an
-     * enumerated parameter value case-insensitive.
-     *
-     * @param array<array-key, array{string, ScheduleAgent, list<Property>}> $attendees
      * @param list<string> $addresses The owner's own addresses (§2.4.1)
      *
-     * @throws Forbidden If the resource answers for somebody else
+     * @throws Forbidden If the write answers for somebody else
      */
-    private static function mustLeaveTheirAnswersAlone(array $attendees, array $addresses): void
-    {
-        foreach ($attendees as [$address, $agent, $properties]) {
-            if ($agent !== ScheduleAgent::Server || in_array($address, $addresses, true)) {
-                continue;
-            }
-
-            foreach ($properties as $property) {
-                $answer = $property->parameter(self::PARTSTAT)?->value();
-
-                if ($answer === null || strcasecmp($answer, self::NEEDS_ACTION) === 0) {
-                    continue;
-                }
-
-                throw new Forbidden(
-                    sprintf(
-                        'An organizer does not set the PARTSTAT of "%s" (RFC 6638 §3.2.1): the CALDAV:allowed-organizer-scheduling-object-change precondition of §3.2.4.3.',
-                        $address,
-                    ),
-                    self::ALLOWED_ORGANIZER_CHANGE,
-                );
-            }
-        }
-    }
-
-    /**
-     * Sends what §3.2.1.1's table asks for, and writes back what came of it.
-     *
-     * **Each calendar user is told once and stamped everywhere.** §3.2.1.1
-     * inspects "each 'ATTENDEE' property" while the message is the whole
-     * resource, so an attendee named in an overridden instance as well as in
-     * the master gets one message — and §7.3 asks for the parameter "on any
-     * 'ATTENDEE' properties corresponding to calendar users who were sent a
-     * scheduling message", which is both of them.
-     *
-     * **Two attendees get nothing and keep nothing.** §7.1's `CLIENT` and
-     * `NONE` are the table's two empty rows, and the owner themselves is
-     * §3.2.1's MUST NOT: "The 'Organizer' of a calendar component can also be
-     * an 'Attendee' of that calendar component. In such cases, the server MUST
-     * NOT send a scheduling message to the 'Attendee' that matches the
-     * 'Organizer'." What matches there is a calendar user rather than a
-     * property value — §1.2: «"Organizer" refers to a role of a calendar
-     * user» — so every address of the owner's is the owner.
-     *
-     * Neither is stamped, which is the MUST NOT that fences the MUST in:
-     * "Servers MUST NOT set the 'SCHEDULE-STATUS' property parameter on the
-     * 'ATTENDEE' property of 'Attendees' for which it did not attempt to
-     * deliver a scheduling message."
-     *
-     * @param array<array-key, array{string, ScheduleAgent, list<Property>}> $attendees
-     * @param list<string> $addresses The owner's own addresses (§2.4.1)
-     *
-     * @return bool Whether anything was written on the resource
-     */
-    private function tellTheAttendeesOf(Component $object, array $attendees, array $addresses): bool
-    {
-        // Built before anything is written on the resource, because §7.3 keeps
-        // its parameter out of a message and the resource is about to carry
-        // one. An ordering nothing states and everything depends on.
-        $message = SchedulingMessage::requesting($object);
-        $stamped = false;
-
-        foreach ($attendees as [$address, $agent, $properties]) {
+    private static function mustLeaveTheirAnswersAlone(
+        ?Component $original,
+        Component $object,
+        array $addresses,
+    ): void {
+        foreach (Modification::whoseAnswerItSets($original, $object) as $address) {
             if (in_array($address, $addresses, true)) {
                 continue;
             }
 
-            if ($agent !== ScheduleAgent::Server) {
+            throw new Forbidden(
+                sprintf(
+                    'An organizer does not set the PARTSTAT of "%s" (RFC 6638 §3.2.1): the CALDAV:allowed-organizer-scheduling-object-change precondition of §3.2.4.3.',
+                    $address,
+                ),
+                self::ALLOWED_ORGANIZER_CHANGE,
+            );
+        }
+    }
+
+    /**
+     * Sends what §3.2.1.2's table asks for, and writes back what came of it.
+     *
+     * **Each calendar user is told once per message and stamped everywhere.**
+     * The table is read per instance while a `REQUEST` is the whole resource,
+     * so an attendee on the master and on an overridden instance gets one — and
+     * §7.3 asks for the parameter "on any 'ATTENDEE' properties corresponding
+     * to calendar users who were sent a scheduling message", which is both of
+     * their properties.
+     *
+     * **The cancellation goes before the request**, where one calendar user
+     * gets both: an instance they are off, and the series they are still on.
+     * §4 has each message update their own copy as it arrives, and the modified
+     * data is what they are to be left with. That also settles which status is
+     * written here, §7.3 asking for "the status codes returned from processing
+     * of the most recent scheduling message sent to the corresponding
+     * 'Attendee'" — so the second of the two overwrites the first.
+     *
+     * **The owner gets nothing and keeps nothing**, which is §3.2.1's MUST NOT:
+     * "The 'Organizer' of a calendar component can also be an 'Attendee' of
+     * that calendar component. In such cases, the server MUST NOT send a
+     * scheduling message to the 'Attendee' that matches the 'Organizer'." What
+     * matches there is a calendar user rather than a property value — §1.2:
+     * «"Organizer" refers to a role of a calendar user» — so every address of
+     * the owner's is the owner.
+     *
+     * They are not stamped either, which is the MUST NOT that fences the MUST
+     * in: "Servers MUST NOT set the 'SCHEDULE-STATUS' property parameter on the
+     * 'ATTENDEE' property of 'Attendees' for which it did not attempt to
+     * deliver a scheduling message." Neither is anybody §7.1 leaves to the
+     * client, and neither is an attendee the modification removed — there is no
+     * property of theirs left to write on.
+     *
+     * @param Component|null $original The resource as it stands, where it is
+     *                                 the owner's to send; null makes every
+     *                                 attendee `<Absent>`, which is §3.2.1.1
+     * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     *
+     * @return bool Whether anything was written on the resource
+     */
+    private function tellTheAttendeesOf(?Component $original, Component $object, array $addresses): bool
+    {
+        // Built before anything is written on the resource, because §7.3 keeps
+        // its parameter out of a message and the resource is about to carry
+        // one. An ordering nothing states and everything depends on.
+        $request = SchedulingMessage::requesting($object);
+        $stamped = false;
+
+        foreach (Modification::whatEachCalendarUserIsTold($original, $object) as $told) {
+            [$address, $requested, $cancelled, $properties] = $told;
+
+            if (in_array($address, $addresses, true)) {
                 continue;
             }
 
-            $status = new Parameter(DeliveryStatus::NAME, [$this->deliver($message, $address)->value]);
+            $messages = [];
 
-            foreach ($properties as $property) {
-                $property[DeliveryStatus::NAME] = $status;
-                $stamped = true;
+            // A cancellation says somebody is off a list they were on, so it is
+            // built from the side that still has them on it.
+            if ($original !== null && $cancelled !== []) {
+                $messages[] = SchedulingMessage::uninviting($original, $cancelled, $address);
+            }
+
+            if ($requested) {
+                $messages[] = $request;
+            }
+
+            foreach ($messages as $message) {
+                $status = new Parameter(DeliveryStatus::NAME, [$this->deliver($message, $address)->value]);
+
+                foreach ($properties as $property) {
+                    $property[DeliveryStatus::NAME] = $status;
+                    $stamped = true;
+                }
             }
         }
 
@@ -560,8 +674,7 @@ final class Scheduling
      *
      * **One entry per calendar user and not per property**, because the
      * message is the whole resource: an attendee named in an overridden
-     * instance as well as in the master is one person to tell and two
-     * properties to stamp.
+     * instance as well as in the master is one person to tell.
      *
      * **And §7.1 is asked once of them**, which that section is what allows:
      * "The parameter value MUST be the same on each 'ATTENDEE' property whose
@@ -586,7 +699,7 @@ final class Scheduling
      * the record itself, and a caller that took it from the key would find a
      * number wherever an address looked like one.
      *
-     * @return array<array-key, array{string, ScheduleAgent, list<Property>}>
+     * @return array<array-key, array{string, ScheduleAgent}>
      */
     private static function attendeesOf(Component $object): array
     {
@@ -596,8 +709,7 @@ final class Scheduling
             foreach ($component->properties(self::ATTENDEE) as $attendee) {
                 $address = $attendee->value();
 
-                $found[$address] ??= [$address, ScheduleAgent::on($attendee), []];
-                $found[$address][2][] = $attendee;
+                $found[$address] ??= [$address, ScheduleAgent::on($attendee)];
             }
         }
 
@@ -712,9 +824,19 @@ final class Scheduling
         Principal $node,
         string $inbox,
     ): ?DeliveryStatus {
+        $kept = $message->whatTheRecipientKeeps();
+
+        // **One message leaves their calendar alone**, and §4 is why: the two
+        // things it names are "creating or updating the corresponding
+        // scheduling object resources", and an uninvitation
+        // ({@see SchedulingMessage::uninviting()}) asks for neither. The notice
+        // in the Inbox is the whole of it, which is what §4 puts one there for.
+        if ($kept === null) {
+            return null;
+        }
+
         $calendars = $this->collectionsOf(Calendar::CALENDAR, $principal, $node);
         $uid = $message->uid();
-        $kept = $message->whatTheRecipientKeeps();
 
         // Whatever the recipient's store refuses — a listing, a read, a write
         // — is one answer: §3.2.9's `5.1`, "the server could not complete

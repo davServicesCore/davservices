@@ -105,6 +105,13 @@
             "ignore": [
                 "DavServices\\Plugin\\CalDav::bytesIn",
                 "DavServices\\Plugin\\CardDav::bytesIn",
+                // The third of the same construction, reading the body of the
+                // same two events for RFC 6638 §3.2.1.1 and §3.2.1.2. The cast
+                // is what PHPStan needs and what no input can observe: a
+                // readable stream answers `''` rather than `false`, and an
+                // unreadable one raises a warning the suite turns into a
+                // failure either way.
+                "DavServices\\Plugin\\Scheduling::bytesIn",
             ]
         },
         "Concat": {

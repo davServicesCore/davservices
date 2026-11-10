@@ -223,6 +223,36 @@ final class SchedulingCancelTest extends TestCase
     }
 
     /**
+     * **The first property naming a calendar user answers for all of them**,
+     * which is §7.1's own sentence: "The parameter value MUST be the same on
+     * each 'ATTENDEE' property whose values match in a scheduling object
+     * resource." A resource that breaks it is read by the rule it broke, and
+     * the overridden instance below says `NONE` where the master says nothing
+     * at all.
+     *
+     * A server that let the last property answer instead would decide that one
+     * instance of a series settles whether the whole event is cancelled.
+     */
+    public function testTheFirstPropertyNamingAnAttendeeAnswersForTheRest(): void
+    {
+        $this->given();
+        $this->inTheCalendar(
+            'calendars/bernard/work',
+            'series.ics',
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\n"
+            . "RRULE:FREQ=DAILY;COUNT=3\r\nORGANIZER:mailto:bernard@example.com\r\n"
+            . "ATTENDEE:mailto:cyrus@example.com\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID:20261102T100000Z\r\nORGANIZER:mailto:bernard@example.com\r\n"
+            . "ATTENDEE;SCHEDULE-AGENT=NONE:mailto:cyrus@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        );
+        $this->delete('calendars/bernard/work/series.ics');
+
+        self::assertCount(1, $this->namesIn('calendars/cyrus/inbox'));
+    }
+
+    /**
      * **The same path twice is two removals.** A resource put back under a
      * name that has been used before is a new resource, and what was read of
      * the old one says nothing about it — so nothing of the first removal is
