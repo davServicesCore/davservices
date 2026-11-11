@@ -368,36 +368,52 @@ jobs:
 
       - name: Install litmus
         run: |
-          # **Installed again when the archive cannot be reached.** On
-          # 11.11.2026 the run on `main` that merged #144 went red here and
-          # nowhere else: the runner's resolver answered for neither
-          # azure.archive.ubuntu.com nor archive.ubuntu.com nor
-          # security.ubuntu.com, so `apt-get update` ignored every index it
+          # **Installed again when the archive cannot be reached, and from
+          # outside it when it still cannot.** On 11.11.2026 the run on `main`
+          # that merged #144 went red here and nowhere else: the runner
+          # resolved none of the three mirrors its apt sources name —
+          # azure.archive.ubuntu.com, archive.ubuntu.com and
+          # security.ubuntu.com — so `apt-get update` ignored every index it
           # was given and the install could not fetch the two packages it
-          # needed. Nothing in the repository took part in that — the same
-          # commit had passed this job in 27 seconds at the pull request
-          # fifty minutes earlier (runs 43027969216 and 43042896651).
+          # needed. Nothing in the repository took part in that: the same
+          # commit had passed this job in 27 seconds at the pull request fifty
+          # minutes earlier (runs 43027969216 and 43042896651).
           #
-          # **A retry carries a hiccup and is no cure for an outage.** That
-          # one was still answering nothing twenty minutes later, far longer
-          # than three attempts here wait, and the only cure for its like is
-          # to run the job once the names resolve again. What this covers is
-          # the shorter case, a resolver or a mirror that answers on the
-          # second try: a red that says nothing about the protocol is a red
-          # that teaches the next reader to look past it.
+          # **The three share a point of failure, and it is the name.** A
+          # probe on the runner at 15:35 UTC had mirrors.edge.kernel.org and
+          # packages.microsoft.com answering while all three of those names
+          # and launchpad.net did not — every name that failed was
+          # Canonical's. Three attempts at three names in one zone are one
+          # attempt, so the second route has to leave the zone rather than
+          # pick another Ubuntu mirror.
           #
-          # **The bound is what makes the attempts affordable.** Each name
+          # **A retry is still worth having.** The outage above was answering
+          # nothing forty minutes on, and no number of attempts carries that;
+          # what they carry is the shorter case, a resolver or a mirror that
+          # answers on the second try. The archive stays the first source
+          # because the mirror list is the image's business and its own
+          # priority 1 is a host in the same datacentre.
+          #
+          # **What the fallback is not: a pin, nor a quiet green.** The mirror
+          # serves the same signed `InRelease` as the archive, so apt resolves
+          # the version and verifies the signature itself, against the archive
+          # key already in the image — unlike the phar in docs.yml, which has
+          # no signature of its own and so needs its digest written down. And
+          # if the mirror cannot install litmus either, this step is red: a
+          # job that reported success while the protocol was never exercised
+          # would be worth less than no job at all, which is also what rules
+          # out `continue-on-error` — it would swallow a real litmus
+          # regression along with the archive.
+          #
+          # **The bounds are what make the attempts affordable.** Each name
           # that does not resolve costs apt twenty seconds, and the step that
-          # went red spent five minutes on the three mirrors before it gave up.
-          # Three of those unbounded would walk into the fifteen minutes the
-          # copy of this job in quality.yml gives itself, and go red by timeout
-          # with nothing in the log to say why. A reachable archive installs in
-          # ten seconds, so two minutes an attempt takes nothing away from the
-          # run that works.
-          #
-          # `Acquire::Retries` is apt's own go at the same thing within each
-          # attempt, where it also carries a mirror that drops a single
-          # connection without waiting out the sleep.
+          # went red spent five minutes on the three before it gave up. Three
+          # of those unbounded would walk into the fifteen minutes the copy of
+          # this job in quality.yml gives itself, and go red by timeout with
+          # nothing in the log to say why. Five bounded calls and two sleeps
+          # come to eleven minutes at the very worst, which leaves that
+          # quarter of an hour the litmus run itself. A reachable archive
+          # installs in ten seconds, and the mirror took ten in the probe.
           #
           # The copy in quality.yml installs it the same way.
           for attempt in 1 2 3; do
@@ -412,7 +428,28 @@ jobs:
             echo "litmus is not installed, attempt ${attempt} of 3"
           done
 
-          exit 1
+          echo 'Three attempts at the archive; trying a mirror outside its zone.'
+
+          codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+
+          echo "deb http://mirrors.edge.kernel.org/ubuntu ${codename} universe" \
+            | sudo tee /etc/apt/sources.list.d/litmus-fallback.list
+
+          # **This list alone, with `sourceparts` emptied beside it.** Left to
+          # all of them, apt would spend its patience on the names that do not
+          # answer a fourth time, and take the install's candidate from the
+          # index of a host it cannot reach. `universe` is where both litmus
+          # and libneon27t64-gnutls live.
+          sudo timeout 120 apt-get -o Acquire::Retries=3 \
+            -o Dir::Etc::sourcelist=sources.list.d/litmus-fallback.list \
+            -o Dir::Etc::sourceparts=- \
+            -o APT::Get::List-Cleanup=0 \
+            update
+
+          sudo timeout 120 apt-get -o Acquire::Retries=3 \
+            -o Dir::Etc::sourcelist=sources.list.d/litmus-fallback.list \
+            -o Dir::Etc::sourceparts=- \
+            install --no-install-recommends --yes litmus
 
       # The sets for the part of the protocol that is built. litmus stops
       # after the first set that fails, so a failure in `basic` means the
