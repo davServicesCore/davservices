@@ -368,8 +368,51 @@ jobs:
 
       - name: Install litmus
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes litmus
+          # **Installed again when the archive cannot be reached.** On
+          # 11.11.2026 the run on `main` that merged #144 went red here and
+          # nowhere else: the runner's resolver answered for neither
+          # azure.archive.ubuntu.com nor archive.ubuntu.com nor
+          # security.ubuntu.com, so `apt-get update` ignored every index it
+          # was given and the install could not fetch the two packages it
+          # needed. Nothing in the repository took part in that — the same
+          # commit had passed this job in 27 seconds at the pull request
+          # fifty minutes earlier (runs 43027969216 and 43042896651).
+          #
+          # **A retry carries a hiccup and is no cure for an outage.** That
+          # one was still answering nothing twenty minutes later, far longer
+          # than three attempts here wait, and the only cure for its like is
+          # to run the job once the names resolve again. What this covers is
+          # the shorter case, a resolver or a mirror that answers on the
+          # second try: a red that says nothing about the protocol is a red
+          # that teaches the next reader to look past it.
+          #
+          # **The bound is what makes the attempts affordable.** Each name
+          # that does not resolve costs apt twenty seconds, and the step that
+          # went red spent five minutes on the three mirrors before it gave up.
+          # Three of those unbounded would walk into the fifteen minutes the
+          # copy of this job in quality.yml gives itself, and go red by timeout
+          # with nothing in the log to say why. A reachable archive installs in
+          # ten seconds, so two minutes an attempt takes nothing away from the
+          # run that works.
+          #
+          # `Acquire::Retries` is apt's own go at the same thing within each
+          # attempt, where it also carries a mirror that drops a single
+          # connection without waiting out the sleep.
+          #
+          # The copy in quality.yml installs it the same way.
+          for attempt in 1 2 3; do
+            [ "${attempt}" = 1 ] || sleep 20
+
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install \
+                --no-install-recommends --yes litmus; then
+              exit 0
+            fi
+
+            echo "litmus is not installed, attempt ${attempt} of 3"
+          done
+
+          exit 1
 
       # The sets for the part of the protocol that is built. litmus stops
       # after the first set that fails, so a failure in `basic` means the
