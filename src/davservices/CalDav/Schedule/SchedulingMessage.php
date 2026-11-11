@@ -145,6 +145,11 @@ final class SchedulingMessage
     /**
      * The `REQUEST` that tells an attendee about this object.
      *
+     * RFC 5546 §3.2.2 has it express "the entire series", and §3.2.6 of RFC
+     * 6638 says whose series: the object this is given is the one calendar user
+     * it goes to may be told about ({@see Restriction}), which for an attendee
+     * invited to one instance is a single overridden component.
+     *
      * @param Component $object The `VCALENDAR` of the organizer's scheduling
      *                          object resource, as
      *                          {@see \DavServices\CalDav\CalendarObject::in()}
@@ -188,6 +193,13 @@ final class SchedulingMessage
      * moment it is copied whole. A `REQUEST` keeps them, §3.2.2's constraints
      * having `VALARM | 0+`: a reminder the organizer set is part of the
      * invitation, and a cancellation is no occasion for one.
+     *
+     * **And the object is the one calendar user's to see**, as a `REQUEST`'s
+     * is: §3.2.6 of RFC 6638 restricts every message delivered to an attendee
+     * to the instances that name them ({@see Restriction}), so a cancellation
+     * of a whole series reaches somebody who was on one instance of it as
+     * §3.2.5's second form — one component, with the `RECURRENCE-ID` of the
+     * instance they knew.
      *
      * @param Component $object The `VCALENDAR` of the organizer's scheduling
      *                          object resource, as it stands before it goes.

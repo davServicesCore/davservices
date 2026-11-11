@@ -24,6 +24,7 @@ use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
 use DavServices\CalDav\Schedule\Outbox;
 use DavServices\CalDav\Schedule\Reply;
+use DavServices\CalDav\Schedule\Restriction;
 use DavServices\CalDav\Schedule\ScheduleAgent;
 use DavServices\CalDav\Schedule\SchedulingMessage;
 use DavServices\CalDav\Schedule\SchedulingObject;
@@ -78,6 +79,10 @@ use DavServices\Xml\Element;
  * - **§3.2.1.3's Remove**: and their removal of it sends the cancellation
  *   ({@see self::readWhatIsGoing()}), which §3.2.3.2 asks for of a `DELETE` of
  *   the resource and of a `DELETE` of the whole calendar collection alike.
+ * - **§3.2.6's restriction on every one of those**: a calendar user is told
+ *   about the instances that name them and about no others, which for an
+ *   attendee invited to one instance of a series is one component and for one
+ *   taken off an instance is an `EXDATE` ({@see Restriction}).
  * - **§3.2.2.2 and §3.2.2.3**, the other side of that `PUT`: an attendee who
  *   answers, or excludes an instance, sends the organizer the `REPLY`
  *   §3.2.2.3 asks for ({@see self::tellTheOrganizerOf()}).
@@ -131,16 +136,13 @@ use DavServices\Xml\Element;
  * itself and leaves it to the server, so anything this server does not do is
  * then done by nobody.
  *
- * **And two MUSTs of §3.2 are still nobody's.** §3.2.6 restricts what an
- * attendee may be told about a series — "Servers MUST ensure that 'Attendees'
- * only get information about recurrence instances that explicitly include them
- * as an 'Attendee'" — and §3.2.8 resets every answer when an event is
- * rescheduled: "Servers MUST reset the 'PARTSTAT' property parameter value of
- * all 'ATTENDEE' properties, except the one that corresponds to the
- * 'Organizer', to 'NEEDS-ACTION' for each calendar component change that
- * causes any instance to be rescheduled." A client that had handed the
- * scheduling over would show a meeting everybody had accepted at a time nobody
- * had been asked about.
+ * **And one MUST of §3.2 is still nobody's.** §3.2.8 resets every answer when
+ * an event is rescheduled: "Servers MUST reset the 'PARTSTAT' property
+ * parameter value of all 'ATTENDEE' properties, except the one that corresponds
+ * to the 'Organizer', to 'NEEDS-ACTION' for each calendar component change that
+ * causes any instance to be rescheduled" — with a table of the seven properties
+ * that count as one. A client that had handed the scheduling over would show a
+ * meeting everybody had accepted at a time nobody had been asked about.
  *
  * **The price of waiting is named too**: a client that keeps sending its own
  * invitations while this server also delivers makes two messages out of one.
@@ -228,7 +230,7 @@ final class Scheduling
      * once. An entry whose removal was refused is never collected, and goes
      * when the request does.
      *
-     * @var array<string, array{SchedulingMessage, Component, list<string>}>
+     * @var array<string, array{Component, list<string>}>
      */
     private array $goingWith = [];
 
@@ -336,7 +338,7 @@ final class Scheduling
             return;
         }
 
-        $this->goingWith[$path] = [SchedulingMessage::cancelling($object), $object, $addresses];
+        $this->goingWith[$path] = [$object, $addresses];
     }
 
     /**
@@ -363,9 +365,9 @@ final class Scheduling
 
         unset($this->goingWith[$event->path()]);
 
-        [$message, $object, $addresses] = $going;
+        [$object, $addresses] = $going;
 
-        $this->cancelTheWholeOf($message, $object, $addresses);
+        $this->cancelTheWholeOf($object, $addresses);
     }
 
     /**
@@ -376,23 +378,32 @@ final class Scheduling
      * §3.2.1's MUST NOT about the organizer's own `ATTENDEE` property holds
      * here too.
      *
-     * One message for everybody, which is the first of the two forms RFC 5546
-     * §3.2.5 allows: "This can be done using a single 'CANCEL' message for all
+     * **A message each, which is the second of the two forms RFC 5546 §3.2.5
+     * allows**: "This can be done using a single 'CANCEL' message for all
      * 'Attendees' or by using multiple messages with different subsets of the
-     * affected 'Attendees' in each."
+     * affected 'Attendees' in each." §3.2.6 is what settles the choice — a
+     * calendar user invited to one instance of a series may not be handed the
+     * series — and §3.2.5 has the form for what they are told instead:
+     * "Individual recurrence instances may be cancelled by specifying multiple
+     * 'VEVENT' components each with a 'RECURRENCE-ID' property corresponding to
+     * one of the instances to be cancelled."
      *
-     * @param Component $object The resource the attendee list is read from,
-     *                          which is the one the message was built from
+     * @param Component $object The resource as it stood, which is both the
+     *                          attendee list and what each message is built
+     *                          from
      * @param list<string> $addresses The owner's own addresses (§2.4.1)
      */
-    private function cancelTheWholeOf(SchedulingMessage $message, Component $object, array $addresses): void
+    private function cancelTheWholeOf(Component $object, array $addresses): void
     {
         foreach (self::attendeesOf($object) as [$address, $agent]) {
             if (in_array($address, $addresses, true) || $agent !== ScheduleAgent::Server) {
                 continue;
             }
 
-            $this->deliver($message, $address);
+            $this->deliver(
+                SchedulingMessage::cancelling(Restriction::whatTheyMayBeTold($object, $address)),
+                $address,
+            );
         }
     }
 
@@ -517,7 +528,7 @@ final class Scheduling
         // here yet. What it must not become is the sentence above it: an
         // attendee editing their own copy does not cancel anybody's event.
         if ($original !== null && $was === SchedulingObject::Organizers) {
-            $this->cancelTheWholeOf(SchedulingMessage::cancelling($original), $original, $addresses);
+            $this->cancelTheWholeOf($original, $addresses);
         }
     }
 
@@ -619,11 +630,23 @@ final class Scheduling
      * Sends what §3.2.1.2's table asks for, and writes back what came of it.
      *
      * **Each calendar user is told once per message and stamped everywhere.**
-     * The table is read per instance while a `REQUEST` is the whole resource,
-     * so an attendee on the master and on an overridden instance gets one — and
-     * §7.3 asks for the parameter "on any 'ATTENDEE' properties corresponding
-     * to calendar users who were sent a scheduling message", which is both of
-     * their properties.
+     * The table is read per instance while a `REQUEST` is the resource as far
+     * as it concerns them, so an attendee on the master and on an overridden
+     * instance gets one — and §7.3 asks for the parameter "on any 'ATTENDEE'
+     * properties corresponding to calendar users who were sent a scheduling
+     * message", which is both of their properties.
+     *
+     * **A message each, which is §3.2.6**: "Servers MUST ensure that
+     * 'Attendees' only get information about recurrence instances that
+     * explicitly include them as an 'Attendee'". {@see Restriction} is what
+     * each one is built from, so the resource is read per calendar user rather
+     * than copied once for all of them.
+     *
+     * **And a message built after another's property was stamped carries
+     * nothing of that stamp**, which is not an ordering to keep but a property
+     * of the builder: §7.1 and §7.3 both forbid their parameter in a message,
+     * and {@see SchedulingMessage} leaves both out of every property it
+     * copies.
      *
      * **The cancellation goes before the request**, where one calendar user
      * gets both: an instance they are off, and the series they are still on.
@@ -657,10 +680,6 @@ final class Scheduling
      */
     private function tellTheAttendeesOf(?Component $original, Component $object, array $addresses): bool
     {
-        // Built before anything is written on the resource, because §7.3 keeps
-        // its parameter out of a message and the resource is about to carry
-        // one. An ordering nothing states and everything depends on.
-        $request = SchedulingMessage::requesting($object);
         $stamped = false;
 
         foreach (Modification::whatEachCalendarUserIsTold($original, $object) as $told) {
@@ -678,8 +697,10 @@ final class Scheduling
                 $messages[] = SchedulingMessage::uninviting($original, $cancelled, $address);
             }
 
+            // Built per calendar user, because §3.2.6 makes it a different
+            // message for each of them.
             if ($requested) {
-                $messages[] = $request;
+                $messages[] = SchedulingMessage::requesting(Restriction::whatTheyMayBeTold($object, $address));
             }
 
             foreach ($messages as $message) {

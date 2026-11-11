@@ -116,9 +116,11 @@ final class Modification
      *
      * 1. **the address**, carried rather than taken from the key, because an
      *    address that looks like a number would come back from a key as one;
-     * 2. **whether a `REQUEST` goes**, which is the modified resource whole —
-     *    RFC 5546 §3.2.2 has that message express "the entire series",
-     *    instance-specific information and all;
+     * 2. **whether a `REQUEST` goes**, which is the modified resource as far
+     *    as it concerns that calendar user: RFC 5546 §3.2.2 has the message
+     *    express "the entire series", instance-specific information and all,
+     *    and RFC 6638 §3.2.6 narrows that to the instances naming them
+     *    ({@see Restriction});
      * 3. **the instances a `CANCEL` is to name**: the component of the original
      *    that governed the instance, with the `RECURRENCE-ID` property that
      *    names it, or null for RFC 5546 §3.2.5's complete range. The original,

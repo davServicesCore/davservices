@@ -227,8 +227,9 @@ final class SchedulingModifyTest extends TestCase
     /**
      * **One instance lost and the series kept sends both messages, in that
      * order.** The cancellation names the instance (§3.2.5's second form) and
-     * the request carries the whole modified resource, so what the attendee is
-     * left with is what the organizer's resource says.
+     * the request carries the modified resource as far as it concerns them
+     * (§3.2.6), so what the attendee is left with is what the organizer's
+     * resource says about them.
      */
     public function testAnInstanceLostAndASeriesKeptSendsBothInThatOrder(): void
     {
@@ -244,12 +245,17 @@ final class SchedulingModifyTest extends TestCase
     }
 
     /**
-     * **And their own copy is left as the modification left the resource**,
-     * which is the whole reason the cancellation goes first: the request is
-     * what §4.1 has update their resource "to reflect the changes sent by the
-     * 'Organizer'", and it is the second of the two to arrive.
+     * **And their own copy is left as the modification left the resource, as
+     * far as it concerns them**, which is the whole reason the cancellation
+     * goes first: the request is what §4.1 has update their resource "to
+     * reflect the changes sent by the 'Organizer'", and it is the second of the
+     * two to arrive.
+     *
+     * **One component and not two**, which is §3.2.6: the instance they were
+     * taken off is not theirs to be told about, and the `EXDATE` in the master
+     * is what keeps the `RRULE` from putting it back in front of them.
      */
-    public function testTheirOwnCopyEndsAsTheModifiedResource(): void
+    public function testTheirOwnCopyEndsAsTheModifiedResourceConcernsThem(): void
     {
         $this->given($this->aSeries(self::CYRUS, self::CYRUS));
         $this->inTheCalendar('calendars/cyrus/work', 'theirs.ics', $this->aSeries(self::CYRUS, self::CYRUS));
@@ -257,8 +263,9 @@ final class SchedulingModifyTest extends TestCase
 
         $theirs = $this->theStoredObject('calendars/cyrus/work/theirs.ics');
 
-        self::assertSame(2, substr_count($theirs, 'BEGIN:VEVENT'));
+        self::assertSame(1, substr_count($theirs, 'BEGIN:VEVENT'));
         self::assertSame(1, substr_count($theirs, 'cyrus'));
+        self::assertStringContainsString("EXDATE:20261102T100000Z\r\n", $theirs);
     }
 
     /**
