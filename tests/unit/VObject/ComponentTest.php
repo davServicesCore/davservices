@@ -457,4 +457,38 @@ final class ComponentTest extends TestCase
 
         return $event;
     }
+
+    /**
+     * **A copy is a tree nothing else holds**, down to the leaves. What comes
+     * back can be changed without changing what it came from — which is the
+     * point of having it, a component and a property both being things a
+     * caller may edit.
+     *
+     * The order is the order it was in: RFC 5545 §3.5 imposes none, and a file
+     * that comes back with its parts shuffled is one somebody has to read
+     * again to see that only the one thing changed (R-VOBJ-05).
+     */
+    public function testACopyIsATreeNothingElseHolds(): void
+    {
+        $component = new Component('VEVENT');
+        $alarm = new Component('VALARM');
+
+        $alarm->add(new Property('ACTION', 'DISPLAY'));
+        $component->add(new Property('UID', '1'));
+        $component->add($alarm);
+        $component->add(new Property('SUMMARY', 'Lunch'));
+
+        $copy = $component->copy();
+
+        $copy->component('VALARM')?->property('ACTION')?->setValue('AUDIO');
+        $copy->property('SUMMARY')?->setValue('Dinner');
+        $copy->add(new Property('LOCATION', 'Room 101'));
+
+        self::assertSame('VEVENT', $copy->name());
+        self::assertSame(['UID', 'VALARM', 'SUMMARY', 'LOCATION'], self::namesIn($copy));
+        self::assertSame(['UID', 'VALARM', 'SUMMARY'], self::namesIn($component));
+        self::assertSame('Lunch', $component->property('SUMMARY')?->value());
+        self::assertSame('DISPLAY', $component->component('VALARM')?->property('ACTION')?->value());
+    }
+
 }

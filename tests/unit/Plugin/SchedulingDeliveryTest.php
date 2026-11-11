@@ -933,6 +933,98 @@ final class SchedulingDeliveryTest extends TestCase
     }
 
     /**
+     * **An attendee invited to one instance is sent that instance alone**,
+     * which is §3.2.6's MUST and the first of the two examples it works out:
+     *
+     * > Servers MUST ensure that "Attendees" only get information about
+     * > recurrence instances that explicitly include them as an "Attendee",
+     * > when delivering scheduling messages for recurring calendar
+     * > components.
+     * >
+     * > […] Any scheduling messages delivered to the "Attendee" will only
+     * > contain information about this overridden instance.
+     */
+    public function testAnAttendeeInvitedToOneInstanceIsSentThatInstanceAlone(): void
+    {
+        $this->given();
+        $this->putWhole($this->aSeriesAndAnInstance(
+            'ATTENDEE:mailto:eric@example.com',
+            "ATTENDEE:mailto:eric@example.com\r\nATTENDEE:mailto:cyrus@example.com",
+        ));
+
+        $message = $this->theOneMessageIn('cyrus');
+
+        self::assertSame(1, substr_count($message, 'BEGIN:VEVENT'));
+        self::assertStringContainsString("RECURRENCE-ID:20261102T100000Z\r\n", $message);
+        self::assertStringNotContainsString('RRULE', $message);
+    }
+
+    /**
+     * **And one taken off an instance is sent the exclusion**, which is the
+     * second example — and the half that cannot be left out, the `RRULE` in
+     * the master putting the instance back otherwise:
+     *
+     * > Any scheduling messages delivered to the "Attendee" will not specify
+     * > the overridden instance but rather will include an "EXDATE" property
+     * > in the "master" component that defines the recurrence set.
+     *
+     */
+    public function testAnAttendeeOffOneInstanceIsSentTheExclusion(): void
+    {
+        $this->given();
+        $this->putWhole($this->aSeriesAndAnInstance(
+            "ATTENDEE:mailto:eric@example.com\r\nATTENDEE:mailto:cyrus@example.com",
+            'ATTENDEE:mailto:eric@example.com',
+        ));
+
+        $message = $this->theOneMessageIn('cyrus');
+
+        self::assertSame(1, substr_count($message, 'BEGIN:VEVENT'));
+        self::assertStringContainsString("EXDATE:20261102T100000Z\r\n", $message);
+        self::assertStringNotContainsString('RECURRENCE-ID', $message);
+    }
+
+    /**
+     * **And the attendee who is on every instance is sent every instance**,
+     * because §3.2.6 keeps from somebody what they are not on and nothing
+     * else: nothing here is restricted, and the message is the resource.
+     */
+    public function testAnAttendeeOnEveryInstanceIsSentEveryInstance(): void
+    {
+        $this->given();
+        $this->putWhole($this->aSeriesAndAnInstance(
+            'ATTENDEE:mailto:cyrus@example.com',
+            'ATTENDEE:mailto:cyrus@example.com',
+        ));
+
+        $message = $this->theOneMessageIn('cyrus');
+
+        self::assertSame(2, substr_count($message, 'BEGIN:VEVENT'));
+        self::assertStringContainsString("RRULE:FREQ=DAILY;COUNT=3\r\n", $message);
+        self::assertStringContainsString("RECURRENCE-ID:20261102T100000Z\r\n", $message);
+        self::assertStringNotContainsString('EXDATE', $message);
+    }
+
+    /**
+     * A daily series of three and one overridden instance of it, each carrying
+     * the attendees given.
+     *
+     * @param string $series The `ATTENDEE` lines on the master
+     * @param string $instance The `ATTENDEE` lines on the component that
+     *                         overrides the second day
+     */
+    private function aSeriesAndAnInstance(string $series, string $instance): string
+    {
+        return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\n"
+            . "RRULE:FREQ=DAILY;COUNT=3\r\nORGANIZER:mailto:bernard@example.com\r\n"
+            . $series . "\r\nEND:VEVENT\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261102T110000Z\r\n"
+            . "RECURRENCE-ID:20261102T100000Z\r\nORGANIZER:mailto:bernard@example.com\r\n"
+            . $instance . "\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    }
+
+    /**
      * The `PUT` of an event carrying those properties, and the status it was
      * answered with.
      */

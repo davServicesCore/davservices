@@ -84,6 +84,26 @@ final class Property implements ArrayAccess
     }
 
     /**
+     * The same property again, which nothing else holds.
+     *
+     * **For the callers that mean to change one.** A property can be changed,
+     * so two components holding one between them answer for each other: a
+     * `PARTSTAT` written on one instance of a series would be written on the
+     * series itself ({@see \DavServices\VObject\Recur\Override}), and a
+     * message built out of a resource would carry the parameters the resource
+     * is about to be stamped with
+     * ({@see \DavServices\CalDav\Schedule\SchedulingMessage}).
+     *
+     * The parameters are shared rather than rebuilt, a {@see Parameter} being
+     * read-only through and through: nothing can be done to one that the
+     * property it is on would notice.
+     */
+    public function copy(): self
+    {
+        return new self($this->name, $this->value, $this->parameters, $this->group);
+    }
+
+    /**
      * The group this was written under, or null where there is none.
      */
     public function group(): ?string
