@@ -423,6 +423,36 @@ final class SchedulingCancelTest extends TestCase
     }
 
     /**
+     * **An attendee of a time zone is nobody to cancel anything for.** RFC
+     * 5545 §3.6.5 lists what a `VTIMEZONE` may hold and `ATTENDEE` is not among
+     * them, so a component that carries one was never valid — and §3.1 of RFC
+     * 6638 asks about "all the calendar components in a calendar object
+     * resource" in the sense {@see Instances::of()} reads it.
+     *
+     * **It is asked rather than assumed** because of what the answer is used
+     * for: the message is built out of the instances that name the calendar
+     * user (§3.2.6), and a name taken from a zone is on no instance at all —
+     * so what would go out is a cancellation about nothing.
+     */
+    public function testAnAttendeeOfATimeZoneIsNobodyToCancelFor(): void
+    {
+        $this->given();
+        $this->inTheCalendar(
+            'calendars/bernard/work',
+            'zoned.ics',
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\n"
+            . "ATTENDEE:mailto:cyrus@example.com\r\nEND:VTIMEZONE\r\n"
+            . "BEGIN:VEVENT\r\nUID:2\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\n"
+            . "ORGANIZER:mailto:bernard@example.com\r\n"
+            . "ATTENDEE:mailto:eric@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        );
+        $this->delete('calendars/bernard/work/zoned.ics');
+
+        self::assertSame([], $this->namesIn('calendars/cyrus/inbox'));
+    }
+
+    /**
      * **A cancellation names the instances that attendee was on, and no
      * others.** §3.2.6's MUST holds for every message delivered to an
      * attendee — "when delivering scheduling messages for recurring calendar

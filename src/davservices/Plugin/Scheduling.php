@@ -817,13 +817,17 @@ final class Scheduling
      * answers for all, and a resource that breaks that rule is read by the
      * sentence it broke.
      *
-     * **The components the object itself holds**, which is where §3.1 looks
-     * for an `ATTENDEE` as well. A `VALARM` has attendees of its own — RFC
-     * 5545 §3.6.6 makes them "the attendees… to be sent an email" — and
-     * inviting somebody to an event because the organizer set a reminder would
-     * be a stranger's invitation out of nowhere. A `VTIMEZONE` needs no
-     * skipping: RFC 5545 §3.6.5 lists what one may hold, and `ATTENDEE` is not
-     * among them.
+     * **The components {@see Instances::of()} answers for**, which is where
+     * §3.1 looks for an `ATTENDEE` as well. A `VALARM` has attendees of its
+     * own — RFC 5545 §3.6.6 makes them "the attendees… to be sent an email" —
+     * and inviting somebody to an event because the organizer set a reminder
+     * would be a stranger's invitation out of nowhere.
+     *
+     * **And a zone is skipped, although §3.6.5 lets one hold no `ATTENDEE`
+     * anyway.** What comes back is what each message is then built for
+     * (§3.2.6, {@see Restriction}), and a name taken from a `VTIMEZONE` is on
+     * no instance of anything — so what would go out for it is a cancellation
+     * about nothing.
      *
      * The addresses are told apart as written, for the reason
      * {@see SchedulingObject} gives: RFC 5545 §3.1 makes a property value
@@ -840,7 +844,7 @@ final class Scheduling
     {
         $found = [];
 
-        foreach ($object->components() as $component) {
+        foreach (Instances::of($object) as $component) {
             foreach ($component->properties(self::ATTENDEE) as $attendee) {
                 $address = $attendee->value();
 
