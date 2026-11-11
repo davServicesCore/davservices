@@ -126,13 +126,17 @@ final class SchedulingMessage
      * @param Component $message The message itself, kept so that what the
      *                           recipient is to keep can be told from it
      *                           without reading the bytes back
+     * @param string $method The iTIP method it carries, which is what decides
+     *                       which half of §4 the receiving server does with it
      * @param bool $forTheirCalendar Whether this message is one the recipient
-     *                               keeps a copy of at all. Two of the three
-     *                               are; {@see self::uninviting()} says why
-     *                               the third is not
+     *                               keeps a copy of at all. Two of the four
+     *                               are; {@see self::uninviting()} and
+     *                               {@see self::replying()} say why the others
+     *                               are not
      */
     private function __construct(
         private readonly Component $message,
+        private readonly string $method,
         private readonly string $text,
         private readonly bool $forTheirCalendar,
     ) {
@@ -391,7 +395,7 @@ final class SchedulingMessage
         $message[self::METHOD] = new Property(self::METHOD, $method);
         $message->moveFirst(self::METHOD);
 
-        return new self($message, (new Serializer())->write($message), $forTheirCalendar);
+        return new self($message, $method, (new Serializer())->write($message), $forTheirCalendar);
     }
 
     /**
@@ -550,6 +554,33 @@ final class SchedulingMessage
     public function uid(): ?string
     {
         return CalendarObject::uidIn($this->message);
+    }
+
+    /**
+     * The reply the receiving server is to process (§4.2), or null where this
+     * message asks for no such thing.
+     *
+     * §4 has two halves, and the `METHOD` is what says which one a message
+     * arriving is: §4.1 is "for a scheduling message sent by an 'Organizer'"
+     * and §4.2 "for a scheduling message reply sent by an 'Attendee'". RFC
+     * 5546 §1.4 makes the property the one that says so — and §3.2's table of
+     * methods puts `REPLY` on the attendee's side of the exchange.
+     *
+     * So this and {@see self::whatTheRecipientKeeps()} are the two halves of
+     * §4 asked of one message, and no message answers both: what §4.2
+     * describes is an update of two parameters on a resource the recipient
+     * already has, which is neither of §4's "creating or updating the
+     * corresponding scheduling object resources".
+     *
+     * **The message itself**, which the processing reads and leaves as it
+     * stands ({@see Reply::appliedTo()}). A copy would be a copy of the bytes
+     * that were sent, and the one property §4.2 reads that an organizer's own
+     * message may not carry — `REQUEST-STATUS` — is the one
+     * {@see self::copyOf()} leaves out.
+     */
+    public function whatTheOrganizerProcesses(): ?Component
+    {
+        return $this->method === self::REPLY ? $this->message : null;
     }
 
     /**

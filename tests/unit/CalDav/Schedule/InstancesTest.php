@@ -286,6 +286,71 @@ final class InstancesTest extends TestCase
     }
 
     /**
+     * **The master is served on its own**, which is what §4.2 needs of it: a
+     * reply naming no instance is about the series, and the series is what the
+     * master defines — RFC 4791 §4.1 making it the component that "defines the
+     * recurrence 'set' and does not contain any RECURRENCE-ID property".
+     *
+     * Found behind a component that overrides one of its instances, §3.6 of
+     * RFC 5545 imposing no order on the components of an object.
+     */
+    public function testTheMasterIsServedOnItsOwn(): void
+    {
+        $master = Instances::theMasterOf($this->anObject(
+            $this->anInstance('SUMMARY:Dinner'),
+            $this->anEvent('SUMMARY:Lunch'),
+        ));
+
+        self::assertSame('Lunch', $master?->property('SUMMARY')?->value());
+    }
+
+    /**
+     * **And an object of overridden instances alone has none**, which is the
+     * resource RFC 4791 §4.1 allows — "a calendar object resource will contain
+     * one or more iCalendar components" — and nothing a series can be read
+     * off.
+     */
+    public function testAnObjectWithoutAMasterHasNone(): void
+    {
+        self::assertNull(Instances::theMasterOf($this->anObject($this->anInstance('SUMMARY:Dinner'))));
+    }
+
+    /**
+     * **The component overriding one instance is served by the value that
+     * names it**, which is the first half of what §4.2 asks of a reply that
+     * carries a `RECURRENCE-ID`: the instance it is about may already have a
+     * component of its own.
+     *
+     * The value is compared as written, for the reason {@see Instances} gives
+     * about two revisions of one resource: RFC 5546 §2.1.5 makes `UID` and
+     * `RECURRENCE-ID` the primary key of an instance, and a key is matched
+     * rather than interpreted.
+     */
+    public function testTheComponentOverridingAnInstanceIsServedByItsName(): void
+    {
+        $override = Instances::theOverrideOf(
+            $this->anObject($this->anEvent('SUMMARY:Lunch'), $this->anInstance('SUMMARY:Dinner')),
+            self::INSTANCE,
+        );
+
+        self::assertSame('Dinner', $override?->property('SUMMARY')?->value());
+    }
+
+    /**
+     * **And an instance nothing overrides has no component of its own**, which
+     * is the other half: §4.2's parenthesis has the server take into account
+     * that "an 'Attendee' could have created a new overridden iCalendar
+     * component", and the organizer's copy need not have one.
+     */
+    public function testAnInstanceNothingOverridesHasNoComponent(): void
+    {
+        self::assertNull(Instances::theOverrideOf(
+            $this->anObject($this->anEvent('SUMMARY:Lunch'), $this->anInstance('SUMMARY:Dinner')),
+            '20261103T100000Z',
+        ));
+    }
+
+    /**
      * One row of the pairing, which the case expects to be there.
      *
      * @param list<array{?Component, ?Component, ?Property}> $paired

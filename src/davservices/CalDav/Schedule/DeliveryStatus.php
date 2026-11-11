@@ -58,9 +58,16 @@ namespace DavServices\CalDav\Schedule;
  * server that hands a message to something slower than itself — §3.2.9.2 names
  * iMIP, "store and forward style scheduling protocols" — and this one either
  * has written the resource or has not. `3.8` is "insufficient privileges",
- * which needs §6's scheduling privileges to be there to consult. And the 2.x
- * codes are §3.2.9's other kind, "a 'reply' status corresponding to the
- * 'Attendee's' own 'REQUEST-STATUS'", which arrives with §4.2.
+ * which needs §6's scheduling privileges to be there to consult.
+ *
+ * **And the 2.x codes are not this server's to choose.** They are §3.2.9's
+ * other kind — "a 'reply' status corresponding to the 'Attendee's' own
+ * 'REQUEST-STATUS' information from the scheduling message reply that is sent
+ * back to the 'Organizer'" — so they arrive in a message rather than being
+ * decided here, and §3.2.9 says as much: "The status code for 'reply' status
+ * can be any of the valid iTIP [RFC5546] 'REQUEST-STATUS' values."
+ * {@see Reply} is what reads them out of a message, and what writes §4.2's
+ * own `2.0` where a reply reports nothing at all.
  *
  * ## Where it may not be written
  *
@@ -104,6 +111,13 @@ enum DeliveryStatus: string
     /**
      * §7.3's parameter name, which is where one of these values goes — and
      * the one {@see SchedulingMessage} has to leave out of a message.
+     *
+     * **One parameter for both of §3.2.9's kinds of status**, which is how §7.3
+     * describes its own purpose: "the status codes returned from processing of
+     * the most recent scheduling message sent to the corresponding 'Attendee',
+     * or received from the corresponding 'Organizer'". So a delivery status
+     * written when an invitation went out is replaced by the reply status that
+     * came of it ({@see Reply}), the reply being what the sending was for.
      */
     public const NAME = 'SCHEDULE-STATUS';
 }

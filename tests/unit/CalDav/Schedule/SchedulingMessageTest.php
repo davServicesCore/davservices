@@ -972,6 +972,39 @@ END:VALARM",
     }
 
     /**
+     * **But the organizer processes the reply itself**, which is the other
+     * half of the same sentence: §4.2 has the server "update the 'PARTSTAT'
+     * iCalendar property parameter value of each 'ATTENDEE' iCalendar property
+     * in the scheduling object resource to match the changes indicated in the
+     * reply", and the reply is where those changes are read from.
+     */
+    public function testTheOrganizerProcessesTheReplyItself(): void
+    {
+        $reply = $this->replyAbout($this->objectWith(self::PLAIN_INVITATION), null, 'ACCEPTED');
+
+        self::assertSame(
+            $reply->text(),
+            (new Serializer())->write($reply->whatTheOrganizerProcesses() ?? self::fail('Nothing to process.')),
+        );
+    }
+
+    /**
+     * **And there is nothing of an organizer's own messages to process here.**
+     * §4.1 is what their side of §4 asks for, and it is about a resource of
+     * the recipient's rather than about two parameters on one of their own:
+     * "the server processes the scheduling message and updates the matching
+     * scheduling object resource belonging to the 'Attendee'".
+     */
+    public function testThereIsNothingOfTheOrganizersOwnMessagesToProcess(): void
+    {
+        $object = $this->objectWith(self::PLAIN_INVITATION);
+
+        self::assertNull(SchedulingMessage::requesting($object)->whatTheOrganizerProcesses());
+        self::assertNull(SchedulingMessage::cancelling($object)->whatTheOrganizerProcesses());
+        self::assertNull($this->uninvitationOf($object, null)->whatTheOrganizerProcesses());
+    }
+
+    /**
      * **The zone an instance is named in travels with it.** §3.2.3:
      * `VTIMEZONE | 0 or 1 | MUST be present if any date/time refers to a
      * timezone`, and RFC 5545 §3.8.4.4 makes a `RECURRENCE-ID` mean one
