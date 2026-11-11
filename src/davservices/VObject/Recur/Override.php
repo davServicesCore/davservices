@@ -219,6 +219,17 @@ final class Override
 
     /**
      * The same component again, down to the leaves.
+     *
+     * **Down to the leaves because a component may hold a component.** RFC
+     * 9073 §4 adds `*participantc` to a `VEVENT`, and §7.1 lets one of those
+     * hold the places its participant is at:
+     *
+     *     participantc = "BEGIN" ":" "PARTICIPANT" CRLF
+     *                    partprop *locationc *resourcec
+     *                    "END" ":" "PARTICIPANT" CRLF
+     *
+     * So the walk goes as deep as the data does, and an instance keeps
+     * everything the series said about it.
      */
     private static function copyOf(Component $component): Component
     {

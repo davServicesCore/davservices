@@ -342,6 +342,40 @@ final class OverrideTest extends TestCase
     }
 
     /**
+     * **And they travel the whole way down.** A component may hold a component
+     * that holds another: RFC 9073 §4 adds `*participantc` to a `VEVENT` —
+     *
+     *     eventc = "BEGIN" ":" "VEVENT" CRLF
+     *              eventprop *alarmc *participantc *locationc *resourcec
+     *              "END" ":" "VEVENT" CRLF
+     *
+     * — and §7.1 lets one of those hold the places that participant is at:
+     *
+     *     participantc = "BEGIN" ":" "PARTICIPANT" CRLF
+     *                    partprop *locationc *resourcec
+     *                    "END" ":" "PARTICIPANT" CRLF
+     *
+     * §7.2 says the same from the other side, a `VLOCATION` being one that
+     * "can be specified multiple times in a 'VEVENT', 'VTODO', 'VJOURNAL',
+     * 'VFREEBUSY', or 'PARTICIPANT' calendar component". So the depth is not a
+     * guess about what a parser might hand over: it is in the grammar.
+     */
+    public function testSubcomponentsTravelTheWholeWayDown(): void
+    {
+        self::assertStringContainsString(
+            "BEGIN:PARTICIPANT\r\nPARTICIPANT-TYPE:ACTIVE\r\n"
+            . "BEGIN:VLOCATION\r\nUID:2\r\nNAME:Room 101\r\nEND:VLOCATION\r\n"
+            . "END:PARTICIPANT\r\n",
+            $this->overriding(
+                "DTSTART:20261101T100000Z\r\n"
+                . "BEGIN:PARTICIPANT\r\nPARTICIPANT-TYPE:ACTIVE\r\n"
+                . "BEGIN:VLOCATION\r\nUID:2\r\nNAME:Room 101\r\nEND:VLOCATION\r\n"
+                . "END:PARTICIPANT\r\n",
+            ),
+        );
+    }
+
+    /**
      * **Nothing of the master's is shared with it.** A {@see Property} is
      * mutable in its parameters, and what this is for is a `PARTSTAT` written
      * on one instance (RFC 6638 §4.2) — which would be written on the whole
