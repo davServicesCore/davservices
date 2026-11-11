@@ -116,6 +116,25 @@ final class Instances
     }
 
     /**
+     * The component overriding the instance that value names, or null where
+     * none does.
+     *
+     * **The other half of what a reply about one instance asks** (RFC 6638
+     * §4.2): the instance it names may have a component of its own on the
+     * organizer's copy, and where it has none the parenthesis of that section
+     * applies — the server takes into account "the fact that an 'Attendee'
+     * could have created a new overridden iCalendar component".
+     *
+     * The value is compared as written, as it is throughout this pairing: RFC
+     * 5546 §2.1.5 makes `UID` and `RECURRENCE-ID` "the primary key for
+     * referencing" an instance, and a key is matched rather than interpreted.
+     */
+    public static function theOverrideOf(?Component $object, string $named): ?Component
+    {
+        return self::theOverridesOf($object)[$named][0] ?? null;
+    }
+
+    /**
      * The components an instance can be, which is all of them but the zones.
      *
      * RFC 5545 §3.6.5 lists what a `VTIMEZONE` may hold, and neither
@@ -151,8 +170,13 @@ final class Instances
      * The first without a `RECURRENCE-ID`, that property being what RFC 5545
      * §3.8.4.4 makes an instance out of a component — and not the first
      * component, §3.6 imposing no ordering on them.
+     *
+     * **Asked for in its own right by {@see Reply::appliedTo()}**,
+     * where a reply naming no instance is a reply about the series: RFC 5546
+     * §3.2.3 has `RECURRENCE-ID | 0 or 1 | Only if referring to an instance of
+     * a recurring calendar component.`
      */
-    private static function theMasterOf(?Component $object): ?Component
+    public static function theMasterOf(?Component $object): ?Component
     {
         foreach (self::of($object) as $component) {
             if ($component->property(self::RECURRENCE_ID) === null) {
