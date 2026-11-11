@@ -74,11 +74,12 @@ use PHPUnit\Framework\TestCase;
  * ## What is not here
  *
  * **§4.2**, which is what the organizer's server does with the reply once it
- * arrives: "update the 'PARTSTAT' iCalendar property parameter value of each
+ * arrives — "update the 'PARTSTAT' iCalendar property parameter value of each
  * 'ATTENDEE' iCalendar property in the scheduling object resource to match the
- * changes indicated in the reply". The message reaches the Inbox, and the
- * organizer's own event is left as it stands until that is done — the same
- * order P8-02c and P8-02d went in on the other side.
+ * changes indicated in the reply". It happens inside this very `PUT`, and
+ * {@see SchedulingAnsweredTest} is where it is asked about: this file is about
+ * what the attendee's change sends, and that one about what the message then
+ * does where it arrives.
  *
  * **§3.2.2.4**, an attendee removing their copy, which hangs on §8.1's
  * `Schedule-Reply` request header.
@@ -426,23 +427,6 @@ final class SchedulingReplyTest extends TestCase
     }
 
     /**
-     * **The organizer's own copy is left as it stands**, which is §4.2 and the
-     * chunk after this one. The message is in the Inbox for the organizer to
-     * find; the `PARTSTAT` on their event is not touched yet.
-     */
-    public function testTheOrganizersOwnCopyIsLeftAsItStands(): void
-    {
-        $theirs = $this->anEvent(self::ORGANISED, 'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:cyrus@example.com');
-
-        $this->given($this->anEvent(self::ORGANISED, $this->answering('NEEDS-ACTION')));
-        $this->inTheCalendar('calendars/bernard/work', 'theirs.ics', $theirs);
-
-        $this->put($this->anEvent(self::ORGANISED, $this->answering('ACCEPTED')));
-
-        self::assertSame($theirs, $this->theStoredObject('calendars/bernard/work/theirs.ics'));
-    }
-
-    /**
      * **An attendee who takes the organizer off sends nothing yet.**
      * §3.2.3.1's table calls that "Scheduling object resource → Calendar
      * object resource: Remove", and §3.2.2.4 is the Remove it means — which
@@ -563,22 +547,6 @@ final class SchedulingReplyTest extends TestCase
         }
 
         return $written;
-    }
-
-    /**
-     * Puts something into one of the collections.
-     */
-    private function inTheCalendar(string $path, string $name, string $content): void
-    {
-        $this->theCollection($path)->createFile($name, $content);
-    }
-
-    /**
-     * The store behind the collection at that path.
-     */
-    private function theCollection(string $path): MemoryCollection
-    {
-        return $this->stores[$path] ?? self::fail('No such collection: ' . $path);
     }
 
     /**

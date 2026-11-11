@@ -23,6 +23,7 @@ use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
 use DavServices\CalDav\Schedule\Outbox;
+use DavServices\CalDav\Schedule\Reply;
 use DavServices\CalDav\Schedule\ScheduleAgent;
 use DavServices\CalDav\Schedule\SchedulingMessage;
 use DavServices\CalDav\Schedule\SchedulingObject;
@@ -80,9 +81,10 @@ use DavServices\Xml\Element;
  * - **§3.2.2.2 and §3.2.2.3**, the other side of that `PUT`: an attendee who
  *   answers, or excludes an instance, sends the organizer the `REPLY`
  *   §3.2.2.3 asks for ({@see self::tellTheOrganizerOf()}).
- * - and **§4's processing** of what it delivers to an attendee: the message
- *   becomes an event on a calendar of the recipient's own before it appears in
- *   their Inbox.
+ * - and **§4's processing** of what it delivers, both ways round: §4.1 has an
+ *   organizer's message become an event on a calendar of the attendee's own,
+ *   and §4.2 has an attendee's reply write their answer onto the organizer's —
+ *   each before the message appears in the recipient's Inbox.
  *
  * Both properties are withheld from `allprop`, both sections asking for that
  * in the same words.
@@ -118,34 +120,33 @@ use DavServices\Xml\Element;
  * only when a client names one: `wasNamed()` is what keeps that off every
  * `PROPFIND`.
  *
- * ## Five things this deliberately does not do
+ * ## Four things this deliberately does not do
  *
- * **No `calendar-auto-schedule` token**, although all three of the organizer's
- * operations are answered now and the attendee's reply with them. §2 puts the
- * token on "any resource that supports any scheduling operations, properties,
- * privileges, or methods", and on those words this plugin has earned it several
- * times over. It is withheld all the same, because of what the token is *read
- * for*: a client that sees it stops doing the scheduling itself and leaves it
- * to the server. The piece still missing is the one that closes the loop —
- * §4.2, where an attendee's `REPLY` reaches the organizer's own copy. Until it
- * is here the organizer's event never records who accepted, and a client that
- * had stopped asking for itself would show a meeting nobody had answered.
+ * **No `calendar-auto-schedule` token**, although both sides of the exchange
+ * are answered now and both directions of §4's processing with them. §2 puts
+ * the token on "any resource that supports any scheduling operations,
+ * properties, privileges, or methods", and on those words this plugin has
+ * earned it several times over. It is withheld all the same, because of what
+ * the token is *read for*: a client that sees it stops doing the scheduling
+ * itself and leaves it to the server, so anything this server does not do is
+ * then done by nobody.
+ *
+ * **And two MUSTs of §3.2 are still nobody's.** §3.2.6 restricts what an
+ * attendee may be told about a series — "Servers MUST ensure that 'Attendees'
+ * only get information about recurrence instances that explicitly include them
+ * as an 'Attendee'" — and §3.2.8 resets every answer when an event is
+ * rescheduled: "Servers MUST reset the 'PARTSTAT' property parameter value of
+ * all 'ATTENDEE' properties, except the one that corresponds to the
+ * 'Organizer', to 'NEEDS-ACTION' for each calendar component change that
+ * causes any instance to be rescheduled." A client that had handed the
+ * scheduling over would show a meeting everybody had accepted at a time nobody
+ * had been asked about.
  *
  * **The price of waiting is named too**: a client that keeps sending its own
  * invitations while this server also delivers makes two messages out of one.
  * §7.1 is the brake the document provides for that — `SCHEDULE-AGENT=CLIENT`
  * on an attendee, and nothing is sent — and of the two ways to be wrong, an
  * invitation too many is the one a calendar user can see and tick off.
- *
- * **No processing of a `REPLY` once it arrives.** §4.2 asks for that in two
- * MUSTs of its own — "update the 'PARTSTAT' iCalendar property parameter value
- * of each 'ATTENDEE' iCalendar property in the scheduling object resource to
- * match the changes indicated in the reply", and the `SCHEDULE-STATUS` that
- * goes with it — and that is a piece of work in its own right, as §4.1 was for
- * the other direction. Until it is here a reply waits in the organizer's
- * Inbox, which is what §4 has it there for ("an indicator to the client that a
- * scheduling operation has taken place"), and their own copy still says
- * nobody has answered.
  *
  * **No `CALDAV:calendar-user-address-set`**, although §2.4.1 is this memo's
  * too. It is answered by {@see CalDav}, and it stays there: it is the map from
@@ -880,12 +881,13 @@ final class Scheduling
             return DeliveryStatus::Delivered;
         }
 
-        $failed = $this->copyForTheRecipient($message, $principal, $node, $where);
+        $failed = $this->processedForTheRecipient($message, $principal, $node, $where);
 
-        // §4.1: "the scheduling message MUST only appear in the 'Attendee's'
-        // scheduling Inbox collection once all automatic processing has been
-        // done." A notice without the event behind it would send a client
-        // looking for something that is not there.
+        // §4.1 and §4.2 ask for the same order in the same words: "the
+        // scheduling message MUST only appear in the […] scheduling Inbox
+        // collection once all automatic processing has been done." A notice
+        // without the event behind it would send a client looking for
+        // something that is not there.
         if ($failed !== null) {
             return $failed;
         }
@@ -900,7 +902,89 @@ final class Scheduling
     }
 
     /**
-     * §4: the event itself, on a calendar of the recipient's own.
+     * §4: what the recipient's server makes of the message, before anything
+     * says it arrived.
+     *
+     * **Two halves, and the `METHOD` says which.** §4.1 is "for a scheduling
+     * message sent by an 'Organizer'" and §4.2 "for a scheduling message reply
+     * sent by an 'Attendee'", and the two ask for different things of
+     * different resources: one creates or updates the recipient's copy, the
+     * other writes two parameters on a resource they already have.
+     *
+     * {@see SchedulingMessage::whatTheOrganizerProcesses()} is where that is
+     * read, because the message is the one thing that knows which it is.
+     *
+     * @return DeliveryStatus|null What came of it, or null where it was done
+     */
+    private function processedForTheRecipient(
+        SchedulingMessage $message,
+        string $principal,
+        Principal $node,
+        string $inbox,
+    ): ?DeliveryStatus {
+        $reply = $message->whatTheOrganizerProcesses();
+
+        return $reply === null
+            ? $this->copyForTheRecipient($message, $principal, $node, $inbox)
+            : $this->answeredOnTheirCopy($message, $reply, $principal, $node);
+    }
+
+    /**
+     * §4.2: the answer written onto the organizer's own copy.
+     *
+     * > For a scheduling message reply sent by an "Attendee", the server first
+     * > locates the corresponding scheduling object resource belonging to the
+     * > "Organizer". If the corresponding scheduling object resource cannot be
+     * > found, the server SHOULD ignore the scheduling message.
+     *
+     * **"Ignore" is about the processing that sentence leads into**, and the
+     * notice stays in the Inbox: §4 puts one there "as an indicator to the
+     * client that a scheduling operation has taken place", and a reply about
+     * an event the organizer has deleted is something only they can make sense
+     * of — RFC 5546 §3.2.3 leaves the uninvited attendee to them in the same
+     * way. The delivery itself succeeded, and §3.2.9 has no code for a message
+     * that arrived and changed nothing.
+     *
+     * **The resource is stored again only where the reply reached something**,
+     * which is what {@see Reply::appliedTo()} answers. §7.3 forbids the
+     * parameter where nothing was sent, and a write that changed nothing would
+     * still change the bytes: the serialiser folds what a client wrote in one
+     * line (RFC 5545 §3.1).
+     *
+     * @return DeliveryStatus|null What came of it, or null where it was done
+     */
+    private function answeredOnTheirCopy(
+        SchedulingMessage $message,
+        Component $reply,
+        string $principal,
+        Principal $node,
+    ): ?DeliveryStatus {
+        $calendars = $this->collectionsOf(Calendar::CALENDAR, $principal, $node);
+
+        // Whatever their store refuses — a listing, a read, a write — is one
+        // answer, as it is for the other half of §4: §3.2.9's `5.1`, "the
+        // server could not complete delivery of the message".
+        try {
+            $theirs = self::theirCopyFor($message, $calendars);
+
+            if ($theirs === null) {
+                return null;
+            }
+
+            [$file, $object] = $theirs;
+
+            if (Reply::appliedTo($object, $reply)) {
+                $file->put((new Serializer())->write($object));
+            }
+        } catch (IHttpFailure) {
+            return DeliveryStatus::NotCompleted;
+        }
+
+        return null;
+    }
+
+    /**
+     * §4.1: the event itself, on a calendar of the recipient's own.
      *
      * > Servers MUST automatically process incoming scheduling messages using
      * > the rules defined by [RFC5546], by creating or updating the
@@ -949,17 +1033,18 @@ final class Scheduling
         }
 
         $calendars = $this->collectionsOf(Calendar::CALENDAR, $principal, $node);
-        $uid = $message->uid();
 
         // Whatever the recipient's store refuses — a listing, a read, a write
         // — is one answer: §3.2.9's `5.1`, "the server could not complete
         // delivery of the message". The organizer's own event is not lost over
         // somebody else's calendar.
         try {
-            $theirs = $uid === null ? null : self::theirCopyOf($uid, $calendars);
+            $theirs = self::theirCopyFor($message, $calendars);
 
             if ($theirs !== null) {
-                $theirs->put($kept);
+                [$file] = $theirs;
+
+                $file->put($kept);
 
                 return null;
             }
@@ -982,24 +1067,42 @@ final class Scheduling
     }
 
     /**
-     * The resource on one of these calendars that holds that `UID`, or null
-     * where none does.
+     * The resource on one of these calendars that this message is about, with
+     * what it holds, or null where there is none.
      *
-     * Every calendar of theirs is asked, because §4.1 looks for a resource
-     * "belonging to the 'Attendee'" rather than one in any particular
-     * collection — and RFC 4791 §4.1 makes a `UID` unique only "in the scope
-     * of the calendar collection in which they are stored", so the one copy
-     * can be in any of them.
+     * Every calendar of theirs is asked, because §4.1 and §4.2 both look for a
+     * resource "belonging to" a calendar user rather than one in any
+     * particular collection — and RFC 4791 §4.1 makes a `UID` unique only "in
+     * the scope of the calendar collection in which they are stored", so the
+     * one copy can be in any of them.
+     *
+     * **Both the file and the object**, because the two halves of §4 need one
+     * each and reading a resource twice is two chances to disagree about what
+     * it says.
+     *
+     * **A message about no event at all corresponds to nothing.** RFC 5546
+     * §2.1.5 makes the `UID` "the primary key for referencing a particular
+     * iCalendar component", so a message carrying none names no resource of
+     * anybody's — and RFC 5545 §3.6.1 makes the property REQUIRED, so one that
+     * does is data no client should have written.
      *
      * **What is no calendar object resource is walked past**, not tripped over:
-     * §4.2 lets a calendar hold "collections that are not calendar
+     * RFC 4791 §4.2 lets a calendar hold "collections that are not calendar
      * collections", and a member this server cannot read as one object carries
      * no `UID` to match.
      *
      * @param list<array{string, ICollection}> $calendars
+     *
+     * @return array{IFile, Component}|null
      */
-    private static function theirCopyOf(string $uid, array $calendars): ?IFile
+    private static function theirCopyFor(SchedulingMessage $message, array $calendars): ?array
     {
+        $uid = $message->uid();
+
+        if ($uid === null) {
+            return null;
+        }
+
         foreach ($calendars as [, $calendar]) {
             foreach ($calendar->children() as $child) {
                 if (!$child instanceof IFile) {
@@ -1009,7 +1112,7 @@ final class Scheduling
                 $object = CalendarObject::in($child->get());
 
                 if ($object !== null && CalendarObject::uidIn($object) === $uid) {
-                    return $child;
+                    return [$child, $object];
                 }
             }
         }
