@@ -85,6 +85,12 @@ final class Restriction
     private const VTIMEZONE = 'VTIMEZONE';
 
     /**
+     * The parameter RFC 5545 §3.2.13 gives to a recurrence identifier alone,
+     * and so the one an exclusion cannot carry over.
+     */
+    private const RANGE = 'RANGE';
+
+    /**
      * The object as that calendar user may be told about it.
      *
      * Every component naming them, the zones whatever is kept may refer to,
@@ -198,7 +204,7 @@ final class Restriction
         $parameters = [];
 
         foreach ($named->parameters() as $parameter) {
-            if (!$parameter->named('RANGE')) {
+            if (!$parameter->named(self::RANGE)) {
                 $parameters[] = $parameter;
             }
         }
