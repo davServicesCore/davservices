@@ -152,7 +152,7 @@ final class Override
         $written->add(new Property(self::RECURRENCE_ID, $is->encode(), $named->parameters()));
 
         foreach ($master->components() as $inner) {
-            $written->add(self::copyOf($inner));
+            $written->add($inner->copy());
         }
 
         return $written;
@@ -193,7 +193,7 @@ final class Override
 
         return in_array($name, self::ENDS, true)
             ? self::shifted($property, $moved)
-            : self::builtAgain($property);
+            : $property->copy();
     }
 
     /**
@@ -215,43 +215,6 @@ final class Override
             $property->parameters(),
             $property->group(),
         );
-    }
-
-    /**
-     * The same component again, down to the leaves.
-     *
-     * **Down to the leaves because a component may hold a component.** RFC
-     * 9073 §4 adds `*participantc` to a `VEVENT`, and §7.1 lets one of those
-     * hold the places its participant is at:
-     *
-     *     participantc = "BEGIN" ":" "PARTICIPANT" CRLF
-     *                    partprop *locationc *resourcec
-     *                    "END" ":" "PARTICIPANT" CRLF
-     *
-     * So the walk goes as deep as the data does, and an instance keeps
-     * everything the series said about it.
-     */
-    private static function copyOf(Component $component): Component
-    {
-        $copy = new Component($component->name());
-
-        foreach ($component->children() as $child) {
-            $copy->add($child instanceof Component ? self::copyOf($child) : self::builtAgain($child));
-        }
-
-        return $copy;
-    }
-
-    /**
-     * The same property again, built rather than handed over.
-     *
-     * Which is the whole of what keeps the instance and the series apart: a
-     * {@see Property} is mutable in its parameters, so two components holding
-     * one between them would answer for each other.
-     */
-    private static function builtAgain(Property $property): Property
-    {
-        return new Property($property->name(), $property->value(), $property->parameters(), $property->group());
     }
 
     /**

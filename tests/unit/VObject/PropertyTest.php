@@ -316,4 +316,42 @@ final class PropertyTest extends TestCase
 
         self::assertSame('Lunch with Ada', $property->value());
     }
+
+    /**
+     * **A copy is a property nothing else holds.** The parts travel — the
+     * name and value as they were written, the parameters, and the vCard group
+     * of RFC 6350 §3.3 — and what comes back can be changed without changing
+     * what it came from.
+     */
+    public function testACopyIsAPropertyNothingElseHolds(): void
+    {
+        $property = new Property('ATTENDEE', 'mailto:cyrus@example.com', [
+            new Parameter('PARTSTAT', ['NEEDS-ACTION']),
+        ], 'ITEM1');
+        $copy = $property->copy();
+
+        $copy['PARTSTAT'] = new Parameter('PARTSTAT', ['ACCEPTED']);
+        $copy->setValue('mailto:eric@example.com');
+
+        self::assertSame('ATTENDEE', $copy->name());
+        self::assertSame('ITEM1', $copy->group());
+        self::assertSame('mailto:cyrus@example.com', $property->value());
+        self::assertSame('NEEDS-ACTION', $property->parameter('PARTSTAT')?->value());
+        self::assertSame('ACCEPTED', $copy->parameter('PARTSTAT')?->value());
+    }
+
+    /**
+     * **And the parameters are shared rather than rebuilt**, because a
+     * {@see Parameter} is read-only through and through: nothing can be done
+     * to one that the property it is on would notice.
+     */
+    public function testTheParametersOfACopyAreTheSameOnes(): void
+    {
+        $parameter = new Parameter('TZID', ['Europe/Berlin']);
+
+        self::assertSame(
+            [$parameter],
+            (new Property('DTSTART', '20261101T100000', [$parameter]))->copy()->parameters(),
+        );
+    }
 }

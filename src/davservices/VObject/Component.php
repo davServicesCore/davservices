@@ -108,6 +108,29 @@ final class Component implements ArrayAccess, IteratorAggregate
     }
 
     /**
+     * The same component again, down to the leaves, which nothing else holds.
+     *
+     * **A tree a caller can change without changing what it came from**, which
+     * is what {@see Property::copy()} is for one property. The order is the
+     * order it was in, RFC 5545 §3.5 imposing none and a file that comes back
+     * shuffled being one somebody has to read twice (R-VOBJ-05).
+     *
+     * **As deep as the data goes.** A component may hold a component that
+     * holds another: RFC 9073 §4 adds `*participantc` to a `VEVENT`, and §7.1
+     * lets one of those hold the places its participant is at.
+     */
+    public function copy(): self
+    {
+        $copy = new self($this->name);
+
+        foreach ($this->children as $child) {
+            $copy->add($child->copy());
+        }
+
+        return $copy;
+    }
+
+    /**
      * Moves the first child of that name to the front, or does nothing where
      * there is none.
      *
