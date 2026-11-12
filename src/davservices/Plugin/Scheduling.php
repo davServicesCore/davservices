@@ -19,6 +19,7 @@ use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Schedule\Answer;
 use DavServices\CalDav\Schedule\DeliveryStatus;
+use DavServices\CalDav\Schedule\ForceSend;
 use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
@@ -137,13 +138,24 @@ use DavServices\Xml\Element;
  * itself and leaves it to the server, so anything this server does not do is
  * then done by nobody.
  *
- * **And one MUST of §3.2 is still nobody's.** §3.2.8 resets every answer when
- * an event is rescheduled: "Servers MUST reset the 'PARTSTAT' property
- * parameter value of all 'ATTENDEE' properties, except the one that corresponds
- * to the 'Organizer', to 'NEEDS-ACTION' for each calendar component change that
- * causes any instance to be rescheduled" — with a table of the seven properties
- * that count as one. A client that had handed the scheduling over would show a
- * meeting everybody had accepted at a time nobody had been asked about.
+ * **And §3.2 is kept now, but the document is more than §3.2.** The reason
+ * this token waited was §3.2.8, and {@see Reschedule} is that section — so
+ * three others stand in its place, each of them something a client that had
+ * handed the scheduling over would then find nobody doing:
+ *
+ * - **§5's `POST` on a scheduling Outbox collection.** A client that sees the
+ *   token asks the server for busy time instead of working it out itself, and
+ *   nothing registers that method on an Outbox: it would be answered `405` by
+ *   a server that had just said it schedules.
+ * - **§3.2.10's `CALDAV:schedule-tag`**, with §8.2's and §8.3's header fields.
+ *   It is how a client writes over its own copy and not over an answer that
+ *   arrived while it was editing — "Avoiding Conflicts when Updating
+ *   Scheduling Object Resources" is the section's own title, and the conflict
+ *   is the one a client stops guarding against once the server schedules.
+ * - **§6's scheduling privileges**, which is how a calendar user says who may
+ *   schedule with them. Until they are there, a delivery asks nobody's
+ *   permission — the same gap {@see self::register()} names below about what a
+ *   client may write into an Inbox.
  *
  * **The price of waiting is named too**: a client that keeps sending its own
  * invitations while this server also delivers makes two messages out of one.
@@ -517,7 +529,15 @@ final class Scheduling
             // the stamp say nothing where the reset wrote.
             $reset = Reschedule::appliedTo($theirs, $object, $addresses);
 
-            if ($this->tellTheAttendeesOf($theirs, $object, $addresses) || $reset) {
+            // **§7.2's first MUST NOT, answered by reading the parameter and
+            // taking it away in the same breath**: "Servers MUST NOT preserve
+            // this property parameter in scheduling object resources". What it
+            // asked for travels on instead of in the resource, and the
+            // write-back carries the taking away even where nothing was sent.
+            $forced = ForceSend::takenOutOf($object);
+            $told = $this->tellTheAttendeesOf($theirs, $object, $addresses, $forced);
+
+            if ($told || $reset || $forced->wasThere()) {
                 $event->writeInstead((new Serializer())->write($object));
             }
 
@@ -526,8 +546,9 @@ final class Scheduling
 
         if ($becoming === SchedulingObject::Attendees) {
             $theirs = $was === SchedulingObject::Attendees ? $original : null;
+            $forced = ForceSend::takenOutOf($object);
 
-            if ($this->tellTheOrganizerOf($theirs, $object, $addresses)) {
+            if ($this->tellTheOrganizerOf($theirs, $object, $addresses, $forced) || $forced->wasThere()) {
                 $event->writeInstead((new Serializer())->write($object));
             }
 
@@ -544,6 +565,13 @@ final class Scheduling
         // which turns on §8.1's `Schedule-Reply` request header and is not
         // here yet. What it must not become is the sentence above it: an
         // attendee editing their own copy does not cancel anybody's event.
+        // **And §7.2's parameter is left where it is**, which is the one place
+        // its MUST NOT does not reach: "Servers MUST NOT preserve this property
+        // parameter in scheduling object resources", and what is being written
+        // here is §3.2.3.1's other row — a calendar object resource that is
+        // nobody's scheduling object. What a client writes into one of those is
+        // its own data, and a server that tidied it would be editing a resource
+        // it has no part in.
         if ($original !== null && $was === SchedulingObject::Organizers) {
             $this->cancelTheWholeOf($original, $addresses);
         }
@@ -688,15 +716,29 @@ final class Scheduling
      * client, and neither is an attendee the modification removed — there is no
      * property of theirs left to write on.
      *
+     * **And a forced `REQUEST` asks for what this does anyway**, which is why
+     * nothing here reads {@see ForceSend} for an attendee but its 2.3.
+     * §3.2.1.2's table has one cell for an attendee this server delivers for,
+     * and that cell is `REQUEST` with no condition on it — so §3.2.7's
+     * "situation where the server would not normally send a scheduling
+     * message" does not arise on this side of the exchange. The parameter is
+     * still taken off the resource, §7.2 asking for that of every property.
+     *
      * @param Component|null $original The resource as it stands, where it is
      *                                 the owner's to send; null makes every
      *                                 attendee `<Absent>`, which is §3.2.1.1
      * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     * @param ForceSend $forced What §7.2's parameter asked for before it was
+     *                          taken away
      *
      * @return bool Whether anything was written on the resource
      */
-    private function tellTheAttendeesOf(?Component $original, Component $object, array $addresses): bool
-    {
+    private function tellTheAttendeesOf(
+        ?Component $original,
+        Component $object,
+        array $addresses,
+        ForceSend $forced,
+    ): bool {
         $stamped = false;
 
         foreach (Modification::whatEachCalendarUserIsTold($original, $object) as $told) {
@@ -721,7 +763,10 @@ final class Scheduling
             }
 
             foreach ($messages as $message) {
-                $status = new Parameter(DeliveryStatus::NAME, [$this->deliver($message, $address)->value]);
+                $status = self::schedulingStatus(
+                    $forced->wasIgnoredOnTheAttendee($address),
+                    $this->deliver($message, $address)->value,
+                );
 
                 foreach ($properties as $property) {
                     $property[DeliveryStatus::NAME] = $status;
@@ -762,15 +807,29 @@ final class Scheduling
      * {@see SchedulingObject::in()} answers `Organizers` wherever every
      * `ORGANIZER` is one of the owner's addresses, and this is the other case.
      *
+     * **And this is the side §3.2.7 has work on.** §3.2.2.3's two MUSTs are
+     * conditional, so an attendee who stores their copy again unchanged tells
+     * the organizer nothing — "a situation where the server would not normally
+     * send a scheduling message", in §3.2.7's own words. A `REPLY` asked for
+     * on the `ORGANIZER` is answered by reading the resource as §3.2.2.2's
+     * creation reads it: every instance answered as though for the first time,
+     * which is what the organizer has not been told.
+     *
      * @param Component|null $original The resource as it stands, where it is
      *                                 the owner's own copy; null makes every
      *                                 answer new, which is §3.2.2.2
      * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     * @param ForceSend $forced What §7.2's parameter asked for before it was
+     *                          taken away
      *
      * @return bool Whether anything was written on the resource
      */
-    private function tellTheOrganizerOf(?Component $original, Component $object, array $addresses): bool
-    {
+    private function tellTheOrganizerOf(
+        ?Component $original,
+        Component $object,
+        array $addresses,
+        ForceSend $forced,
+    ): bool {
         $organizers = self::organizersOf($object);
         $organizer = $organizers[0] ?? null;
 
@@ -778,23 +837,69 @@ final class Scheduling
             return false;
         }
 
+        $address = $organizer->value();
         $answered = Answer::whatTheOrganizerIsTold($original, $object, $addresses);
+        $ignored = $forced->wasIgnoredOnTheOrganizer($address);
+
+        if ($answered === [] && $forced->asksForAReplyTo($address)) {
+            $answered = Answer::whatTheOrganizerIsTold(null, $object, $addresses);
+        }
 
         if ($answered === []) {
-            return false;
+            // **Nothing to send, and §7.2 still has something to say.** This
+            // is where its last MUST and §7.3's fence disagree, and the
+            // narrower sentence wins: a 2.3 claims no delivery, it answers
+            // what the client wrote.
+            if (!$ignored) {
+                return false;
+            }
+
+            foreach ($organizers as $property) {
+                $property[DeliveryStatus::NAME] = new Parameter(
+                    DeliveryStatus::NAME,
+                    [ForceSend::IGNORED],
+                );
+            }
+
+            return true;
         }
 
         // Built before anything is written on the resource, because §7.3 keeps
         // its parameter out of a message and the resource is about to carry
         // one.
         $reply = SchedulingMessage::replying($object, $answered);
-        $status = new Parameter(DeliveryStatus::NAME, [$this->deliver($reply, $organizer->value())->value]);
+        $status = self::schedulingStatus($ignored, $this->deliver($reply, $address)->value);
 
         foreach ($organizers as $property) {
             $property[DeliveryStatus::NAME] = $status;
         }
 
         return true;
+    }
+
+    /**
+     * The one value §7.3 writes, which is a list where both of its kinds of
+     * status have something to say.
+     *
+     * > schedulestatusparam = "SCHEDULE-STATUS" "="
+     * >                     ( statcode
+     * >                    / DQUOTE statcode *("," statcode) DQUOTE)
+     *
+     * **A list is one value and not several**, so the commas are inside a
+     * quoted string — the reading {@see Reply::reportedIn()} already makes of
+     * the same grammar, and {@see \DavServices\VObject\Serializer} is what
+     * puts the quotes there.
+     *
+     * **What was ignored comes first**, which §7.3 does not decide and this
+     * does: §7.2's 2.3 is about the parameter the client wrote, and the
+     * delivery status is what came of the sending that followed it.
+     */
+    private static function schedulingStatus(bool $ignored, string $code): Parameter
+    {
+        return new Parameter(
+            DeliveryStatus::NAME,
+            [$ignored ? ForceSend::IGNORED . ',' . $code : $code],
+        );
     }
 
     /**

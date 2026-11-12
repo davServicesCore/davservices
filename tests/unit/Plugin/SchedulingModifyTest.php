@@ -157,6 +157,134 @@ final class SchedulingModifyTest extends TestCase
     }
 
     /**
+     * **A forced request asks for what happens anyway.** §3.2.1.2's table has
+     * one cell for an attendee this server delivers for — `SERVER` in both
+     * columns — and that cell is `REQUEST` with no condition on it. So §3.2.7's
+     * "situation where the server would not normally send a scheduling message"
+     * does not arise on this side, the parameter changes nothing about what is
+     * sent, and nothing is reported: `REQUEST` on an `ATTENDEE` is the one
+     * value §7.2 pairs with that property.
+     *
+     * What it does change is the resource, and the message built out of it:
+     * §7.2 keeps the parameter out of both.
+     */
+    public function testAForcedRequestAsksForWhatHappensAnyway(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+
+        $this->put($this->anEvent(
+            self::ORGANISED,
+            'ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-FORCE-SEND=REQUEST:mailto:cyrus@example.com',
+        ));
+
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertStringContainsString(
+            'ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=1.2:mailto:cyrus@example.com',
+            $stored,
+        );
+        self::assertStringNotContainsString('SCHEDULE-FORCE-SEND', $stored);
+        self::assertStringNotContainsString(
+            'SCHEDULE-FORCE-SEND',
+            self::unfolded($this->theOneResourceIn('calendars/cyrus/inbox')),
+        );
+    }
+
+    /**
+     * **And a value this server cannot read is reported beside what came of
+     * the delivery.** §7.2's last MUST, on the side where the message goes out
+     * regardless — so the one value §7.3 writes holds both of §3.2.9's kinds
+     * of status, which is what its grammar's comma-separated list is for.
+     */
+    public function testAValueTheServerCannotReadIsReportedBesideTheDelivery(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+
+        $this->put($this->anEvent(
+            self::ORGANISED,
+            'ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-FORCE-SEND=PUBLISH:mailto:cyrus@example.com',
+        ));
+
+        self::assertStringContainsString(
+            'ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS="2.3,1.2":mailto:cyrus@example.com',
+            self::unfolded($this->theStoredObject(self::EVENT)),
+        );
+    }
+
+    /**
+     * **The organizer's own property forces nothing and is stamped with
+     * nothing.** §3.2.1: "The 'Organizer' of a calendar component can also be
+     * an 'Attendee' of that calendar component. In such cases, the server MUST
+     * NOT send a scheduling message to the 'Attendee' that matches the
+     * 'Organizer'" — and §7.2's MAY cannot overrule that MUST NOT. §7.3 says
+     * the rest: the parameter it would be reported in may only be written on
+     * calendar users "who were sent a scheduling message".
+     */
+    public function testTheOrganizersOwnPropertyForcesNothingAndIsNotStamped(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+
+        $this->put($this->anEvent(
+            self::ORGANISED,
+            'ATTENDEE;SCHEDULE-FORCE-SEND=PUBLISH:mailto:bernard@example.com',
+            self::ACCEPTED,
+        ));
+
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertStringContainsString('ATTENDEE:mailto:bernard@example.com', $stored);
+        self::assertStringNotContainsString('SCHEDULE-FORCE-SEND', $stored);
+    }
+
+    /**
+     * **An attendee the client schedules for is neither told nor reported
+     * to.** §7.2 permits the parameter only where the `SCHEDULE-AGENT` "is set
+     * to the value 'SERVER' or is not specified", and §3.2.1.2's table has
+     * nothing sent to such an attendee — so a 2.3 on them would be the server
+     * reporting on a message it was never going to send. The parameter goes
+     * all the same.
+     */
+    public function testAnAttendeeTheClientSchedulesForIsNeitherToldNorReportedTo(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+
+        $this->put($this->anEvent(
+            self::ORGANISED,
+            self::ACCEPTED,
+            'ATTENDEE;SCHEDULE-AGENT=CLIENT;SCHEDULE-FORCE-SEND=PUBLISH:mailto:eric@example.com',
+        ));
+
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertStringContainsString(
+            'ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:eric@example.com',
+            $stored,
+        );
+        self::assertStringNotContainsString('SCHEDULE-FORCE-SEND', $stored);
+        self::assertSame([], $this->namesIn('calendars/eric/inbox'));
+    }
+
+    /**
+     * **A calendar object that is nobody's scheduling object keeps what
+     * arrived.** §7.2's MUST NOT is written of "scheduling object resources",
+     * and §3.1 makes a resource one by the `ORGANIZER` and `ATTENDEE`
+     * properties it carries — so a body with neither is the other row of
+     * §3.2.3.1's table, and tidying it would be the server editing a resource
+     * it has no part in.
+     */
+    public function testACalendarObjectThatIsNobodysSchedulingObjectKeepsWhatArrived(): void
+    {
+        $this->given($this->anEvent('SUMMARY:Lunch'));
+
+        $this->put($this->anEvent('SUMMARY:Lunch', 'LOCATION;SCHEDULE-FORCE-SEND=REQUEST:Bakery'));
+
+        self::assertStringContainsString(
+            'LOCATION;SCHEDULE-FORCE-SEND=REQUEST:Bakery',
+            self::unfolded($this->theStoredObject(self::EVENT)),
+        );
+    }
+
+    /**
      * **A meeting that moves takes the answers with it.** RFC 6638 §3.2.8:
      * "Servers MUST reset the 'PARTSTAT' property parameter value of all
      * 'ATTENDEE' properties, except the one that corresponds to the

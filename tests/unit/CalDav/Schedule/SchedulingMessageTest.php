@@ -114,13 +114,20 @@ final class SchedulingMessageTest extends TestCase
     }
 
     /**
-     * **§7.1's and §7.3's MUST NOTs, one data set each.** The two parameters
-     * the server reads and writes are left out of the message wherever a
-     * client or the server itself put them — on an `ATTENDEE`, on the
-     * `ORGANIZER`, and inside a sub-component, because RFC 5545 §3.6.6 lets a
-     * `VALARM` carry an `ATTENDEE` of its own.
+     * **§7.1's, §7.2's and §7.3's MUST NOTs, one data set each.** The three
+     * parameters the server reads and writes are left out of the message
+     * wherever a client or the server itself put them — on an `ATTENDEE`, on
+     * the `ORGANIZER`, and inside a sub-component, because RFC 5545 §3.6.6
+     * lets a `VALARM` carry an `ATTENDEE` of its own.
+     *
+     * **The third one is held here although the plugin cleans the resource
+     * first.** {@see \DavServices\CalDav\Schedule\ForceSend::takenOutOf()}
+     * answers the other half of §7.2's sentence — "MUST NOT preserve this
+     * property parameter in scheduling object resources" — before any message
+     * is built, so these two data sets are what says the builder does not lean
+     * on that having happened.
      */
-    #[DataProvider('theTwoItMayNotCarry')]
+    #[DataProvider('theThreeItMayNotCarry')]
     public function testTheParametersTheServerOwnsAreLeftOut(string $properties, string $gone): void
     {
         self::assertStringNotContainsString($gone, $this->messageAbout($properties)->text());
@@ -129,8 +136,20 @@ final class SchedulingMessageTest extends TestCase
     /**
      * @return iterable<string, array{string, string}>
      */
-    public static function theTwoItMayNotCarry(): iterable
+    public static function theThreeItMayNotCarry(): iterable
     {
+        yield 'SCHEDULE-FORCE-SEND on an attendee' => [
+            "ORGANIZER:mailto:bernard@example.com\r\n"
+            . 'ATTENDEE;SCHEDULE-FORCE-SEND=REQUEST:mailto:cyrus@example.com',
+            'SCHEDULE-FORCE-SEND',
+        ];
+
+        yield 'SCHEDULE-FORCE-SEND on the organizer' => [
+            "ORGANIZER;SCHEDULE-FORCE-SEND=REPLY:mailto:bernard@example.com\r\n"
+            . 'ATTENDEE:mailto:cyrus@example.com',
+            'SCHEDULE-FORCE-SEND',
+        ];
+
         yield 'SCHEDULE-AGENT on an attendee' => [
             "ORGANIZER:mailto:bernard@example.com\r\n"
             . 'ATTENDEE;SCHEDULE-AGENT=SERVER:mailto:cyrus@example.com',
