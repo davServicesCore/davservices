@@ -202,7 +202,12 @@ final class Reschedule
      * one component however many of its instances moved, and a reset applied
      * twice would be no error but would read as though it were meant.
      *
-     * @return list<Component>
+     * **The key is that identity and nothing else.** Numbering the components
+     * instead would say they came in an order, and they did not: RFC 5545 §3.6
+     * imposes none on the components of a calendar object, and what the caller
+     * does with this is ask each of them in turn.
+     *
+     * @return array<int, Component>
      */
     private static function affectedIn(Component $original, Component $modified): array
     {
@@ -216,7 +221,7 @@ final class Reschedule
             $affected[spl_object_id($component)] = $component;
         }
 
-        return array_values($affected);
+        return $affected;
     }
 
     /**

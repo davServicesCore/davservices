@@ -486,6 +486,37 @@ final class RescheduleTest extends TestCase
     }
 
     /**
+     * **Every component a time changed in has its own answers taken back.**
+     * §3.2.8's first row is read "on each affected component", and a series
+     * whose master and whose overriding instance both last half an hour longer
+     * has two of them. Each carries its own `ATTENDEE` properties — RFC 5545
+     * §3.6.1 making an overriding component a component in its own right — so
+     * the reset applied to one says nothing about the other.
+     *
+     * The recurrence set is untouched here, the same three instances starting
+     * at the same three moments, which is what leaves the first row alone to
+     * answer.
+     */
+    public function testEveryComponentATimeChangedInHasItsOwnAnswersTakenBack(): void
+    {
+        $was = $this->anObject(
+            $this->aSeries(self::DAILY, "DTEND:20261101T110000Z\r\n" . self::ACCEPTED),
+            $this->anInstance('20261102T100000Z', '20261102T140000Z', "DTEND:20261102T150000Z\r\n"),
+        );
+        $is = $this->anObject(
+            $this->aSeries(self::DAILY, "DTEND:20261101T113000Z\r\n" . self::ACCEPTED),
+            $this->anInstance('20261102T100000Z', '20261102T140000Z', "DTEND:20261102T153000Z\r\n"),
+        );
+
+        self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
+
+        $text = self::text($is);
+
+        self::assertSame(2, substr_count($text, self::RESET));
+        self::assertStringNotContainsString('PARTSTAT=ACCEPTED', $text);
+    }
+
+    /**
      * **A start that keeps its wall clock and changes its zone has moved.**
      * RFC 5545 §3.8.2.4 has a `DTSTART` mean one moment only together with its
      * `TZID`, so a value compared without its parameters would miss a meeting
@@ -709,13 +740,14 @@ final class RescheduleTest extends TestCase
     }
 
     /**
-     * A component overriding one instance, at that time.
+     * A component overriding one instance, at that time, carrying those
+     * further lines.
      */
-    private function anInstance(string $id, string $start): string
+    private function anInstance(string $id, string $start, string $more = ''): string
     {
         return "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:" . $start . "\r\n"
             . 'RECURRENCE-ID:' . $id . "\r\n" . self::ORGANISED . "\r\n"
-            . self::ACCEPTED . "\r\nEND:VEVENT\r\n";
+            . self::ACCEPTED . "\r\n" . $more . "END:VEVENT\r\n";
     }
 
     /**
