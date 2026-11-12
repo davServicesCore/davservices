@@ -845,30 +845,21 @@ final class Scheduling
             $answered = Answer::whatTheOrganizerIsTold(null, $object, $addresses);
         }
 
-        if ($answered === []) {
-            // **Nothing to send, and §7.2 still has something to say.** This
-            // is where its last MUST and §7.3's fence disagree, and the
-            // narrower sentence wins: a 2.3 claims no delivery, it answers
-            // what the client wrote.
-            if (!$ignored) {
-                return false;
-            }
-
-            foreach ($organizers as $property) {
-                $property[DeliveryStatus::NAME] = new Parameter(
-                    DeliveryStatus::NAME,
-                    [ForceSend::IGNORED],
-                );
-            }
-
-            return true;
+        // **Nothing to send and §7.2 still has something to say** is a case of
+        // its own, and it is where that section's last MUST and §7.3's fence
+        // disagree: the narrower sentence wins, because a 2.3 claims no
+        // delivery — it answers what the client wrote.
+        if ($answered === [] && !$ignored) {
+            return false;
         }
 
         // Built before anything is written on the resource, because §7.3 keeps
         // its parameter out of a message and the resource is about to carry
         // one.
-        $reply = SchedulingMessage::replying($object, $answered);
-        $status = self::schedulingStatus($ignored, $this->deliver($reply, $address)->value);
+        $delivered = $answered === []
+            ? null
+            : $this->deliver(SchedulingMessage::replying($object, $answered), $address)->value;
+        $status = self::schedulingStatus($ignored, $delivered);
 
         foreach ($organizers as $property) {
             $property[DeliveryStatus::NAME] = $status;
@@ -893,13 +884,19 @@ final class Scheduling
      * **What was ignored comes first**, which §7.3 does not decide and this
      * does: §7.2's 2.3 is about the parameter the client wrote, and the
      * delivery status is what came of the sending that followed it.
+     *
+     * A null code is the one case where nothing was sent and there is still
+     * something to say — §7.2's 2.3 on its own.
      */
-    private static function schedulingStatus(bool $ignored, string $code): Parameter
+    private static function schedulingStatus(bool $ignored, ?string $code): Parameter
     {
-        return new Parameter(
-            DeliveryStatus::NAME,
-            [$ignored ? ForceSend::IGNORED . ',' . $code : $code],
-        );
+        $codes = $ignored ? [ForceSend::IGNORED] : [];
+
+        if ($code !== null) {
+            $codes[] = $code;
+        }
+
+        return new Parameter(DeliveryStatus::NAME, [implode(',', $codes)]);
     }
 
     /**

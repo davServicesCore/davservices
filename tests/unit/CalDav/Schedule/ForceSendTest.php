@@ -105,6 +105,12 @@ final class ForceSendTest extends TestCase
         self::assertTrue($forced->wasThere());
         self::assertFalse($forced->asksForAReplyTo(self::BERNARD));
         self::assertFalse($forced->wasIgnoredOnTheAttendee(self::CYRUS));
+
+        // **And it is not read as the other property's either.** §7.2 pairs
+        // one method with each of the two, so an attendee's parameter is no
+        // organizer's — whatever either of them holds.
+        self::assertFalse($forced->asksForAReplyTo(self::CYRUS));
+        self::assertFalse($forced->wasIgnoredOnTheOrganizer(self::CYRUS));
         self::assertStringNotContainsString(ForceSend::NAME, self::text($object));
     }
 
@@ -125,6 +131,7 @@ final class ForceSendTest extends TestCase
 
         self::assertTrue($forced->wasIgnoredOnTheAttendee(self::CYRUS));
         self::assertFalse($forced->wasIgnoredOnTheOrganizer(self::CYRUS));
+        self::assertFalse($forced->asksForAReplyTo(self::CYRUS));
         self::assertStringNotContainsString(ForceSend::NAME, self::text($object));
     }
 
@@ -143,6 +150,7 @@ final class ForceSendTest extends TestCase
 
         self::assertFalse($forced->asksForAReplyTo(self::BERNARD));
         self::assertTrue($forced->wasIgnoredOnTheOrganizer(self::BERNARD));
+        self::assertFalse($forced->wasIgnoredOnTheAttendee(self::BERNARD));
         self::assertStringNotContainsString(ForceSend::NAME, self::text($object));
     }
 

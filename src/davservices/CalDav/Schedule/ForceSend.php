@@ -14,7 +14,7 @@ declare(strict_types=1);
 namespace DavServices\CalDav\Schedule;
 
 use DavServices\VObject\Component;
-use DavServices\VObject\Property;
+use DavServices\VObject\Parameter;
 
 /**
  * What a calendar user asked to have sent anyway (RFC 6638 §3.2.7).
@@ -145,21 +145,25 @@ final class ForceSend
     private const REPLY = 'REPLY';
 
     /**
+     * **Three lists of addresses and nothing else.** A map whose values mean
+     * nothing is a map that cannot be got wrong: `isset()` answers the same
+     * for `true` and for `false`, so the value would be a thing no test could
+     * hold. What there is to say is said by **which** list an address is in.
+     *
      * @param bool $found Whether the parameter was anywhere in the object,
      *                    which is what makes the resource differ from what
      *                    arrived
-     * @param array<string, array<string, true>> $asked The calendar users
-     *                                                  whose parameter this
-     *                                                  server acts on, by the
-     *                                                  property that named
-     *                                                  them
-     * @param array<string, array<string, true>> $ignored And the ones whose
-     *                                                    value it cannot read
+     * @param list<string> $replies The organizers a `REPLY` was asked of
+     * @param list<string> $attendees The attendees whose value this server
+     *                                cannot read
+     * @param list<string> $organizers And the organizers whose value it cannot
+     *                                 read
      */
     private function __construct(
         private readonly bool $found,
-        private readonly array $asked,
-        private readonly array $ignored,
+        private readonly array $replies,
+        private readonly array $attendees,
+        private readonly array $organizers,
     ) {
     }
 
@@ -174,28 +178,44 @@ final class ForceSend
      */
     public static function takenOutOf(Component $object): self
     {
-        $asked = [];
-        $ignored = [];
+        $replies = [];
+        $attendees = [];
+        $organizers = [];
 
         foreach (Instances::of($object) as $component) {
             foreach ($component->properties() as $property) {
-                $name = self::whichOfTheTwo($property);
+                $parameter = $property->parameter(self::NAME);
 
-                if ($name === null || ScheduleAgent::on($property) !== ScheduleAgent::Server) {
+                if ($parameter === null || ScheduleAgent::on($property) !== ScheduleAgent::Server) {
                     continue;
                 }
 
-                if (self::namesTheMethodFor($property, $name)) {
-                    $asked[$name][$property->value()] = true;
+                // Capitals whatever the client wrote, RFC 5545 §3.5 making a
+                // property name case-insensitive. A property §7.2 names
+                // neither of falls through both arms and is read for nothing.
+                switch (strtoupper($property->name())) {
+                    case self::ATTENDEE:
+                        if (!self::carries($parameter, self::REQUEST)) {
+                            $attendees[] = $property->value();
+                        }
 
-                    continue;
+                        break;
+
+                    case self::ORGANIZER:
+                        if (self::carries($parameter, self::REPLY)) {
+                            $replies[] = $property->value();
+
+                            break;
+                        }
+
+                        $organizers[] = $property->value();
+
+                        break;
                 }
-
-                $ignored[$name][$property->value()] = true;
             }
         }
 
-        return new self(self::strippedFrom($object), $asked, $ignored);
+        return new self(self::strippedFrom($object), $replies, $attendees, $organizers);
     }
 
     /**
@@ -213,7 +233,7 @@ final class ForceSend
      */
     public function asksForAReplyTo(string $organizer): bool
     {
-        return isset($this->asked[self::ORGANIZER][$organizer]);
+        return in_array($organizer, $this->replies, true);
     }
 
     /**
@@ -222,7 +242,7 @@ final class ForceSend
      */
     public function wasIgnoredOnTheAttendee(string $address): bool
     {
-        return isset($this->ignored[self::ATTENDEE][$address]);
+        return in_array($address, $this->attendees, true);
     }
 
     /**
@@ -230,46 +250,25 @@ final class ForceSend
      */
     public function wasIgnoredOnTheOrganizer(string $address): bool
     {
-        return isset($this->ignored[self::ORGANIZER][$address]);
+        return in_array($address, $this->organizers, true);
     }
 
     /**
-     * Which of §7.2's two properties this is and carries the parameter, or
-     * null where it is neither or carries none.
+     * Whether the parameter holds that one method.
      *
-     * The name is answered in capitals whatever the client wrote, RFC 5545
-     * §3.5 making a property name case-insensitive — and the parameter is
-     * looked for the same way, {@see \DavServices\VObject\Parameter::named()}
-     * reading §3.5's sentence about parameter names.
-     */
-    private static function whichOfTheTwo(Property $property): ?string
-    {
-        if ($property->parameter(self::NAME) === null) {
-            return null;
-        }
-
-        $name = strtoupper($property->name());
-
-        return $name === self::ATTENDEE || $name === self::ORGANIZER ? $name : null;
-    }
-
-    /**
-     * Whether the parameter holds the one method this server can force for a
-     * property of that name.
+     * **The parameter rather than the property**, because the caller has
+     * already had to read it to know it is there: asking twice would be a
+     * question whose second answer cannot differ from the first.
      *
      * One value, §7.2's grammar having one — and compared without regard to
      * case, RFC 5545 §3.5 making an enumerated parameter value
      * case-insensitive, which both of §7.2's named alternatives are.
      */
-    private static function namesTheMethodFor(Property $property, string $name): bool
+    private static function carries(Parameter $parameter, string $method): bool
     {
-        $values = $property->parameter(self::NAME)?->values() ?? [];
+        $values = $parameter->values();
 
-        if (count($values) !== 1) {
-            return false;
-        }
-
-        return strcasecmp($values[0], $name === self::ATTENDEE ? self::REQUEST : self::REPLY) === 0;
+        return count($values) === 1 && strcasecmp($values[0], $method) === 0;
     }
 
     /**
