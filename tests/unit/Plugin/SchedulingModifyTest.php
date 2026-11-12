@@ -104,6 +104,10 @@ final class SchedulingModifyTest extends TestCase
 
     private const ERIC = 'ATTENDEE:mailto:eric@example.com';
 
+    private const ACCEPTED = 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:cyrus@example.com';
+
+    private const RESET = 'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:cyrus@example.com';
+
     private const ADDRESSES = [
         'bernard' => ['mailto:bernard@example.com'],
         'cyrus' => ['mailto:cyrus@example.com'],
@@ -150,6 +154,96 @@ final class SchedulingModifyTest extends TestCase
             'ATTENDEE;SCHEDULE-STATUS=1.2:mailto:cyrus@example.com',
             $this->theStoredObject(self::EVENT),
         );
+    }
+
+    /**
+     * **A meeting that moves takes the answers with it.** RFC 6638 §3.2.8:
+     * "Servers MUST reset the 'PARTSTAT' property parameter value of all
+     * 'ATTENDEE' properties, except the one that corresponds to the
+     * 'Organizer', to 'NEEDS-ACTION' for each calendar component change that
+     * causes any instance to be rescheduled." The table's first row has it of
+     * a `DTSTART`: "Any change to these properties".
+     */
+    public function testAMeetingThatMovesTakesTheAnswersWithIt(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+        $this->put($this->anEventAt('20261101T140000Z', self::ORGANISED, self::ACCEPTED));
+
+        self::assertStringContainsString(
+            'ATTENDEE;PARTSTAT=NEEDS-ACTION;SCHEDULE-STATUS=1.2:mailto:cyrus@example.com',
+            self::unfolded($this->theStoredObject(self::EVENT)),
+        );
+    }
+
+    /**
+     * **And the invitation says so, because the answer is taken back before it
+     * is built.** An ordering with a reason: the message §3.2.1.2 sends is made
+     * out of the resource (§3.2.6), so an attendee told afterwards would be
+     * looking at an invitation that still carried the answer §3.2.8 has just
+     * decided no longer stands.
+     */
+    public function testTheInvitationCarriesTheAnswerAlreadyTakenBack(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+        $this->put($this->anEventAt('20261101T140000Z', self::ORGANISED, self::ACCEPTED));
+
+        $message = self::unfolded($this->theOneResourceIn('calendars/cyrus/inbox'));
+
+        self::assertStringContainsString("METHOD:REQUEST\r\n", $message);
+        self::assertStringContainsString('PARTSTAT=NEEDS-ACTION', $message);
+        self::assertStringNotContainsString('PARTSTAT=ACCEPTED', $message);
+    }
+
+    /**
+     * **A modification that moves nothing leaves the answer where it is.**
+     * §3.2.8 defines a reschedule as a change to one of seven properties, and
+     * a summary is none of them — an organizer who wants the answers back for
+     * another reason has that section's own last sentence, which is a MAY and
+     * is the client's to use.
+     */
+    public function testAModificationThatMovesNothingLeavesTheAnswerStanding(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, self::ACCEPTED));
+        $this->put($this->anEvent(self::ORGANISED, self::ACCEPTED, 'SUMMARY:Lunch'));
+
+        self::assertStringContainsString(
+            'ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=1.2:mailto:cyrus@example.com',
+            self::unfolded($this->theStoredObject(self::EVENT)),
+        );
+    }
+
+    /**
+     * **An answer taken back is stored although no message went out.**
+     *
+     * This asks the one case where the two questions come apart, and the
+     * fixture that reaches it is **invalid iCalendar on purpose**: §7.1 has
+     * "The parameter value MUST be the same on each 'ATTENDEE' property whose
+     * values match in a scheduling object resource", and here cyrus is named
+     * twice, once with `SCHEDULE-AGENT=CLIENT` and once without.
+     *
+     * {@see Modification::whatEachCalendarUserIsTold()} reads such a resource
+     * by the sentence it broke — the first property naming a calendar user
+     * answers for all of them — so nothing is sent and nothing is stamped. Nor
+     * is anything refused, both properties carrying the answer the resource
+     * already had. §3.2.8 is written of the property rather than of the
+     * calendar user: "when the 'SCHEDULE-AGENT' property parameter **on the
+     * corresponding 'ATTENDEE' property** is set to the value 'SERVER' or is
+     * not present". So the second property is reset, the first is left where it
+     * stands, and the resource has to be stored as that left it — a stamp is
+     * not what the write back is for.
+     */
+    public function testAnAnswerTakenBackIsStoredAlthoughNothingWasSent(): void
+    {
+        $theirs = 'ATTENDEE;SCHEDULE-AGENT=CLIENT;PARTSTAT=ACCEPTED:mailto:cyrus@example.com';
+        $both = $theirs . "\r\n" . self::ACCEPTED;
+        $this->given($this->anEvent(self::ORGANISED, $both));
+        $this->put($this->anEventAt('20261101T140000Z', self::ORGANISED, $both));
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertSame([], $this->namesIn('calendars/cyrus/inbox'));
+        self::assertStringContainsString("DTSTART:20261101T140000Z\r\n", $stored);
+        self::assertStringContainsString(self::RESET, $stored);
+        self::assertStringContainsString($theirs, $stored);
     }
 
     /**
@@ -580,6 +674,26 @@ final class SchedulingModifyTest extends TestCase
             . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:20261101T100000Z\r\n"
             . self::lines($properties)
             . "END:VEVENT\r\nEND:VCALENDAR\r\n";
+    }
+
+    /**
+     * One event carrying those properties, starting at that moment.
+     */
+    private function anEventAt(string $start, string ...$properties): string
+    {
+        return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//dav.services//test//EN\r\n"
+            . "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:" . $start . "\r\n"
+            . self::lines($properties)
+            . "END:VEVENT\r\nEND:VCALENDAR\r\n";
+    }
+
+    /**
+     * That text with the folding taken out, RFC 5545 §3.1 breaking a line
+     * longer than 75 octets — which an attendee with two parameters passes.
+     */
+    private static function unfolded(string $text): string
+    {
+        return str_replace("\r\n ", '', $text);
     }
 
     /**

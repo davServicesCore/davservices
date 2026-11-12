@@ -24,6 +24,7 @@ use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
 use DavServices\CalDav\Schedule\Outbox;
 use DavServices\CalDav\Schedule\Reply;
+use DavServices\CalDav\Schedule\Reschedule;
 use DavServices\CalDav\Schedule\Restriction;
 use DavServices\CalDav\Schedule\ScheduleAgent;
 use DavServices\CalDav\Schedule\SchedulingMessage;
@@ -500,7 +501,23 @@ final class Scheduling
             // would be about a resource that was never stored.
             self::mustLeaveTheirAnswersAlone($theirs, $object, $addresses);
 
-            if ($this->tellTheAttendeesOf($theirs, $object, $addresses)) {
+            // **And before the messages are built, which is an ordering with
+            // a reason.** §3.2.8 takes back the answers a reschedule makes
+            // stale, and §3.2.1.2's `REQUEST` is made out of the object
+            // (§3.2.6) — so an attendee told afterwards reads the answer they
+            // no longer have, and one told first reads the invitation as it
+            // now stands.
+            //
+            // **Its own answer is asked for**, although every answer it takes
+            // back sits on an `ATTENDEE` whose `SCHEDULE-AGENT` is `SERVER`,
+            // and such an attendee is sent a `REQUEST` whose status is stamped
+            // on that same property. The two are different questions asked of
+            // different things, and a resource that breaks §7.1's "MUST be the
+            // same on each 'ATTENDEE' property whose values match" can have
+            // the stamp say nothing where the reset wrote.
+            $reset = Reschedule::appliedTo($theirs, $object, $addresses);
+
+            if ($this->tellTheAttendeesOf($theirs, $object, $addresses) || $reset) {
                 $event->writeInstead((new Serializer())->write($object));
             }
 
