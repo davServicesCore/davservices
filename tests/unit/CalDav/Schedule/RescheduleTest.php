@@ -97,6 +97,13 @@ final class RescheduleTest extends TestCase
     private const DAILY = 'RRULE:FREQ=DAILY;COUNT=3';
 
     /**
+     * A rule that names a day that never comes, as {@see
+     * \DavServices\CalDav\Limits} puts it: the expansion gives up on it, and
+     * so the properties are read instead of the set.
+     */
+    private const SPINS = 'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30';
+
+    /**
      * **A start that moves takes every answer with it.** The table's first
      * row, and the plainest reading of the MUST above it.
      */
@@ -479,6 +486,189 @@ final class RescheduleTest extends TestCase
     }
 
     /**
+     * **A start that keeps its wall clock and changes its zone has moved.**
+     * RFC 5545 §3.8.2.4 has a `DTSTART` mean one moment only together with its
+     * `TZID`, so a value compared without its parameters would miss a meeting
+     * moved from Berlin to London at ten o'clock.
+     */
+    public function testAStartThatOnlyChangesItsZoneHasMoved(): void
+    {
+        $was = $this->anObject($this->aMeeting('DTSTART;TZID=Europe/Berlin:20261101T100000', self::ACCEPTED));
+        $is = $this->anObject($this->aMeeting('DTSTART;TZID=Europe/London:20261101T100000', self::ACCEPTED));
+
+        self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::RESET, self::text($is));
+    }
+
+    /**
+     * **And two parameters written the other way round have not.** Nothing in
+     * RFC 5545 §3.1's grammar makes the order of parameters mean anything —
+     * the reading {@see \DavServices\VObject\Property::offsetSet()} already
+     * keeps to — so a client that rewrites a property it did not change must
+     * not cost its attendees their answers.
+     */
+    public function testTwoParametersInAnotherOrderAreNoMove(): void
+    {
+        $was = $this->anObject($this->aMeeting('DTSTART;X-A=1;X-B=2:20261101T100000Z', self::ACCEPTED));
+        $is = $this->anObject($this->aMeeting('DTSTART;X-B=2;X-A=1:20261101T100000Z', self::ACCEPTED));
+
+        self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::ACCEPTED, self::text($is));
+    }
+
+    /**
+     * **A parameter name respelled is no change, and its value respelled is.**
+     * RFC 5545 §3.5 has "Property names, parameter names, and enumerated
+     * parameter values are case-insensitive", while §3.1 makes a value
+     * case-sensitive — and a `TZID` value is the name of a time zone, which
+     * {@see \DavServices\VObject\TimeZone\Definition} matches as written.
+     */
+    public function testAParameterNameRespelledIsNoChangeAndItsValueIs(): void
+    {
+        $was = $this->anObject($this->aMeeting('DTSTART;TZID=Europe/Berlin:20261101T100000', self::ACCEPTED));
+        $same = $this->anObject($this->aMeeting('DTSTART;tzid=Europe/Berlin:20261101T100000', self::ACCEPTED));
+        $other = $this->anObject($this->aMeeting('DTSTART;TZID=europe/berlin:20261101T100000', self::ACCEPTED));
+
+        self::assertFalse(Reschedule::appliedTo($was, $same, self::OWNERS));
+        self::assertStringContainsString(self::ACCEPTED, self::text($same));
+
+        self::assertTrue(Reschedule::appliedTo($was, $other, self::OWNERS));
+        self::assertStringContainsString(self::RESET, self::text($other));
+    }
+
+    /**
+     * **Every reason to pass an attendee over passes over that one only.**
+     * Four attendees in one component, three of them left alone for three
+     * different sentences — the organizer under another of their addresses
+     * (§3.2.8's own exception), an attendee the client schedules for (§7.1),
+     * and one who has not answered at all (RFC 5545 §3.2.12's default) — and
+     * the fourth, who comes last, still has their answer taken back.
+     */
+    public function testEveryReasonToPassAnAttendeeOverPassesOverThatOneOnly(): void
+    {
+        $others = 'ATTENDEE;PARTSTAT=ACCEPTED:urn:uuid:bernard' . "\r\n"
+            . 'ATTENDEE;SCHEDULE-AGENT=CLIENT;PARTSTAT=ACCEPTED:' . self::ERIC . "\r\n"
+            . 'ATTENDEE:mailto:cyrus-the-second@example.com';
+        $was = $this->anObject($this->aMeeting('DTSTART:20261101T100000Z', $others . "\r\n" . self::ACCEPTED));
+        $is = $this->anObject($this->aMeeting('DTSTART:20261101T110000Z', $others . "\r\n" . self::ACCEPTED));
+
+        self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
+
+        $text = self::text($is);
+
+        self::assertStringContainsString(self::RESET, $text);
+        self::assertStringContainsString('ATTENDEE;PARTSTAT=ACCEPTED:urn:uuid:bernard', $text);
+        self::assertStringContainsString('ATTENDEE;SCHEDULE-AGENT=CLIENT;PARTSTAT=ACCEPTED:' . self::ERIC, $text);
+        self::assertStringContainsString('ATTENDEE:mailto:cyrus-the-second@example.com', $text);
+    }
+
+    /**
+     * **Two exclusions written the other way round exclude the same
+     * instances.** RFC 5545 §3.8.5.1 lets the exclusions of one series be
+     * written as several `EXDATE` properties, and which of them comes first
+     * says nothing about the recurrence set they describe. Asked of a series
+     * that cannot be expanded, because that is where the properties are read
+     * instead of the set.
+     */
+    public function testTwoExclusionsInAnotherOrderAreTheSameSeries(): void
+    {
+        $first = "EXDATE:20270202T100000Z\r\nEXDATE:20270203T100000Z";
+        $second = "EXDATE:20270203T100000Z\r\nEXDATE:20270202T100000Z";
+        $was = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $first, self::ACCEPTED));
+        $is = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $second, self::ACCEPTED));
+
+        self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::ACCEPTED, self::text($is));
+    }
+
+    /**
+     * **And the second of them changing is a change all the same**, which is
+     * what reading all of a name's properties is for.
+     */
+    public function testTheSecondOfTwoExclusionsChangingIsStillAChange(): void
+    {
+        $first = "EXDATE:20270202T100000Z\r\nEXDATE:20270203T100000Z";
+        $second = "EXDATE:20270202T100000Z\r\nEXDATE:20270204T100000Z";
+        $was = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $first, self::ACCEPTED));
+        $is = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $second, self::ACCEPTED));
+
+        self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::RESET, self::text($is));
+    }
+
+    /**
+     * **An override arriving on a series that cannot be expanded takes the
+     * answers.** The overriding component gives its instance a time of its
+     * own, and where the set cannot say which instance that is, the doubt is
+     * §3.2.8's own MAY to resolve.
+     */
+    public function testAnOverrideArrivingOnASeriesThatSpinsTakesTheAnswers(): void
+    {
+        $was = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED));
+        $is = $this->anObject(
+            $this->aSeries(self::SPINS, self::ACCEPTED),
+            $this->anInstance('20270228T100000Z', '20270228T140000Z'),
+        );
+
+        self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::RESET, self::text($is));
+    }
+
+    /**
+     * **Two overrides written the other way round are the same series.** RFC
+     * 5545 §3.6 imposes no order on the components of a calendar object, so
+     * which of two overriding components is written first says nothing either.
+     */
+    public function testTwoOverridesInAnotherOrderAreTheSameSeries(): void
+    {
+        $first = $this->anInstance('20270228T100000Z', '20270228T140000Z');
+        $second = $this->anInstance('20270301T100000Z', '20270301T140000Z');
+        $was = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED), $first, $second);
+        $is = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED), $second, $first);
+
+        self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::ACCEPTED, self::text($is));
+    }
+
+    /**
+     * **A series without a `UID` cannot be expanded either, and is read the
+     * same way.** RFC 5545 §3.6.1 makes `UID` REQUIRED in a `VEVENT` and
+     * {@see \DavServices\CalDav\CalendarObject::in()} does not ask for it —
+     * `CALDAV:valid-calendar-data` is what refuses such a body, and what this
+     * does with one in the meantime is written down rather than left to
+     * chance.
+     */
+    public function testASeriesWithoutAUidIsReadByItsPropertiesAlone(): void
+    {
+        $was = $this->anObject(self::withoutUid($this->aSeries(self::DAILY, self::ACCEPTED)));
+        $is = $this->anObject(
+            self::withoutUid($this->aSeries('RRULE:FREQ=DAILY;COUNT=4', self::ACCEPTED)),
+        );
+
+        self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::RESET, self::text($is));
+    }
+
+    /**
+     * **An object of overrides alone with no start is no series to compare.**
+     * {@see \DavServices\VObject\Recur\ObjectSet::of()} reads an overriding
+     * component through its `DTSTART` — RFC 5545 §3.6.1 making that property
+     * what says when an instance is — so an object without one cannot be
+     * expanded, and there is no master for the doubt to be resolved on.
+     */
+    public function testAnObjectOfOverridesWithoutAStartIsNoSeries(): void
+    {
+        $override = "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\n"
+            . 'RECURRENCE-ID:20261102T100000Z' . "\r\n" . self::ORGANISED . "\r\n"
+            . self::ACCEPTED . "\r\nEND:VEVENT\r\n";
+        $was = $this->anObject($override);
+        $is = $this->anObject(str_replace('20261102T100000Z', '20261103T100000Z', $override));
+
+        self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
+        self::assertStringContainsString(self::ACCEPTED, self::text($is));
+    }
+
+    /**
      * A `VCALENDAR` holding those components.
      */
     private function anObject(string ...$components): Component
@@ -526,6 +716,14 @@ final class RescheduleTest extends TestCase
         return "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20261101T090000Z\r\nDTSTART:" . $start . "\r\n"
             . 'RECURRENCE-ID:' . $id . "\r\n" . self::ORGANISED . "\r\n"
             . self::ACCEPTED . "\r\nEND:VEVENT\r\n";
+    }
+
+    /**
+     * That component with its `UID` left out.
+     */
+    private static function withoutUid(string $component): string
+    {
+        return str_replace("UID:1\r\n", '', $component);
     }
 
     /**
