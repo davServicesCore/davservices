@@ -150,11 +150,17 @@ final class Reschedule
     private const TIMES = ['DTSTART', 'DTEND', 'DURATION', 'DUE'];
 
     /**
-     * The three that define a recurrence set, read only where it cannot be
-     * expanded. Each may appear more than once in a component — RFC 5545
-     * §3.8.5.1 and §3.8.5.2 both say so of their own.
+     * Everything that can put an instance at a time: which instance a
+     * component overrides, when it starts, and the three properties that
+     * define a recurrence set.
+     *
+     * Read only where the set cannot be expanded, and read of every component
+     * rather than of the master alone — an override arriving or leaving takes
+     * the time of its instance with it. Each of the three may appear more than
+     * once in a component, RFC 5545 §3.8.5.1 and §3.8.5.2 both saying so of
+     * their own.
      */
-    private const RECURRENCE = ['RRULE', 'RDATE', 'EXDATE'];
+    private const SHAPE = ['RECURRENCE-ID', 'DTSTART', 'RRULE', 'RDATE', 'EXDATE'];
 
     /**
      * Resets, on the revision about to be stored, every answer a reschedule
@@ -258,7 +264,11 @@ final class Reschedule
         $is = $uid === null ? null : self::setOf($modified, $uid);
 
         if ($was === null || $is === null) {
-            return $master !== null && self::couldHaveMoved($original, $modified) ? [$master] : [];
+            if ($master === null || self::theShapeOf($original) === self::theShapeOf($modified)) {
+                return [];
+            }
+
+            return [$master];
         }
 
         $affected = [];
@@ -273,25 +283,38 @@ final class Reschedule
     }
 
     /**
-     * Whether anything that defines the recurrence set was written
-     * differently, which is all that can be asked where the set itself cannot
-     * be had.
+     * Everything about the object that can put an instance at a time, in an
+     * order of its own.
      *
-     * The three properties, and which instances the object overrides: an
-     * override that arrives or leaves takes the time of its instance with it,
-     * whether or not this can say to what.
+     * **All that can be asked where the set itself cannot be had.** Two
+     * objects of the same shape generate the same instances at the same times
+     * whatever this can or cannot expand, so a resource stored again unchanged
+     * costs nobody their answer — which is what keeps the doubt above from
+     * being resolved on every save.
+     *
+     * The components are put in an order of their own because RFC 5545 §3.6
+     * imposes none on them: which of two overriding components is written
+     * first says nothing about the series they belong to.
+     *
+     * @return list<list<list<array{string, array<string, list<string>>}>>>
      */
-    private static function couldHaveMoved(Component $original, Component $modified): bool
+    private static function theShapeOf(Component $object): array
     {
-        $before = Instances::theMasterOf($original);
-        $master = Instances::theMasterOf($modified);
+        $shape = [];
 
-        if ($before === null || $master === null) {
-            return true;
+        foreach (Instances::of($object) as $component) {
+            $written = [];
+
+            foreach (self::SHAPE as $name) {
+                $written[] = self::written($component, $name);
+            }
+
+            $shape[] = $written;
         }
 
-        return self::differ($before, $master, self::RECURRENCE)
-            || self::identifiersIn($original) !== self::identifiersIn($modified);
+        sort($shape);
+
+        return $shape;
     }
 
     /**
@@ -342,28 +365,6 @@ final class Reschedule
     }
 
     /**
-     * The instances the object overrides, in an order of their own.
-     *
-     * @return list<string>
-     */
-    private static function identifiersIn(Component $object): array
-    {
-        $identifiers = [];
-
-        foreach (Instances::of($object) as $component) {
-            $named = $component->property(self::RECURRENCE_ID);
-
-            if ($named !== null) {
-                $identifiers[] = $named->value();
-            }
-        }
-
-        sort($identifiers);
-
-        return $identifiers;
-    }
-
-    /**
      * Whether any of those properties is written differently on the two
      * revisions of a component.
      *
@@ -393,10 +394,20 @@ final class Reschedule
     }
 
     /**
-     * Every property of that name as one comparable text, in an order of its
-     * own.
+     * Every property of that name as its value and its parameters, in an
+     * order of its own.
      *
-     * @return list<string>
+     * The parameters are kept by name rather than written into the value,
+     * because a property is a value **and** what qualifies it, and a text with
+     * both in it would need a separator that could not appear in either.
+     *
+     * **The names are compared without regard to case**, RFC 5545 §3.5 having
+     * "Property names, parameter names, and enumerated parameter values are
+     * case-insensitive" — a `tzid` respelled `TZID` is the same zone. Their
+     * values are not: a `TZID` names a time zone, and §3.1 makes that
+     * case-sensitive.
+     *
+     * @return list<array{string, array<string, list<string>>}>
      */
     private static function written(Component $component, string $name): array
     {
@@ -406,11 +417,11 @@ final class Reschedule
             $parameters = [];
 
             foreach ($property->parameters() as $parameter) {
-                $parameters[] = $parameter->name() . '=' . implode(',', $parameter->values());
+                $parameters[strtoupper($parameter->name())] = $parameter->values();
             }
 
-            sort($parameters);
-            $written[] = $property->value() . ';' . implode(';', $parameters);
+            ksort($parameters);
+            $written[] = [$property->value(), $parameters];
         }
 
         sort($written);
