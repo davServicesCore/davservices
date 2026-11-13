@@ -33,6 +33,7 @@ use DavServices\Plugin\Acl;
 use DavServices\Tests\Unit\Acl\ArrayPrivilegeResolver;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Tests\Unit\Dav\PrivilegedCollection;
 use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -142,6 +143,34 @@ final class AclTest extends TestCase
         // prefix the writer picks for a foreign namespace is its own
         // business, but where the element sits is not.
         self::assertStringContainsString('abstract-one/></d:privilege><d:abstract/>', $body);
+    }
+
+    /**
+     * **The property is the resource's, not the server's.** §5.3's first
+     * sentence: "This is a protected property that identifies the privileges
+     * defined **for the resource**." So a node that defines one of its own
+     * has it reported here — which is how RFC 6638 §6's eight scheduling
+     * privileges reach the Inbox and Outbox "on which they are defined"
+     * without this layer having to know what a scheduling collection is.
+     */
+    public function testReportsWhatTheResourceItselfDefines(): void
+    {
+        $body = $this->propFind('/calendars/own', 'supported-privilege-set');
+
+        self::assertStringContainsString('own-one/></d:privilege>', $body);
+    }
+
+    /**
+     * **And a node that defines nothing of its own is reported unchanged.**
+     * Without this the seam could be a tree that every resource shares again,
+     * and a privilege one collection defines would be offered on all of them
+     * — which §5.3 would have the client believe it may grant there.
+     */
+    public function testReportsNothingExtraOnAResourceThatDefinesNothing(): void
+    {
+        $body = $this->propFind('/calendars/work', 'supported-privilege-set');
+
+        self::assertStringNotContainsString('own-one', $body);
     }
 
     /**
@@ -396,6 +425,7 @@ final class AclTest extends TestCase
 
         $calendars->add(new MemoryCollection('work'));
         $calendars->add(new MemoryCollection('private'));
+        $calendars->add(new PrivilegedCollection('own'));
         $root->add($calendars);
 
         return $root;
@@ -419,7 +449,7 @@ final class AclTest extends TestCase
     ): string {
         $server = new Server(new Tree($this->tree()));
 
-        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects(), $privileges))->register(new Report($server));
+        (new Acl($server, ArrayPrivilegeResolver::asTheContractExpects(['calendars/own']), $privileges))->register(new Report($server));
 
         // Somebody has to be signed in for any of this to be answered at
         // all: the plugin refuses a `PROPFIND` from whoever may not read

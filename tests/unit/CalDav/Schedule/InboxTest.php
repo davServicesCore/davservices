@@ -13,8 +13,10 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\CalDav\Schedule;
 
+use DavServices\Acl\Privilege;
 use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\Schedule\InboxKeepingItsOwn;
+use DavServices\CalDav\Schedule\Privileges;
 use DavServices\Dav\IExtendedCollection;
 use DavServices\Dav\IProperties;
 use DavServices\Exception\Forbidden;
@@ -81,6 +83,38 @@ final class InboxTest extends TestCase
     public function testItSaysItIsASchedulingInbox(): void
     {
         self::assertSame([self::INBOX], Inbox::of(new MemoryCollection('inbox'))->resourceTypes());
+    }
+
+    /**
+     * **RFC 6638 §6.1 defines four privileges for this kind of collection**,
+     * and §6 requires them to "appear in the DAV:supported-privilege-set
+     * property of scheduling Outbox and Inbox collections on which they are
+     * defined". It is the collection that answers, because RFC 3744 §5.3 has
+     * the property identify "the privileges defined **for the resource**",
+     * and access control is a layer below CalDAV.
+     */
+    public function testItDefinesTheFourPrivilegesOfASchedulingInbox(): void
+    {
+        $defined = Inbox::of(new MemoryCollection('inbox'))->privilegesDefinedHere(Privilege::standard());
+
+        self::assertSame(
+            Privileges::anInboxDefines(Privilege::standard())->flattened(),
+            $defined->flattened(),
+        );
+    }
+
+    /**
+     * **And not the four of an Outbox.** §6.1 closes with "The privileges
+     * defined in this section are ignored if applied to a resource other than
+     * a scheduling Inbox collection", and §6.2 says the same of its own — so
+     * neither kind reports the other's, or §5.3's dialog box offers a right
+     * this server will disregard.
+     */
+    public function testItDoesNotDefineWhatAnOutboxDefines(): void
+    {
+        $defined = Inbox::of(new MemoryCollection('inbox'))->privilegesDefinedHere(Privilege::standard());
+
+        self::assertFalse($defined->contains(Privileges::SEND));
     }
 
     /**

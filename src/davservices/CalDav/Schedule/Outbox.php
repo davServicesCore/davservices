@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace DavServices\CalDav\Schedule;
 
 use DateTimeImmutable;
+use DavServices\Acl\IPrivileges;
+use DavServices\Acl\Privilege;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\IProperties;
@@ -54,7 +56,7 @@ use DavServices\Exception\Forbidden;
  * none: §5's busy-time request arrives as a `POST` on the collection itself
  * and leaves nothing behind.
  */
-class Outbox implements ICollection, IResourceType
+class Outbox implements ICollection, IPrivileges, IResourceType
 {
     /**
      * What §2.1 requires in `DAV:resourcetype`, beside `DAV:collection`.
@@ -186,5 +188,22 @@ class Outbox implements ICollection, IResourceType
             'RFC 6638 §2.1 reserves what a child of a scheduling Outbox means, so "%s" was not made.',
             $name,
         ));
+    }
+
+    /**
+     * The four privileges RFC 6638 §6.2 defines for a scheduling Outbox.
+     *
+     * > These privileges determine which calendar users are allowed to send
+     * > scheduling messages on behalf of the calendar user who "owns" the
+     * > scheduling Outbox collection. This allows calendar users to choose
+     * > other calendar users who can act on their behalf (e.g., assistants
+     * > working on behalf of their boss).
+     *
+     * Said here for the reason {@see Inbox::privilegesDefinedHere()} gives:
+     * §6.2 ends with the same sentence about every other kind of resource.
+     */
+    public function privilegesDefinedHere(Privilege $everywhere): Privilege
+    {
+        return Privileges::anOutboxDefines($everywhere);
     }
 }
