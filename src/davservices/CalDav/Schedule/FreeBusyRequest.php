@@ -102,6 +102,8 @@ final class FreeBusyRequest
 
     private const ORGANIZER = 'ORGANIZER';
 
+    private const UID = 'UID';
+
     private const DTSTART = 'DTSTART';
 
     private const DTEND = 'DTEND';
@@ -111,7 +113,7 @@ final class FreeBusyRequest
      *
      * @var list<string>
      */
-    private const EXACTLY_ONE = ['UID', 'DTSTAMP', self::DTSTART, self::DTEND, self::ORGANIZER];
+    private const EXACTLY_ONE = [self::UID, 'DTSTAMP', self::DTSTART, self::DTEND, self::ORGANIZER];
 
     /**
      * What it gives `0`, inside the `VFREEBUSY` and beside it.
@@ -206,12 +208,20 @@ final class FreeBusyRequest
     }
 
     /**
-     * The `VFREEBUSY` as it was asked, which the reply is built from: §5's
-     * answer carries the same `UID` and `ORGANIZER`, as Appendix B.5 shows.
+     * The `UID` of the request, which the reply carries again.
+     *
+     * Appendix B.5 writes it: the answer's `VFREEBUSY` has the same `UID` as
+     * the question, and that is how a client pairs the two. RFC 5546 §3.3.3
+     * gives `UID | 1` for the reply as well, so there is one to carry.
+     *
+     * **The component itself is not handed out.** The reply needs this and
+     * nothing else of it — the range and the organizer have their own
+     * readers — and a caller holding the component could change the request
+     * after it had been held to §3.3.2.
      */
-    public function asked(): Component
+    public function uid(): string
     {
-        return $this->asked;
+        return $this->asked->property(self::UID)?->value() ?? '';
     }
 
     /**

@@ -1057,6 +1057,29 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
+     * **A range may also come from two iCalendar times rather than from an
+     * XML element.** RFC 6638 §5's busy time request states them as the
+     * `DTSTART` and `DTEND` of a `VFREEBUSY`, and both ends are then there —
+     * no "-infinity" and no "+infinity" to read.
+     *
+     * **Nothing is checked here**, and that is the contract rather than an
+     * omission: the ordering of the two ends is a MUST of RFC 5545 §3.8.2.2,
+     * and whoever read those properties is the one that can refuse with the
+     * precondition belonging to them. A second guard here would be the same
+     * rule in two places, and the one here could never be reached — see
+     * {@see \DavServices\CalDav\Schedule\FreeBusyRequest}.
+     */
+    public function testARangeCanBeMadeOfTwoMomentsRatherThanOfAnElement(): void
+    {
+        $from = new DateTimeImmutable('2009-06-02T00:00:00+00:00');
+        $until = new DateTimeImmutable('2009-06-04T00:00:00+00:00');
+        $range = TimeRange::between($from, $until);
+
+        self::assertSame($from, $range->from());
+        self::assertSame($until, $range->until());
+    }
+
+    /**
      * @return iterable<string, array{string, bool}>
      */
     public static function propertiesARangeIsAboutOrNot(): iterable

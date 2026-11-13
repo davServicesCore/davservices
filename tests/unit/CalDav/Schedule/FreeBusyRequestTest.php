@@ -97,6 +97,16 @@ final class FreeBusyRequestTest extends TestCase
     }
 
     /**
+     * **The `UID` comes back out**, because §5's answer carries the same one:
+     * Appendix B.5's reply repeats `4FD3AD926350`, and that is how a client
+     * pairs the answer with the question it asked.
+     */
+    public function testItCarriesTheUidOfTheRequestSoTheAnswerCanBePairedWithIt(): void
+    {
+        self::assertSame('4FD3AD926350', FreeBusyRequest::of(self::aRequest())->uid());
+    }
+
+    /**
      * **Every `0`, `1` and `1+` of the table, each broken on its own.** The
      * precondition is `CALDAV:valid-scheduling-message` (§5.2.1) and the
      * status `400`, which §5.2.1 names as the one it is used with.

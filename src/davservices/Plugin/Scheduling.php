@@ -521,7 +521,7 @@ final class Scheduling
 
         $written = $busy->component(new DateTimeImmutable());
 
-        $written['UID'] = new Property('UID', $asked->asked()->property('UID')?->value() ?? '');
+        $written['UID'] = new Property('UID', $asked->uid());
         $written->add(new Property('ORGANIZER', $asked->organizer()));
         $written->add(new Property('ATTENDEE', $recipient));
 

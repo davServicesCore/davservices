@@ -184,7 +184,7 @@ final class Post
      * parameters, and "the type/subtype MAY be followed by parameters in the
      * form of name/value pairs". Those say how to read the body rather than
      * what it is — §5's own example sends `text/calendar; charset="utf-8"` —
-     * so they are cut off before the comparison. And the type is matched
+     * so everything from the first `;` is cut off. And the type is matched
      * without regard to case, §8.3.1 having "type, subtype, and parameter
      * name tokens are case-insensitive".
      *
@@ -193,8 +193,8 @@ final class Post
      */
     private static function mediaTypeOf(Request $request): string
     {
-        [$type] = explode(';', $request->headers()->first('Content-Type') ?? '', 2);
+        $stated = $request->headers()->first('Content-Type') ?? '';
 
-        return strtolower(trim($type));
+        return strtolower(trim(explode(';', $stated)[0]));
     }
 }
