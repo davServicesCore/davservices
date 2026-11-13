@@ -13,13 +13,19 @@ declare(strict_types=1);
 
 namespace DavServices\Plugin;
 
+use DateTimeImmutable;
 use DavServices\Acl\Principal;
 use DavServices\Backend\ICalendarUserBackend;
 use DavServices\CalDav\Calendar;
 use DavServices\CalDav\CalendarObject;
+use DavServices\CalDav\FreeBusy;
+use DavServices\CalDav\Limits;
+use DavServices\CalDav\Moments;
+use DavServices\CalDav\Report\FloatingZone;
 use DavServices\CalDav\Schedule\Answer;
 use DavServices\CalDav\Schedule\DeliveryStatus;
 use DavServices\CalDav\Schedule\ForceSend;
+use DavServices\CalDav\Schedule\FreeBusyRequest;
 use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
@@ -28,6 +34,7 @@ use DavServices\CalDav\Schedule\Reply;
 use DavServices\CalDav\Schedule\Reschedule;
 use DavServices\CalDav\Schedule\Restriction;
 use DavServices\CalDav\Schedule\ScheduleAgent;
+use DavServices\CalDav\Schedule\ScheduleResponse;
 use DavServices\CalDav\Schedule\SchedulingMessage;
 use DavServices\CalDav\Schedule\SchedulingObject;
 use DavServices\Dav\Event\AfterUnbind;
@@ -39,13 +46,19 @@ use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
 use DavServices\Dav\INode;
 use DavServices\Dav\IResourceType;
+use DavServices\Dav\Method\Post;
 use DavServices\Dav\Property\Answers;
 use DavServices\Dav\PropFindForm;
 use DavServices\Dav\PropFindResult;
 use DavServices\Dav\Server;
+use DavServices\Dav\VisibleMembers;
+use DavServices\Event\EventEmitter;
+use DavServices\Exception\BadRequest;
 use DavServices\Exception\DavException;
 use DavServices\Exception\Forbidden;
 use DavServices\Exception\IHttpFailure;
+use DavServices\Http\Request;
+use DavServices\Http\Response;
 use DavServices\Uri\MalformedPath;
 use DavServices\Uri\Path;
 use DavServices\VObject\Component;
@@ -53,6 +66,7 @@ use DavServices\VObject\Parameter;
 use DavServices\VObject\Property;
 use DavServices\VObject\Serializer;
 use DavServices\Xml\Element;
+use Generator;
 
 /**
  * Where a calendar user's scheduling collections are, and what a change to an
@@ -61,6 +75,14 @@ use DavServices\Xml\Element;
  *     $scheduling = new Scheduling($server, $calendarUsers);
  *
  *     $scheduling->register();
+ *
+ * With a `POST` to hang §5's busy time request on, where the application
+ * answers that method at all:
+ *
+ *     $post = new Post($server);
+ *
+ *     $scheduling->register($post);
+ *     $server->onMethod('POST', $post(...));
  *
  * RFC 6638, "CalDAV Scheduling", June 2012 — and after three chunks on a
  * vendor document with no RFC, this one has conformance clauses, named
@@ -139,23 +161,22 @@ use DavServices\Xml\Element;
  * then done by nobody.
  *
  * **And §3.2 is kept now, but the document is more than §3.2.** The reason
- * this token waited was §3.2.8, and {@see Reschedule} is that section — so
- * three others stand in its place, each of them something a client that had
- * handed the scheduling over would then find nobody doing:
+ * this token waited was §3.2.8, and {@see Reschedule} is that section. §5's
+ * `POST` stood here after it and no longer does — {@see self::busyTime()} is
+ * that section — so two stand in their place, each of them something a client
+ * that had handed the scheduling over would then find nobody doing:
  *
- * - **§5's `POST` on a scheduling Outbox collection.** A client that sees the
- *   token asks the server for busy time instead of working it out itself, and
- *   nothing registers that method on an Outbox: it would be answered `405` by
- *   a server that had just said it schedules.
  * - **§3.2.10's `CALDAV:schedule-tag`**, with §8.2's and §8.3's header fields.
  *   It is how a client writes over its own copy and not over an answer that
  *   arrived while it was editing — "Avoiding Conflicts when Updating
  *   Scheduling Object Resources" is the section's own title, and the conflict
  *   is the one a client stops guarding against once the server schedules.
- * - **§6's scheduling privileges**, which is how a calendar user says who may
- *   schedule with them. Until they are there, a delivery asks nobody's
- *   permission — the same gap {@see self::register()} names below about what a
- *   client may write into an Inbox.
+ * - **§6's scheduling privileges enforced**, which is how a calendar user says
+ *   who may schedule with them. The eight are defined and reported on the
+ *   collections §6 gives them to, but nothing asks them yet: a delivery still
+ *   goes through without permission, and §3.2.9's `3.8` is nobody's — the same
+ *   gap {@see self::register()} names below about what a client may write into
+ *   an Inbox.
  *
  * **The price of waiting is named too**: a client that keeps sending its own
  * invitations while this server also delivers makes two messages out of one.
@@ -195,6 +216,32 @@ final class Scheduling
      * §2.1.1's property, which says where their Outbox is.
      */
     public const OUTBOX_URL = '{urn:ietf:params:xml:ns:caldav}schedule-outbox-URL';
+
+    /**
+     * §5.2.2's precondition, used with `403` as that section says.
+     */
+    private const VALID_ORGANIZER = '{urn:ietf:params:xml:ns:caldav}valid-organizer';
+
+    /**
+     * §9.1's property, and the one of its two children that means a calendar
+     * is kept out of busy time.
+     */
+    private const TRANSPARENCY = '{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp';
+
+    private const TRANSPARENT = '{urn:ietf:params:xml:ns:caldav}transparent';
+
+    /**
+     * RFC 3744 §5.3's own precondition for "there are more of these than I
+     * will report", which {@see \DavServices\CalDav\Report\FreeBusyQuery}
+     * answers the same computation with.
+     */
+    private const WITHIN_LIMITS = '{DAV:}number-of-matches-within-limits';
+
+    /**
+     * What this server calls itself in an iCalendar object it wrote, as
+     * RFC 5545 §3.7.3 requires of `PRODID`.
+     */
+    private const PRODUCT = '-//dav.services//davServices//EN';
 
     /**
      * RFC 4791 §6.2.1's property, which is where this server says a
@@ -254,10 +301,25 @@ final class Scheduling
      *                                                 none, no attendee can
      *                                                 be found and §3.2.9's
      *                                                 `3.7` is every answer
+     * @param Limits $limits What this server will be asked for, which §11.1
+     *                       makes a MUST of: "Servers MUST ensure that
+     *                       clients cannot consume excessive server resources
+     *                       by carrying out 'large' scheduling operations."
+     *                       §5's busy time request is the one operation that
+     *                       reads unbounded data, and the dates it may ask
+     *                       about are what bound it
+     * @param int $atMost How many calendar object resources one busy time
+     *                    request may reach. The same guard
+     *                    {@see \DavServices\CalDav\Report\FreeBusyQuery}
+     *                    puts on the same computation, and for the same
+     *                    sentence — a range inside the dates can still reach
+     *                    every object a calendar holds
      */
     public function __construct(
         private readonly Server $server,
         private readonly ?ICalendarUserBackend $calendarUsers = null,
+        private readonly Limits $limits = new Limits(),
+        private readonly int $atMost = 5_000,
     ) {
     }
 
@@ -280,9 +342,15 @@ final class Scheduling
      * gone. {@see self::readWhatIsGoing()} says why that order is the only
      * safe one.
      *
-     * **No method and no report.** §2.3 extends two reports and §5 adds a
-     * `POST` to the Outbox; both are still to come, and both are about reading
-     * an Inbox or asking an Outbox for free time rather than about delivering.
+     * **One method, and no report.** §5's `POST` on an Outbox is taken where
+     * the application has a `POST` to hang it on, the way
+     * {@see Sharing::register()} takes §5.3.2's — see {@see self::busyTime()}.
+     * It is optional for the same reason: a deployment that answers no `POST`
+     * at all is a deployment without one, and R-ARC-02 has nothing here
+     * insist on a method the server does not offer.
+     *
+     * **§2.3's two report extensions are still to come**, and they are about
+     * reading an Inbox rather than about delivering.
      *
      * **And §2.2's other MUST is kept for one half only** — "Scheduling Inbox
      * collections MUST only contain calendar object resources that obey the
@@ -293,7 +361,7 @@ final class Scheduling
      * restrictions iTIP puts on each `METHOD` are a table of RFC 5546's own.
      * Half of that table enforced would promise more than it keeps.
      */
-    public function register(): void
+    public function register(?Post $post = null): void
     {
         $events = $this->server->events();
 
@@ -303,6 +371,214 @@ final class Scheduling
         $events->on(AfterUnbind::class, $this->cancelOnRemove(...));
         $events->on(BeforeCreateFile::class, $this->deliverOnWrite(...));
         $events->on(BeforeWriteContent::class, $this->deliverOnWrite(...));
+
+        $post?->forBodyOfType(Limits::MEDIA_TYPE, $this->busyTime(...));
+    }
+
+    /**
+     * RFC 6638 §5: what one calendar user is told about when others are busy.
+     *
+     * > Busy time information of one or more calendar users can be determined
+     * > by submitting a POST request targeted at the scheduling Outbox
+     * > collection of the calendar user requesting the information (the
+     * > "Organizer").
+     *
+     * **Three sentences of §5 are three guards, and each has its own answer.**
+     * The target must be an Outbox, which §5.1 answers with `403` in its own
+     * words — "The client cannot submit a scheduling message to the specified
+     * Request-URI". The body must obey RFC 5546 §3.3.2, which is §5.2.1's
+     * precondition with `400`. And the `ORGANIZER` must be one of the Outbox
+     * owner's addresses, which is §5.2.2's with `403`.
+     *
+     * **The order of the three is not free.** Whether this is an Outbox at all
+     * is settled first, because every later sentence is written about one — a
+     * server that read the body first would be reporting iTIP breaches of a
+     * body that had no business being sent here. And the organizer is checked
+     * after the body, because §5.2.2 is about "the 'ORGANIZER' property value
+     * in the POST request's scheduling message": there is no such value until
+     * the message has been read.
+     *
+     * **A recipient, though, is answered rather than refused.** §5 has the
+     * document carry one response per calendar user "containing elements that
+     * indicate ... the scheduling status for that calendar user", and
+     * Appendix B.5 shows an address nobody is reachable at coming back as
+     * `3.7;Invalid calendar user` beside two that worked. The question was
+     * well formed; what the server knows about each name is the answer.
+     *
+     * @throws Forbidden If the target is no Outbox (§5.1), or the organizer
+     *                   does not own it (§5.2.2)
+     * @throws BadRequest If the body breaks RFC 5546 §3.3.2 (§5.2.1)
+     */
+    private function busyTime(Request $request): Response
+    {
+        $path = $this->server->path($request);
+        $node = $this->server->tree()->node($path);
+
+        if (!self::isOfKind($node, Outbox::OUTBOX)) {
+            throw new Forbidden(sprintf(
+                'RFC 6638 §5: a busy time request goes to "a resource collection of type CALDAV:schedule-outbox", and "%s" is none.',
+                $path,
+            ));
+        }
+
+        $asked = FreeBusyRequest::of($request->body()->contents());
+
+        // §11.1's MUST, by the means RFC 4791 §5.2.6 and §5.2.7 already give
+        // this server: a request for a century of busy time is the "large
+        // scheduling operation" that sentence is about.
+        $this->limits->mustTakeTheRange($asked->range());
+
+        if (!in_array($asked->organizer(), $this->addressesOfTheOwnerOf($path, $node), true)) {
+            throw new Forbidden(
+                sprintf(
+                    'RFC 6638 §5.2.2: the ORGANIZER of a busy time request matches "one of the calendar user addresses of the owner of the scheduling Outbox collection", and "%s" does not.',
+                    $asked->organizer(),
+                ),
+                self::VALID_ORGANIZER,
+            );
+        }
+
+        $answer = new ScheduleResponse();
+
+        foreach ($asked->recipients() as $recipient) {
+            $whose = $this->theCalendarUserAt($recipient);
+
+            if ($whose === null) {
+                $answer->tell($recipient, ScheduleResponse::NO_SUCH_USER);
+
+                continue;
+            }
+
+            $answer->tell($recipient, ScheduleResponse::SUCCESS, $this->whenTheyAreBusy($whose, $asked, $recipient));
+        }
+
+        return (new Response(200, body: $this->server->writer()->write($answer->asElement())))
+            ->withHeader('Content-Type', 'application/xml; charset=utf-8');
+    }
+
+    /**
+     * The principal reachable at a calendar user address, or null.
+     *
+     * Null twice over: where no directory was wired — §2.4.1's "If not
+     * present, then the associated calendar user is not enabled for
+     * scheduling on the server" — and where the directory knows the address
+     * but what it names is not a principal of this server.
+     *
+     * @return array{string, Principal}|null
+     */
+    private function theCalendarUserAt(string $address): ?array
+    {
+        $principal = $this->calendarUsers?->principalFor($address);
+
+        return $principal === null ? null : $this->principalAt($principal);
+    }
+
+    /**
+     * One calendar user's busy time over the range asked, as the iTIP reply
+     * Appendix B.5 writes.
+     *
+     * **§9.1 is a MUST NOT this walk keeps**: "When the CALDAV:transparent
+     * XML element is used, the calendar object resources in the corresponding
+     * calendar collection MUST NOT contribute to busy time." And a collection
+     * that says nothing is opaque, the same section having "If this property
+     * is not present on a calendar collection, then the default value
+     * CALDAV:opaque MUST be assumed" — so silence is an answer rather than a
+     * reason to skip.
+     *
+     * The reply carries the request's own `UID`, which is how a client pairs
+     * it with what it sent; `FreeBusy` invents one for a report that answers
+     * nobody's message, and this one answers a message.
+     *
+     * @param array{string, Principal} $whose
+     */
+    private function whenTheyAreBusy(array $whose, FreeBusyRequest $asked, string $recipient): string
+    {
+        [$principal, $node] = $whose;
+        $busy = new FreeBusy($asked->range());
+        $zone = FloatingZone::ofTheCollections($this->server);
+        $considered = 0;
+
+        foreach ($this->collectionsOf(Calendar::CALENDAR, $principal, $node) as [$where, $calendar]) {
+            if (self::isTransparent($this->server->events(), $where, $calendar)) {
+                continue;
+            }
+
+            foreach ($this->objectsUnder($where, $calendar) as $at => [$member, $object]) {
+                if ($considered === $this->atMost) {
+                    throw new Forbidden(
+                        sprintf(
+                            'This server reaches at most %d calendar object resources for one busy time request: RFC 6638 §11.1 has it "ensure that clients cannot consume excessive server resources".',
+                            $this->atMost,
+                        ),
+                        self::WITHIN_LIMITS,
+                    );
+                }
+
+                $busy->consider($object, new Moments($object, $zone->forTheObjectAt($at, $member)));
+                ++$considered;
+            }
+        }
+
+        $written = $busy->component(new DateTimeImmutable());
+
+        $written['UID'] = new Property('UID', $asked->asked()->property('UID')?->value() ?? '');
+        $written->add(new Property('ORGANIZER', $asked->organizer()));
+        $written->add(new Property('ATTENDEE', $recipient));
+
+        $calendar = new Component('VCALENDAR');
+
+        $calendar->add(new Property('VERSION', Limits::VERSION));
+        $calendar->add(new Property('PRODID', self::PRODUCT));
+        $calendar->add(new Property('METHOD', 'REPLY'));
+        $calendar->add($written);
+
+        return (new Serializer())->write($calendar);
+    }
+
+    /**
+     * §9.1, read of one calendar collection.
+     *
+     * Through {@see Answers} rather than from the node, for the reason
+     * {@see self::ownerAt()} gives: that is the one way this server finds out
+     * what a resource says about a property, dead property store and access
+     * control included.
+     */
+    private static function isTransparent(EventEmitter $events, string $where, ICollection $calendar): bool
+    {
+        $said = Answers::about($events, $where, $calendar, PropFindForm::Named, [self::TRANSPARENCY])
+            ->byStatus()[200][self::TRANSPARENCY] ?? null;
+
+        return $said instanceof Element && $said->child(self::TRANSPARENT) !== null;
+    }
+
+    /**
+     * Every calendar object resource inside a collection, however deep.
+     *
+     * **The walk goes all the way down**, because RFC 4791 §4.2 lets a
+     * calendar collection hold "collections that are not calendar
+     * collections" and §9.1 speaks of "the calendar object resources in the
+     * corresponding calendar collection" without a depth. A member that is no
+     * calendar object resource is passed over, the way
+     * {@see \DavServices\CalDav\Report\FreeBusyQuery} passes one over: a
+     * note in a calendar says nothing about when anybody is busy.
+     *
+     * @return Generator<string, array{INode, Component}>
+     */
+    private function objectsUnder(string $path, INode $node): Generator
+    {
+        if (!$node instanceof ICollection) {
+            $object = CalendarObject::of($node);
+
+            if ($object !== null) {
+                yield $path => [$node, $object];
+            }
+
+            return;
+        }
+
+        foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
+            yield from $this->objectsUnder($member, $child);
+        }
     }
 
     /**

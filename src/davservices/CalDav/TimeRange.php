@@ -168,6 +168,28 @@ final readonly class TimeRange
     }
 
     /**
+     * One range whose two ends are iCalendar times rather than XML
+     * attributes — RFC 6638 §5's busy time request, which states them as the
+     * `DTSTART` and `DTEND` of a `VFREEBUSY`.
+     *
+     * **No rule is checked here, and that is deliberate.** The ordering of
+     * the two ends is a MUST of RFC 5545 §3.8.2.2 ("The value MUST be later
+     * in time than the value of the 'DTSTART' property"), and whoever read
+     * those properties is the one that can refuse with the precondition that
+     * belongs to them — RFC 6638 §5.2.1's `CALDAV:valid-scheduling-message`,
+     * which a range built from an XML element knows nothing about. Keeping a
+     * second guard here would mean one rule in two places, and the one here
+     * could never be reached.
+     *
+     * @see \DavServices\CalDav\Schedule\FreeBusyRequest Where that MUST is
+     *                                                      held
+     */
+    public static function between(DateTimeImmutable $from, DateTimeImmutable $until): self
+    {
+        return new self($from, $until);
+    }
+
+    /**
      * The inclusive start, or null for "-infinity".
      */
     public function from(): ?DateTimeImmutable
