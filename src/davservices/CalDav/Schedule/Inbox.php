@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace DavServices\CalDav\Schedule;
 
 use DateTimeImmutable;
+use DavServices\Acl\IPrivileges;
+use DavServices\Acl\Privilege;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
 use DavServices\Dav\IProperties;
@@ -67,7 +69,7 @@ use DavServices\Exception\Forbidden;
  * does, which is not here: an Inbox is no calendar collection, so the check
  * never looks at one.
  */
-class Inbox implements ICollection, IResourceType
+class Inbox implements ICollection, IPrivileges, IResourceType
 {
     /**
      * What §2.2 requires in `DAV:resourcetype`, beside `DAV:collection` —
@@ -216,5 +218,24 @@ class Inbox implements ICollection, IResourceType
             'RFC 6638 §2.2: a scheduling Inbox may contain no collection, so "%s" was not made.',
             $name,
         ));
+    }
+
+    /**
+     * The four privileges RFC 6638 §6.1 defines for a scheduling Inbox.
+     *
+     * > These privileges determine whether delivery of scheduling messages
+     * > from a calendar user is allowed by the calendar user who "owns" the
+     * > scheduling Inbox collection. This allows calendar users to choose
+     * > which other calendar users can schedule with them.
+     *
+     * **It is this collection that says so**, and not whoever reports the
+     * property, because §6.1 closes with "The privileges defined in this
+     * section are ignored if applied to a resource other than a scheduling
+     * Inbox collection" — and a right that would be disregarded is not, in
+     * RFC 3744 §5.3's words, among "the privileges defined for the resource".
+     */
+    public function privilegesDefinedHere(Privilege $everywhere): Privilege
+    {
+        return Privileges::anInboxDefines($everywhere);
     }
 }

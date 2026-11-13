@@ -13,8 +13,10 @@ declare(strict_types=1);
 
 namespace DavServices\Tests\Unit\CalDav\Schedule;
 
+use DavServices\Acl\Privilege;
 use DavServices\CalDav\Schedule\Outbox;
 use DavServices\CalDav\Schedule\OutboxKeepingItsOwn;
+use DavServices\CalDav\Schedule\Privileges;
 use DavServices\Dav\IExtendedCollection;
 use DavServices\Dav\IProperties;
 use DavServices\Exception\Forbidden;
@@ -67,6 +69,34 @@ final class OutboxTest extends TestCase
     public function testItSaysItIsASchedulingOutbox(): void
     {
         self::assertSame([self::OUTBOX], Outbox::of(new MemoryCollection('outbox'))->resourceTypes());
+    }
+
+    /**
+     * **RFC 6638 §6.2 defines four privileges for this kind of collection**,
+     * and §6 requires them to appear in `DAV:supported-privilege-set` "on
+     * which they are defined" — which RFC 3744 §5.3 makes the resource's own
+     * answer rather than the server's one tree.
+     */
+    public function testItDefinesTheFourPrivilegesOfASchedulingOutbox(): void
+    {
+        $defined = Outbox::of(new MemoryCollection('outbox'))->privilegesDefinedHere(Privilege::standard());
+
+        self::assertSame(
+            Privileges::anOutboxDefines(Privilege::standard())->flattened(),
+            $defined->flattened(),
+        );
+    }
+
+    /**
+     * **And not the four of an Inbox**, for the sentence §6.2 closes with:
+     * "The privileges defined in this section are ignored if applied to a
+     * resource other than a scheduling Outbox collection."
+     */
+    public function testItDoesNotDefineWhatAnInboxDefines(): void
+    {
+        $defined = Outbox::of(new MemoryCollection('outbox'))->privilegesDefinedHere(Privilege::standard());
+
+        self::assertFalse($defined->contains(Privileges::DELIVER));
     }
 
     /**

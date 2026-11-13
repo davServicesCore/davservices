@@ -15,6 +15,7 @@ namespace DavServices\Plugin;
 
 use DavServices\Acl\GroupResolver;
 use DavServices\Acl\IPrivilegeResolver;
+use DavServices\Acl\IPrivileges;
 use DavServices\Acl\Privilege;
 use DavServices\Acl\PrivilegeSet;
 use DavServices\Acl\Report\AclPrincipalPropSet;
@@ -32,6 +33,7 @@ use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\OptionsRequested;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
+use DavServices\Dav\INode;
 use DavServices\Dav\Method\Report;
 use DavServices\Dav\Report\ExpandProperty;
 use DavServices\Dav\Server;
@@ -416,7 +418,7 @@ final class Acl
         $result = $event->result();
 
         if ($result->wants(self::SUPPORTED)) {
-            $result->set(self::SUPPORTED, $this->supported());
+            $result->set(self::SUPPORTED, $this->supported($event->node()));
         }
 
         if ($result->wants(self::CURRENT_USER)) {
@@ -530,13 +532,26 @@ final class Acl
     }
 
     /**
-     * RFC 3744 §5.3: the tree, written as a tree.
+     * RFC 3744 §5.3: the tree, written as a tree — and the tree of **this**
+     * resource.
+     *
+     * > This is a protected property that identifies the privileges defined
+     * > for the resource.
+     *
+     * Almost every resource has nothing of its own, and for those this is what
+     * the server grants everywhere. A node that says otherwise is asked, which
+     * is how RFC 6638 §6's scheduling privileges reach the Inbox and Outbox
+     * "on which they are defined" without this layer knowing what either is —
+     * see {@see IPrivileges}.
      */
-    private function supported(): Element
+    private function supported(INode $node): Element
     {
         $supported = new Element(self::SUPPORTED);
+        $privileges = $node instanceof IPrivileges
+            ? $node->privilegesDefinedHere($this->privileges)
+            : $this->privileges;
 
-        $supported->append(self::describedTree($this->privileges));
+        $supported->append(self::describedTree($privileges));
 
         return $supported;
     }
