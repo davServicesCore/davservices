@@ -460,6 +460,169 @@ final class SchedulingReplyTest extends TestCase
     }
 
     /**
+     * **A value this server cannot read is reported although nothing was
+     * sent.** §7.2: "Servers MUST set the 'SCHEDULE-STATUS' parameter of the
+     * 'ATTENDEE' or 'ORGANIZER' to 2.3 […] when the 'SCHEDULE-FORCE-SEND'
+     * parameter is set to an iana-token value they do not recognize."
+     *
+     * **This is the case where that MUST and §7.3's fence disagree** — "Servers
+     * MUST only add or change this property parameter on any 'ATTENDEE'
+     * properties corresponding to calendar users who were sent a scheduling
+     * message" — and the narrower sentence wins: the answer did not change, so
+     * no `REPLY` goes out, and the 2.3 claims none. It answers what the client
+     * wrote.
+     */
+    public function testAValueTheServerCannotReadIsReportedAlthoughNothingWasSent(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, $this->answering('ACCEPTED')));
+
+        $this->put($this->anEvent(
+            'ORGANIZER;SCHEDULE-FORCE-SEND=X-SHOUT-LOUDER:mailto:bernard@example.com',
+            $this->answering('ACCEPTED'),
+        ));
+
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertSame([], $this->namesIn('calendars/bernard/inbox'));
+        self::assertStringContainsString(
+            'ORGANIZER;SCHEDULE-STATUS=2.3:mailto:bernard@example.com',
+            $stored,
+        );
+        self::assertStringNotContainsString('SCHEDULE-FORCE-SEND', $stored);
+    }
+
+    /**
+     * **And beside what came of a sending, where there was one.** §7.3's
+     * grammar takes "a single 'statcode' or a comma-separated list of
+     * 'statcode' values", and the two kinds of status §3.2.9 describes each
+     * have something to say here: the parameter was ignored, and the reply the
+     * changed answer sent was delivered.
+     */
+    public function testAValueTheServerCannotReadIsReportedBesideTheDelivery(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, $this->answering('ACCEPTED')));
+
+        $this->put($this->anEvent(
+            'ORGANIZER;SCHEDULE-FORCE-SEND=X-SHOUT-LOUDER:mailto:bernard@example.com',
+            $this->answering('DECLINED'),
+        ));
+
+        self::assertStringContainsString(
+            'ORGANIZER;SCHEDULE-STATUS="2.3,1.2":mailto:bernard@example.com',
+            self::unfolded($this->theStoredObject(self::EVENT)),
+        );
+        self::assertStringContainsString(
+            'PARTSTAT=DECLINED',
+            $this->theOneResourceIn('calendars/bernard/inbox'),
+        );
+    }
+
+    /**
+     * **A forced reply with no answer to give sends nothing.** The message is
+     * read out of the resource the way §3.2.2.2 reads it — every instance
+     * answered as though for the first time — and RFC 5545 §3.2.12 makes
+     * `NEEDS-ACTION` the default, so an attendee who has not answered has
+     * nothing to tell the organizer. §7.2 forces a message to be sent, not one
+     * to be invented.
+     */
+    public function testAForcedReplyWithNoAnswerToGiveSendsNothing(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, $this->answering('NEEDS-ACTION')));
+
+        $this->put($this->anEvent(
+            'ORGANIZER;SCHEDULE-FORCE-SEND=REPLY:mailto:bernard@example.com',
+            $this->answering('NEEDS-ACTION'),
+        ));
+
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertSame([], $this->namesIn('calendars/bernard/inbox'));
+        self::assertStringNotContainsString('SCHEDULE-FORCE-SEND', $stored);
+        self::assertStringNotContainsString('SCHEDULE-STATUS', $stored);
+    }
+
+    /**
+     * **And one asked of an organizer the client schedules for sends nothing
+     * either.** §7.2 permits the parameter only on a property whose
+     * `SCHEDULE-AGENT` "is set to the value 'SERVER' or is not specified", and
+     * §7.1 puts this one outside the server's scheduling altogether — so there
+     * is nothing to force and nothing to report, while the parameter still
+     * goes: that MUST NOT is written of the resource and knows no exception.
+     */
+    public function testAForcedReplyToAnOrganizerTheClientSchedulesForSendsNothing(): void
+    {
+        $this->given($this->anEvent(
+            'ORGANIZER;SCHEDULE-AGENT=CLIENT:mailto:bernard@example.com',
+            $this->answering('ACCEPTED'),
+        ));
+
+        $this->put($this->anEvent(
+            'ORGANIZER;SCHEDULE-AGENT=CLIENT;SCHEDULE-FORCE-SEND=REPLY:mailto:bernard@example.com',
+            $this->answering('DECLINED'),
+        ));
+
+        $stored = self::unfolded($this->theStoredObject(self::EVENT));
+
+        self::assertSame([], $this->namesIn('calendars/bernard/inbox'));
+        self::assertStringNotContainsString('SCHEDULE-FORCE-SEND', $stored);
+        self::assertStringNotContainsString('SCHEDULE-STATUS', $stored);
+        self::assertStringContainsString('SCHEDULE-AGENT=CLIENT', $stored);
+    }
+
+    /**
+     * **A forced reply goes out although the answer did not change.** RFC 6638
+     * §3.2.7: the parameter "can be used by a calendar user to force the server
+     * to send a scheduling message to an 'Attendee' or the 'Organizer' in a
+     * situation where the server would not normally send a scheduling message."
+     *
+     * §3.2.2.3 is where that situation is: its two MUSTs ask for a `REPLY` only
+     * where a `PARTSTAT` changed or an `EXDATE` arrived, so an attendee who
+     * stores their copy again unchanged tells the organizer nothing. §7.2 is
+     * what lets them say it anyway: "An 'Attendee' MAY specify this parameter
+     * on the 'ORGANIZER' with the value 'REPLY' to force a 'REPLY' scheduling
+     * message to be sent to the 'Organizer'."
+     */
+    public function testAForcedReplyGoesOutAlthoughTheAnswerDidNotChange(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, $this->answering('ACCEPTED')));
+
+        $this->put($this->anEvent(
+            'ORGANIZER;SCHEDULE-FORCE-SEND=REPLY:mailto:bernard@example.com',
+            $this->answering('ACCEPTED'),
+        ));
+
+        $message = $this->theOneResourceIn('calendars/bernard/inbox');
+
+        self::assertStringContainsString('METHOD:REPLY', $message);
+        self::assertStringContainsString('PARTSTAT=ACCEPTED', $message);
+    }
+
+    /**
+     * **And the parameter is not kept, on the resource or in the message.**
+     * §7.2 says both in one sentence: "Servers MUST NOT preserve this property
+     * parameter in scheduling object resources, nor include it in any
+     * scheduling messages sent as the result of a scheduling operation."
+     */
+    public function testTheForcingParameterIsKeptNowhere(): void
+    {
+        $this->given($this->anEvent(self::ORGANISED, $this->answering('ACCEPTED')));
+
+        $this->put($this->anEvent(
+            'ORGANIZER;SCHEDULE-FORCE-SEND=REPLY:mailto:bernard@example.com',
+            $this->answering('ACCEPTED'),
+        ));
+
+        self::assertStringNotContainsString(
+            'SCHEDULE-FORCE-SEND',
+            $this->theStoredObject(self::EVENT),
+        );
+        self::assertStringNotContainsString(
+            'SCHEDULE-FORCE-SEND',
+            $this->theOneResourceIn('calendars/bernard/inbox'),
+        );
+    }
+
+    /**
      * **And a body that is no calendar object at all is nothing to do with
      * scheduling**, which is where this listener stops and
      * `CALDAV:valid-calendar-data` takes over.
@@ -471,6 +634,15 @@ final class SchedulingReplyTest extends TestCase
         $this->put('not a calendar object');
 
         self::assertSame([], $this->namesIn('calendars/bernard/inbox'));
+    }
+
+    /**
+     * That text with the folding taken out, RFC 5545 §3.1 breaking a line
+     * longer than 75 octets — which an organizer with two parameters passes.
+     */
+    private static function unfolded(string $text): string
+    {
+        return str_replace("\r\n ", '', $text);
     }
 
     /**

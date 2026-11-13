@@ -15,6 +15,7 @@ namespace DavServices\CalDav\Schedule;
 
 use DavServices\CalDav\CalendarObject;
 use DavServices\VObject\Component;
+use DavServices\VObject\Parameter;
 use DavServices\VObject\Property;
 use DavServices\VObject\Serializer;
 
@@ -682,14 +683,29 @@ final class SchedulingMessage
     }
 
     /**
-     * The same property again, without those two parameters.
+     * The same property again, without the three parameters that are the
+     * server's own.
+     *
+     * One sentence each, and all three say it in the same words. §7.1: "Servers
+     * MUST NOT include this parameter in any scheduling messages sent as the
+     * result of a scheduling operation." §7.3: the same of `SCHEDULE-STATUS`.
+     * §7.2, of `SCHEDULE-FORCE-SEND`: "Servers MUST NOT preserve this property
+     * parameter in scheduling object resources, **nor include it in any
+     * scheduling messages** sent as the result of a scheduling operation."
+     *
+     * **The third one is held here and not by the order things happen in.**
+     * {@see \DavServices\Plugin\Scheduling} takes that parameter off the
+     * resource before any message is built out of it, which answers the other
+     * half of §7.2's sentence — but a message is no place for it whoever built
+     * it and whenever, and that is a property of the builder rather than an
+     * ordering to keep.
      */
     private static function withoutTheServersOwn(Property $property): Property
     {
         $parameters = [];
 
         foreach ($property->parameters() as $parameter) {
-            if ($parameter->named(ScheduleAgent::NAME) || $parameter->named(DeliveryStatus::NAME)) {
+            if (self::isTheServersOwn($parameter)) {
                 continue;
             }
 
@@ -697,5 +713,16 @@ final class SchedulingMessage
         }
 
         return new Property($property->name(), $property->value(), $parameters, $property->group());
+    }
+
+    /**
+     * Whether that parameter is one of the three a server writes and may not
+     * send on.
+     */
+    private static function isTheServersOwn(Parameter $parameter): bool
+    {
+        return $parameter->named(ScheduleAgent::NAME)
+            || $parameter->named(DeliveryStatus::NAME)
+            || $parameter->named(ForceSend::NAME);
     }
 }
