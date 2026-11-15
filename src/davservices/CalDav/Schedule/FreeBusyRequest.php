@@ -18,6 +18,7 @@ use DavServices\CalDav\TimeRange;
 use DavServices\Exception\BadRequest;
 use DavServices\VObject\Component;
 use DavServices\VObject\Mode;
+use DavServices\VObject\Property;
 use DavServices\VObject\Reader;
 use DavServices\VObject\Value\DateTime;
 use Throwable;
@@ -108,12 +109,7 @@ final class FreeBusyRequest
 
     private const DTEND = 'DTEND';
 
-    /**
-     * What the table gives a presence of exactly `1` inside the `VFREEBUSY`.
-     *
-     * @var list<string>
-     */
-    private const EXACTLY_ONE = [self::UID, 'DTSTAMP', self::DTSTART, self::DTEND, self::ORGANIZER];
+    private const DTSTAMP = 'DTSTAMP';
 
     /**
      * What it gives `0`, inside the `VFREEBUSY` and beside it.
@@ -131,13 +127,19 @@ final class FreeBusyRequest
     private const NO_COMPONENT = ['VALARM', 'VEVENT', 'VTODO', 'VJOURNAL', 'VTIMEZONE'];
 
     /**
+     * **Values, not the component.** Everything §5's answer needs of the
+     * request is read while the table is being held to — the one `UID`, the
+     * one `ORGANIZER`, the attendees and the two ends — so there is nothing
+     * left to look up a second time. A request that kept its component would
+     * also let whoever holds it change the thing that had just been checked.
+     *
      * @param list<string> $recipients
      */
     private function __construct(
+        private readonly string $uid,
         private readonly string $organizer,
         private readonly array $recipients,
         private readonly TimeRange $range,
-        private readonly Component $asked,
     ) {
     }
 
@@ -158,19 +160,21 @@ final class FreeBusyRequest
         self::mustHaveNoneOfTheForbidden($calendar, $asked);
         self::mustHaveWhatTheTableRequires($asked);
 
-        $range = self::theRangeOf($asked);
+        // Each of these is the row of the table and the reading of it at
+        // once. Checking first and reading afterwards would mean a second
+        // pass that cannot see what the first proved — and a null test no
+        // input could ever reach.
+        $uid = self::theOneCalled($asked, self::UID)->value();
+        $organizer = self::theOneCalled($asked, self::ORGANIZER)->value();
         $recipients = [];
+
+        self::theOneCalled($asked, self::DTSTAMP);
 
         foreach ($asked->properties(self::ATTENDEE) as $attendee) {
             $recipients[] = $attendee->value();
         }
 
-        return new self(
-            $asked->property(self::ORGANIZER)?->value() ?? '',
-            $recipients,
-            $range,
-            $asked,
-        );
+        return new self($uid, $organizer, $recipients, self::theRangeOf($asked));
     }
 
     /**
@@ -213,15 +217,10 @@ final class FreeBusyRequest
      * Appendix B.5 writes it: the answer's `VFREEBUSY` has the same `UID` as
      * the question, and that is how a client pairs the two. RFC 5546 §3.3.3
      * gives `UID | 1` for the reply as well, so there is one to carry.
-     *
-     * **The component itself is not handed out.** The reply needs this and
-     * nothing else of it — the range and the organizer have their own
-     * readers — and a caller holding the component could change the request
-     * after it had been held to §3.3.2.
      */
     public function uid(): string
     {
-        return $this->asked->property(self::UID)?->value() ?? '';
+        return $this->uid;
     }
 
     /**
@@ -348,27 +347,40 @@ final class FreeBusyRequest
     }
 
     /**
-     * The five rows of exactly `1`, the one of `1+`, and the one of `0 or 1`.
+     * The one property of that name, or a refusal.
+     *
+     * **This is a row of the table and the reading of it in one.** The five
+     * rows of exactly `1` are each read where they are checked, so that
+     * nothing afterwards has to ask again whether a property it has already
+     * been promised is there.
+     *
+     * @throws BadRequest If there is none of that name, or more than one
+     */
+    private static function theOneCalled(Component $asked, string $name): Property
+    {
+        $found = $asked->properties($name);
+
+        if (count($found) !== 1) {
+            throw new BadRequest(
+                sprintf(
+                    'RFC 5546 §3.3.2 gives a busy time request %s | 1, and this one carries %d.',
+                    $name,
+                    count($found),
+                ),
+                self::PRECONDITION,
+            );
+        }
+
+        return $found[0];
+    }
+
+    /**
+     * The row of `1+` and the row of `0 or 1`.
      *
      * @throws BadRequest If a count is not the one the table gives
      */
     private static function mustHaveWhatTheTableRequires(Component $asked): void
     {
-        foreach (self::EXACTLY_ONE as $name) {
-            $count = count($asked->properties($name));
-
-            if ($count !== 1) {
-                throw new BadRequest(
-                    sprintf(
-                        'RFC 5546 §3.3.2 gives a busy time request %s | 1, and this one carries %d.',
-                        $name,
-                        $count,
-                    ),
-                    self::PRECONDITION,
-                );
-            }
-        }
-
         if ($asked->properties(self::ATTENDEE) === []) {
             throw new BadRequest(
                 'RFC 5546 §3.3.2 gives a busy time request ATTENDEE | 1+, and this one names nobody to ask about.',
@@ -419,20 +431,16 @@ final class FreeBusyRequest
      */
     private static function theUtcMomentOf(Component $asked, string $name): DateTimeImmutable
     {
-        // The property is there and single: `mustHaveWhatTheTableRequires()`
-        // settled that before this is reached.
-        $property = $asked->property($name);
+        $property = self::theOneCalled($asked, $name);
         $moment = null;
 
-        if ($property !== null) {
-            try {
-                $moment = DateTime::decode($property->value())->instant();
-            } catch (Throwable) {
-                // A value that is no date-time at all — `VALUE=DATE` among
-                // them — is the same refusal as one that is not UTC, and the
-                // table says it in one comment for both.
-                $moment = null;
-            }
+        try {
+            $moment = DateTime::decode($property->value())->instant();
+        } catch (Throwable) {
+            // A value that is no date-time at all — `VALUE=DATE` among them —
+            // is the same refusal as one that is not UTC, and the table says
+            // it in one comment for both.
+            $moment = null;
         }
 
         if ($moment === null) {
@@ -440,7 +448,7 @@ final class FreeBusyRequest
                 sprintf(
                     'RFC 5546 §3.3.2 has the %s of a busy time request be a DateTime value "in UTC", and this one is "%s".',
                     $name,
-                    $property?->value() ?? '',
+                    $property->value(),
                 ),
                 self::PRECONDITION,
             );

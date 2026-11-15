@@ -141,6 +141,62 @@ final class SchedulingFreeBusyTest extends TestCase
     }
 
     /**
+     * **The reply is an iTIP reply, and RFC 5546 §3.3.3 says what one
+     * carries.** `METHOD` MUST be REPLY; `ORGANIZER | 1` "MUST be the request
+     * originator's address"; `ATTENDEE | 1` "MUST be the address of the
+     * Attendee replying"; and `UID | 1` "MUST be the UID of the original
+     * REQUEST", which is how a client pairs answer with question. RFC 5545
+     * §3.6 adds `VERSION` and `PRODID` to the object around it.
+     *
+     * @param string $written A line Appendix B.5's reply carries
+     */
+    #[DataProvider('whatAnITipReplyCarries')]
+    public function testTheReplyCarriesWhatAnITipReplyMustCarry(string $written): void
+    {
+        self::assertStringContainsString(
+            $written,
+            self::unfolded((string) $this->post($this->aRequest([self::WILFREDO]))->body()),
+        );
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function whatAnITipReplyCarries(): array
+    {
+        return [
+            'METHOD | 1, REPLY' => ['METHOD:REPLY'],
+            'ORGANIZER | 1, the originator' => ['ORGANIZER:' . self::CYRUS],
+            'ATTENDEE | 1, the one replying' => ['ATTENDEE:' . self::WILFREDO],
+            'UID | 1, the one of the REQUEST' => ['UID:4FD3AD926350'],
+            'VERSION, which RFC 5545 §3.6 requires' => ['VERSION:2.0'],
+            'PRODID, which §3.7.3 requires' => ['PRODID:'],
+        ];
+    }
+
+    /**
+     * **A request that reaches more objects than the server will is refused
+     * even inside the dates.** §11.1 is about resources, and a calendar of
+     * two objects with a limit of one is the smallest case that counts past
+     * the first — which a server counting the wrong way would never reach.
+     */
+    public function testItStopsCountingAtTheLimitRatherThanAwayFromIt(): void
+    {
+        $response = $this->post($this->aRequest([self::WILFREDO]), atMost: 1);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('number-of-matches-within-limits', (string) $response->body());
+    }
+
+    /**
+     * **And a limit the request stays under is answered.**
+     */
+    public function testItAnswersARequestThatStaysUnderTheLimit(): void
+    {
+        self::assertSame(200, $this->post($this->aRequest([self::WILFREDO]), atMost: 2)->status());
+    }
+
+    /**
      * **And one response for each, in the order asked.** §5: "This element
      * MUST contain one CALDAV:response element for each calendar user."
      */
@@ -463,15 +519,20 @@ final class SchedulingFreeBusyTest extends TestCase
                         ->add(Calendar::of(self::aCalendarCalled(
                             'work',
                             ['20090602T110000Z', '20090602T120000Z'],
+                            ['20090603T080000Z', '20090603T090000Z'],
                         ))))
                     ->add((new MemoryCollection('bernard'))
-                        ->add(Calendar::of(self::aCalendarCalled(
-                            'work',
-                            ['20090602T150000Z', '20090602T160000Z'],
-                        )))
+                        // **The transparent one first.** §9.1 has it
+                        // contribute nothing — and a guard that broke out of
+                        // the walk instead of passing over would lose the
+                        // opaque one behind it.
                         ->add(Calendar::of(self::aCalendarCalled(
                             'hidden',
                             ['20090603T090000Z', '20090603T100000Z'],
+                        )))
+                        ->add(Calendar::of(self::aCalendarCalled(
+                            'work',
+                            ['20090602T150000Z', '20090602T160000Z'],
                         )))))
                 ->add((new MemoryCollection('principals'))
                     ->add(new Principal(new PrincipalInfo('cyrus', 'Cyrus')))
@@ -489,21 +550,37 @@ final class SchedulingFreeBusyTest extends TestCase
     }
 
     /**
-     * A calendar collection holding one event of the given hour.
+     * A calendar collection holding one calendar object resource per hour
+     * given — more than one where a case needs the server to count past the
+     * first.
      *
-     * @param array{string, string} $hour
+     * @param array{string, string} ...$hours
      */
-    private static function aCalendarCalled(string $name, array $hour): MemoryCollection
+    private static function aCalendarCalled(string $name, array ...$hours): MemoryCollection
     {
-        [$from, $until] = $hour;
+        $calendar = new MemoryCollection($name);
 
-        return (new MemoryCollection($name))->add(new MemoryFile(
-            'one.ics',
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
-            . "BEGIN:VEVENT\r\nUID:" . $name . "@example.com\r\nDTSTAMP:20090601T000000Z\r\n"
-            . 'DTSTART:' . $from . "\r\nDTEND:" . $until . "\r\nSUMMARY:An hour\r\n"
-            . "END:VEVENT\r\nEND:VCALENDAR\r\n",
-        ));
+        foreach ($hours as $number => [$from, $until]) {
+            $calendar->add(new MemoryFile(
+                $number . '.ics',
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
+                . 'BEGIN:VEVENT' . "\r\nUID:" . $name . '-' . $number . "@example.com\r\n"
+                . "DTSTAMP:20090601T000000Z\r\nDTSTART:" . $from . "\r\nDTEND:" . $until
+                . "\r\nSUMMARY:An hour\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+            ));
+        }
+
+        return $calendar;
+    }
+
+    /**
+     * The body with iCalendar's line folding undone, so that a property can
+     * be looked for as it was written. RFC 5545 §3.1 folds at 75 octets, and
+     * a `PRODID` or an `ORGANIZER` is easily longer than that.
+     */
+    private static function unfolded(string $body): string
+    {
+        return str_replace(["\r\n ", "\r\n\t"], '', $body);
     }
 
     /**

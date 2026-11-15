@@ -167,6 +167,49 @@ final class FreeBusyRequestTest extends TestCase
     }
 
     /**
+     * **A body the reader cannot get through is refused with the reason it
+     * gave.** §5.2.1's `400` is the same either way, but the two refusals do
+     * not say the same thing: a body that broke the syntax is told where, and
+     * one that parsed into no calendar object at all is told that it carries
+     * none. A server that answered both with the count would be hiding what
+     * it knows.
+     *
+     * @param string $body A body that cannot be read as one calendar object
+     * @param string $said What the refusal has to name
+     */
+    #[DataProvider('bodiesAndWhatTheirRefusalSays')]
+    public function testItSaysWhyABodyCouldNotBeRead(string $body, string $said): void
+    {
+        try {
+            FreeBusyRequest::of($body);
+        } catch (BadRequest $refused) {
+            self::assertStringContainsString($said, $refused->getMessage());
+
+            return;
+        }
+
+        self::fail('A body that cannot be read as one calendar object is refused.');
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function bodiesAndWhatTheirRefusalSays(): array
+    {
+        return [
+            'broken syntax' => [
+                'not an iCalendar object',
+                'is an iCalendar object (RFC 6638 §5): ',
+            ],
+            'a line that never closes' => [
+                "BEGIN:VCALENDAR\r\n",
+                'is an iCalendar object (RFC 6638 §5): ',
+            ],
+            'nothing at all' => ['', 'carries 0'],
+        ];
+    }
+
+    /**
      * **And what the table allows is not refused.** Without this the guards
      * above could all be one that refuses everything.
      *

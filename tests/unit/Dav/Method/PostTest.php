@@ -133,6 +133,23 @@ final class PostTest extends TestCase
     }
 
     /**
+     * **And the handler may be taken under a shouted media type too.**
+     * RFC 9110 §8.3.1 makes the comparison case-insensitive, and that is a
+     * statement about both sides of it: a deployment that writes
+     * `TEXT/CALENDAR` means the same media type as a client that sends
+     * `text/calendar`.
+     */
+    public function testItTakesAHandlerUnderAMediaTypeHoweverItIsWritten(): void
+    {
+        $server = $this->serverTaking(
+            'TEXT/Calendar',
+            static fn (Request $request): Response => new Response(200),
+        );
+
+        self::assertSame(200, $server->handle($this->request(self::AN_OBJECT, type: self::CALENDAR))->status());
+    }
+
+    /**
      * **And a body nobody claimed by media type is still read as XML.**
      * Without this the first level would swallow the second, and
      * `caldav-sharing`'s two bodies would stop being answered.
