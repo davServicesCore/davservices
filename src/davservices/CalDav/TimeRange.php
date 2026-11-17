@@ -613,18 +613,23 @@ final readonly class TimeRange
      * a fixed number of seconds. RFC 5545 §3.3.6 admits no months or years in a
      * duration, which is what would make it otherwise.
      *
+     * **Where the range is open at the end the repeats walk towards, none of
+     * them is worth asking about at all.** §9.9 reads a missing attribute as
+     * "any time in the past" or "any time in the future", so on that side
+     * nothing can be too far — which means the first trigger was already the
+     * closest any of them gets, and it was asked about before this. Every step
+     * from there only increases the distance to the end that *is* fixed.
+     * {@see self::holds()} answers null with false, so saying so costs nothing.
+     *
      * @param int $step The seconds between repeats, never zero
      * @param int $times How many repeats follow the first trigger, at least one
      */
-    private function theRepeatWorthAsking(DateTimeImmutable $first, int $step, int $times): DateTimeImmutable
+    private function theRepeatWorthAsking(DateTimeImmutable $first, int $step, int $times): ?DateTimeImmutable
     {
         $edge = $step > 0 ? $this->from : $this->until;
 
-        // Open at the end the repeats walk towards: the first repeat is then as
-        // close to the range as any of them, and the trigger before it has been
-        // asked about already.
         if ($edge === null) {
-            return self::repeatAt($first, $step, 1);
+            return null;
         }
 
         $low = 1;

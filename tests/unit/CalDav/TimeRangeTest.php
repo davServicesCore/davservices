@@ -539,6 +539,94 @@ final class TimeRangeTest extends TestCase
      * @param string $alarm The alarm's own properties
      * @param bool $overlaps Whether it overlaps noon to one on 5.1.2026
      */
+    /**
+     * **A range open at the end the repeats walk towards.** §9.9 reads a
+     * missing attribute as "any time in the past" or "any time in the future",
+     * so there is no edge to search for — the first repeat is then as close to
+     * the range as any of them, and the trigger before it was asked about
+     * already.
+     *
+     * **So none of the repeats is worth asking about on that side.** The
+     * first trigger was the closest any of them gets — every step from there
+     * only increases the distance to the end that *is* fixed — and it was
+     * asked about before the repeats were considered at all.
+     *
+     * @param string|null $from The start of the range, or nothing
+     * @param string|null $until Its end, or nothing
+     * @param string $alarm The alarm's trigger, repeat and duration
+     * @param bool $overlaps Whether any of its triggers lands in the range
+     */
+    #[DataProvider('alarmsAgainstAnOpenRange')]
+    public function testARepeatIsWeighedAgainstARangeThatIsOpenWhereItWalks(
+        ?string $from,
+        ?string $until,
+        string $alarm,
+        bool $overlaps,
+    ): void {
+        // The event runs from 14:00 to 15:00, as in the case above.
+        $event = "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20260101T000000Z\r\n"
+            . "DTSTART:20260105T140000Z\r\nDTEND:20260105T150000Z\r\n"
+            . 'BEGIN:VALARM' . "\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\n" . $alarm
+            . "END:VALARM\r\nEND:VEVENT\r\n";
+        $object = $this->objectOf($event);
+        $within = $object->component('VEVENT');
+
+        self::assertNotNull($within);
+
+        $alarmComponent = $within->component('VALARM');
+
+        self::assertNotNull($alarmComponent);
+        self::assertSame($overlaps, $this->range($from, $until)->overlaps(
+            $alarmComponent,
+            new Moments($object, new DateTimeZone('UTC')),
+            $within,
+        ));
+    }
+
+    /**
+     * @return iterable<string, array{string|null, string|null, string, bool}>
+     */
+    public static function alarmsAgainstAnOpenRange(): iterable
+    {
+        // **Walking forwards with no start to the range.** Everything before
+        // 13:00 is inside, so the first trigger is outside only by being at or
+        // after it — here 14:00 — and every repeat after that is later still.
+        // Nothing the repeats can reach is nearer.
+        yield 'walking forwards with no start to reach' => [
+            null,
+            '20260105T130000Z',
+            "TRIGGER:PT0S\r\nREPEAT:5\r\nDURATION:PT1H\r\n",
+            false,
+        ];
+
+        // **Walking backwards with no end to the range.** Everything from
+        // 12:00 on is inside, so the first trigger is outside only by being
+        // before it — here 10:00 — and every repeat is earlier still.
+        yield 'walking backwards with no end to reach' => [
+            '20260105T120000Z',
+            null,
+            "TRIGGER:-PT4H\r\nREPEAT:5\r\nDURATION:-PT1H\r\n",
+            false,
+        ];
+
+        // **And the open side does not swallow a trigger that is inside.**
+        // Without these two the cases above could pass on a server that
+        // answered an open range with "no" for every alarm.
+        yield 'no start, and the first trigger is inside' => [
+            null,
+            '20260105T130000Z',
+            "TRIGGER:-PT10H\r\nREPEAT:5\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+
+        yield 'no end, and a repeat walks into it' => [
+            '20260105T120000Z',
+            null,
+            "TRIGGER:-PT4H\r\nREPEAT:5\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+    }
+
     #[DataProvider('alarms')]
     public function testAnAlarmOverlapsWhenItTriggersInTheRange(string $alarm, bool $overlaps): void
     {
