@@ -143,8 +143,8 @@ final readonly class TimeRange
      *     <!ATTLIST limit-recurrence-set start CDATA #REQUIRED
      *                                    end   CDATA #REQUIRED>
      *
-     * **That is a different thing from §9.9's own element**, which reads a
-     * missing attribute as "any time in the past" or "any time in the future":
+     * **That is a different thing from §9.9's own element**, where a missing
+     * attribute means "assume '-infinity' and '+infinity' as their value":
      * a filter open at one end is an ordinary thing to ask, while a limit open
      * at one end limits nothing. Everything else about the two ends is the
      * same question, which §9.6.6 says itself — "The server MUST use the same
@@ -548,61 +548,165 @@ final readonly class TimeRange
      * "A VALARM component can be defined such that it triggers repeatedly.
      * Such a VALARM component is said to overlap a given time range if at
      * least one of its triggers overlaps the time range."
+     *
+     * **"At least one" is a question, not a list.** The repeats are worked out
+     * rather than walked, and that is not a matter of speed: `REPEAT` carries a
+     * number the client chose, and RFC 5545 §3.8.6.2 puts no bound on it —
+     * "This property defines the number of times the alarm should be repeated,
+     * after the initial trigger." A server that built one moment per repeat
+     * would let a single stored event decide how much memory every later query
+     * spends on it, and R-CAL-09 wants a limit refused with its precondition
+     * rather than reached with an abort.
+     *
+     * **`REPEAT` and `DURATION` belong together as soon as there is anything
+     * to repeat.** §3.8.6.2:
+     *
+     * > If the alarm triggers more than once, then this property MUST be
+     * > specified along with the "DURATION" property.
+     *
+     * So a count without a length repeats nothing — and a length of nothing
+     * puts every repeat where the first trigger already was.
      */
     private function overlapsAnAlarm(Component $component, Moments $moments, ?Component $within): bool
-    {
-        foreach (self::triggersOf($component, $moments, $within) as $trigger) {
-            if ($this->holds($trigger)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Every moment this alarm goes off.
-     *
-     * **A trigger is a duration by default** (RFC 5545 §3.8.6.3: "Value Type:
-     * DURATION … The value type can be set to DATE-TIME"), counted from the
-     * component the alarm sits in — from its start unless `RELATED=END` says
-     * otherwise, which is the same section's default: "the 'RELATED' parameter
-     * … the default is START".
-     *
-     * So a relative trigger with nothing around it goes off nowhere: there is
-     * no start to count from, and inventing one would put an alarm in a range
-     * at random.
-     *
-     * `REPEAT` and `DURATION` add the rest (§3.8.6.2, §3.8.5.1): "This
-     * property defines the number of times the alarm should be repeated, after
-     * the initial trigger."
-     *
-     * @return list<DateTimeImmutable>
-     */
-    private static function triggersOf(Component $component, Moments $moments, ?Component $within): array
     {
         $trigger = $component->property('TRIGGER');
 
         if ($trigger === null) {
-            return [];
+            return false;
         }
 
         $first = self::firstTriggerOf($trigger, $moments, $within);
 
         if ($first === null) {
-            return [];
+            return false;
         }
 
-        $triggers = [$first];
-        $step = self::durationOf($component);
+        if ($this->holds($first)) {
+            return true;
+        }
+
+        $step = self::stepOf($component);
         $times = (int) ($component->property('REPEAT')?->value() ?? '0');
 
-        for ($at = 0; $step !== null && $at < $times; ++$at) {
-            $first = $first->add($step);
-            $triggers[] = $first;
+        if ($step === null || $step === 0 || $times < 1) {
+            return false;
         }
 
-        return $triggers;
+        return $this->holds($this->theRepeatWorthAsking($first, $step, $times));
+    }
+
+    /**
+     * The one repeat that can lie in this range.
+     *
+     * **With a step of a fixed length the repeats are ordered**, so only one of
+     * them is worth asking about: walking forwards, the first repeat that is
+     * not before the range — everything earlier is too early, everything later
+     * is further past it; walking backwards, the first that is no longer after
+     * it. Which one that is, is found by halving the span of counts instead of
+     * stepping through it.
+     *
+     * **The span is cut down first.** A repeat further from the first trigger
+     * than the edge of the range is further than the one before it, so the
+     * count that just passes the edge is as high as the search ever needs to
+     * go. That also keeps `count × step` inside an integer: both are the
+     * client's numbers, and a hundred million repeats of a thousand days would
+     * otherwise overflow into a float and name a moment nobody meant.
+     *
+     * The arithmetic is exact because the moments are UTC —
+     * {@see Moments::of()} answers nothing else — so a step of days or weeks is
+     * a fixed number of seconds. RFC 5545 §3.3.6 admits no months or years in a
+     * duration, which is what would make it otherwise.
+     *
+     * **Where the range is open at the end the repeats walk towards, none of
+     * them is worth asking about at all.** §9.9 says to "assume '-infinity'
+     * and '+infinity' as their value" where an attribute is missing, so on
+     * that side nothing can be too far — which means the first trigger was
+     * already the closest any of them gets, and it was asked about before
+     * this. Every step from there only increases the distance to the end that
+     * *is* fixed.
+     * {@see self::holds()} answers null with false, so saying so costs nothing.
+     *
+     * @param int $step The seconds between repeats, never zero
+     * @param int $times How many repeats follow the first trigger, at least one
+     */
+    private function theRepeatWorthAsking(DateTimeImmutable $first, int $step, int $times): ?DateTimeImmutable
+    {
+        // **Which way the walk goes is one fact, so it is decided once.** The
+        // edge it heads for and the comparison that recognises the edge are
+        // the same question read twice, and a second reading of the sign is a
+        // second place to get it wrong.
+        $forwards = $step > 0;
+        $edge = $forwards ? $this->from : $this->until;
+
+        if ($edge === null) {
+            return null;
+        }
+
+        $low = 1;
+        $high = min($times, self::countThatPasses($first, $step, $edge));
+
+        while ($low < $high) {
+            $middle = intdiv($low + $high, 2);
+            $at = self::repeatAt($first, $step, $middle);
+
+            // **Has this repeat got as far as the edge the walk heads for?**
+            // Forwards that is "at or after the start of the range",
+            // backwards "no longer at or after its end" — the two halves of
+            // §9.9's `(start <= trigger-time) AND (end > trigger-time)`, each
+            // read from the side the walk approaches it from.
+            if ($forwards ? $at >= $edge : $at < $edge) {
+                $high = $middle;
+
+                continue;
+            }
+
+            $low = $middle + 1;
+        }
+
+        return self::repeatAt($first, $step, $low);
+    }
+
+    /**
+     * The lowest count whose repeat is certainly at or past the edge, which is
+     * where the search can stop looking.
+     *
+     * One step more than the whole distance divided by the step: rounding down
+     * can land just short of the edge, and one step more than that cannot.
+     */
+    private static function countThatPasses(DateTimeImmutable $first, int $step, DateTimeImmutable $edge): int
+    {
+        return intdiv(abs($edge->getTimestamp() - $first->getTimestamp()), abs($step)) + 1;
+    }
+
+    /**
+     * Where the repeat of this count goes off.
+     */
+    private static function repeatAt(DateTimeImmutable $first, int $step, int $count): DateTimeImmutable
+    {
+        return $first->setTimestamp($first->getTimestamp() + ($step * $count));
+    }
+
+    /**
+     * The seconds between one repeat and the next, or null where nothing says.
+     *
+     * **In seconds rather than as an interval**, because the repeats are
+     * counted rather than walked. RFC 5545 §3.3.6 makes that sound: a duration
+     * is weeks, days, hours, minutes and seconds — `dur-value = (["+"] / "-")
+     * "P" (dur-date / dur-time / dur-week)` — and none of those is a month or a
+     * year, so each is a fixed number of seconds. The sign is carried: the same
+     * grammar admits a negative duration, and then the repeats walk backwards.
+     */
+    private static function stepOf(Component $component): ?int
+    {
+        $step = self::durationOf($component);
+
+        if ($step === null) {
+            return null;
+        }
+
+        $seconds = ((($step->d * 24) + $step->h) * 60 + $step->i) * 60 + $step->s;
+
+        return $step->invert === 1 ? -$seconds : $seconds;
     }
 
     /**

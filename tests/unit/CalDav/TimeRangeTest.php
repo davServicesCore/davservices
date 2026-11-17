@@ -532,6 +532,94 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
+     * **A range open at the end the repeats walk towards.** §9.9 says to
+     * "assume '-infinity' and '+infinity' as their value" where an attribute
+     * is missing, so there is no edge to search for — the first repeat is
+     * then as close to the range as any of them, and the trigger before it was
+     * asked about already.
+     *
+     * **So none of the repeats is worth asking about on that side.** The
+     * first trigger was the closest any of them gets — every step from there
+     * only increases the distance to the end that *is* fixed — and it was
+     * asked about before the repeats were considered at all.
+     *
+     * @param string|null $from The start of the range, or nothing
+     * @param string|null $until Its end, or nothing
+     * @param string $alarm The alarm's trigger, repeat and duration
+     * @param bool $overlaps Whether any of its triggers lands in the range
+     */
+    #[DataProvider('alarmsAgainstAnOpenRange')]
+    public function testARepeatIsWeighedAgainstARangeThatIsOpenWhereItWalks(
+        ?string $from,
+        ?string $until,
+        string $alarm,
+        bool $overlaps,
+    ): void {
+        // The event runs from 14:00 to 15:00, as in the case above.
+        $event = "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20260101T000000Z\r\n"
+            . "DTSTART:20260105T140000Z\r\nDTEND:20260105T150000Z\r\n"
+            . 'BEGIN:VALARM' . "\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\n" . $alarm
+            . "END:VALARM\r\nEND:VEVENT\r\n";
+        $object = $this->objectOf($event);
+        $within = $object->component('VEVENT');
+
+        self::assertNotNull($within);
+
+        $alarmComponent = $within->component('VALARM');
+
+        self::assertNotNull($alarmComponent);
+        self::assertSame($overlaps, $this->range($from, $until)->overlaps(
+            $alarmComponent,
+            new Moments($object, new DateTimeZone('UTC')),
+            $within,
+        ));
+    }
+
+    /**
+     * @return iterable<string, array{string|null, string|null, string, bool}>
+     */
+    public static function alarmsAgainstAnOpenRange(): iterable
+    {
+        // **Walking forwards with no start to the range.** Everything before
+        // 13:00 is inside, so the first trigger is outside only by being at or
+        // after it — here 14:00 — and every repeat after that is later still.
+        // Nothing the repeats can reach is nearer.
+        yield 'walking forwards with no start to reach' => [
+            null,
+            '20260105T130000Z',
+            "TRIGGER:PT0S\r\nREPEAT:5\r\nDURATION:PT1H\r\n",
+            false,
+        ];
+
+        // **Walking backwards with no end to the range.** Everything from
+        // 12:00 on is inside, so the first trigger is outside only by being
+        // before it — here 10:00 — and every repeat is earlier still.
+        yield 'walking backwards with no end to reach' => [
+            '20260105T120000Z',
+            null,
+            "TRIGGER:-PT4H\r\nREPEAT:5\r\nDURATION:-PT1H\r\n",
+            false,
+        ];
+
+        // **And the open side does not swallow a trigger that is inside.**
+        // Without these two the cases above could pass on a server that
+        // answered an open range with "no" for every alarm.
+        yield 'no start, and the first trigger is inside' => [
+            null,
+            '20260105T130000Z',
+            "TRIGGER:-PT10H\r\nREPEAT:5\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+
+        yield 'no end, and a repeat walks into it' => [
+            '20260105T120000Z',
+            null,
+            "TRIGGER:-PT4H\r\nREPEAT:5\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+    }
+
+    /**
      * **§9.9 on `VALARM`:** "A VALARM component is said to overlap a given
      * time range if the following condition holds: (start <= trigger-time) AND
      * (end > trigger-time)".
@@ -596,10 +684,118 @@ final class TimeRangeTest extends TestCase
 
         yield 'no trigger at all' => ["ATTACH:ftp://example.com/bell.aud\r\n", false];
 
-        // A `REPEAT` without a `DURATION` repeats nothing: §3.8.6.2 says the
-        // two belong together — "This property MUST be specified along with
-        // the 'duration' property."
+        // A `REPEAT` without a `DURATION` repeats nothing. §3.8.6.2 binds the
+        // two as soon as there is anything to repeat: if the alarm triggers
+        // more than once, then the property MUST be specified along with the
+        // "DURATION" property.
         yield 'a repeat with no duration' => ["TRIGGER:-PT6H\r\nREPEAT:3\r\n", false];
+
+        // **The repeats are not walked, they are worked out**, and these are
+        // the edges of that arithmetic. The range holds its start and not its
+        // end — `from <= moment` and `until > moment` — so a trigger landing
+        // exactly on 13:00 is outside.
+        yield 'a repeat landing exactly on the start' => [
+            "TRIGGER:-PT3H\r\nREPEAT:1\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+
+        yield 'a repeat stepping over the range' => [
+            "TRIGGER:-PT3H\r\nREPEAT:1\r\nDURATION:PT2H\r\n",
+            false,
+        ];
+
+        // §3.3.6's grammar admits a negative duration — `dur-value = (["+"] /
+        // "-") "P" …` — so the repeats may walk backwards. The first trigger
+        // is at 13:00, which the range does not hold; the second is at 12:00,
+        // which it does.
+        yield 'a repeat walking backwards into the range' => [
+            "TRIGGER:-PT1H\r\nREPEAT:1\r\nDURATION:-PT1H\r\n",
+            true,
+        ];
+
+        // **And walking backwards the range is approached from its end**, which
+        // §9.9 does not hold: `until > moment`. The trigger is at 16:00 and the
+        // repeats step back through 15:00, 14:00, 13:00 to 12:00, so the first
+        // one the range can hold is the fourth — the third sits exactly on
+        // 13:00, which is past the end rather than inside it. A walk that
+        // stopped there would answer "no" for an alarm that does go off in the
+        // range.
+        yield 'a backwards walk that steps over the end before it lands inside' => [
+            "TRIGGER:PT2H\r\nREPEAT:5\r\nDURATION:-PT1H\r\n",
+            true,
+        ];
+
+        // And backwards, too, it counts no further than it says: 16:00, 15:30
+        // and 15:00, none of which has got anywhere near the range.
+        yield 'a backwards walk that runs out of count first' => [
+            "TRIGGER:PT2H\r\nREPEAT:2\r\nDURATION:-PT30M\r\n",
+            false,
+        ];
+
+        // A duration of nothing puts every repeat where the first trigger
+        // already was, however many there are.
+        yield 'a repeat of no length, inside' => [
+            "TRIGGER:-PT2H\r\nREPEAT:5\r\nDURATION:PT0S\r\n",
+            true,
+        ];
+
+        yield 'a repeat of no length, outside' => [
+            "TRIGGER:-PT1H\r\nREPEAT:5\r\nDURATION:PT0S\r\n",
+            false,
+        ];
+
+        // A count below zero is no count. `REPEAT:0` is the same, and both
+        // leave the first trigger standing alone.
+        yield 'a repeat counted backwards' => [
+            "TRIGGER:-PT2H\r\nREPEAT:-5\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+
+        // **A step is not always hours.** §3.3.6's `dur-date` counts days and
+        // weeks, and each is a fixed number of seconds because the same
+        // grammar admits no months or years. An alarm two days before the
+        // range, repeating daily, reaches it on the second: 3.1. 12:30, then
+        // 4.1. 12:30, then 5.1. 12:30 — and that one is inside.
+        yield 'a step counted in days' => [
+            "TRIGGER;VALUE=DATE-TIME:20260103T123000Z\r\nREPEAT:5\r\nDURATION:P1D\r\n",
+            true,
+        ];
+
+        // **And a step's minutes weigh as much as its hours.** From 11:00 in
+        // half-hour steps the second repeat lands exactly on 12:00, the
+        // inclusive start of the range.
+        yield 'a step counted in minutes' => [
+            "TRIGGER:-PT3H\r\nREPEAT:4\r\nDURATION:PT30M\r\n",
+            true,
+        ];
+
+        // **And the number in a `REPEAT` is the client's.** Nothing in
+        // RFC 5545 bounds it, so a server that walked the repeats one by one
+        // would do as much work as a client asked for — twenty million
+        // objects, in the two cases below. The answer is the same as for one
+        // repeat, and it has to be reached without building them.
+        yield 'twenty million repeats, one of them inside' => [
+            "TRIGGER;VALUE=DATE-TIME:20260105T000000Z\r\nREPEAT:20000000\r\nDURATION:PT1S\r\n",
+            true,
+        ];
+
+        yield 'twenty million repeats, none of them inside' => [
+            "TRIGGER;VALUE=DATE-TIME:20200101T000000Z\r\nREPEAT:20000000\r\nDURATION:PT1S\r\n",
+            false,
+        ];
+
+        // **A moment before 1970 is a negative number**, and the search is
+        // about the distance between two moments rather than about their
+        // values. A daily reminder begun on 1.1.1960 reaches this range on its
+        // 24111th repeat — realistic enough to find in a stored calendar, and
+        // the one shape where a sum of timestamps and a difference of them
+        // part company: the sum is the smaller of the two here, so a search
+        // bounded by it would stop at the 16807th repeat and report an alarm
+        // that does go off in the range as one that does not.
+        yield 'a first trigger from before the epoch' => [
+            "TRIGGER;VALUE=DATE-TIME:19600101T123000Z\r\nREPEAT:30000\r\nDURATION:P1D\r\n",
+            true,
+        ];
 
         // **`REPEAT` counts what follows the first trigger**, which §3.8.6.2
         // says in as many words: "This property defines the number of times
@@ -782,9 +978,9 @@ final class TimeRangeTest extends TestCase
      *     <!ATTLIST limit-recurrence-set start CDATA #REQUIRED
      *                                    end   CDATA #REQUIRED>
      *
-     * And that is a different question from §9.9's, which reads a missing
-     * attribute as "any time in the past" or "any time in the future": a
-     * filter open at one end is an ordinary thing to ask, while a limit open
+     * And that is a different question from §9.9's, where a missing attribute
+     * means "assume '-infinity' and '+infinity' as their value": a filter
+     * open at one end is an ordinary thing to ask, while a limit open
      * at one end limits nothing.
      *
      * @param string|null $from What the `start` attribute says, or nothing
@@ -1000,9 +1196,9 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
-     * **An open end stays open**: §9.9 reads a missing attribute as "any time
-     * in the past" or "any time in the future", and there is nothing to move
-     * about infinity.
+     * **An open end stays open**: §9.9 says to "assume '-infinity' and
+     * '+infinity' as their value" where an attribute is missing, and there is
+     * nothing to move about infinity.
      *
      * @param string|null $from What the range's `start` attribute says
      * @param string|null $until What its `end` attribute says

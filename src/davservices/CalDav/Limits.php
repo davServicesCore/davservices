@@ -332,10 +332,11 @@ final class Limits
      * > (Section 5.2.6) on the calendar collections being targeted by the
      * > REPORT request;
      *
-     * **An open end breaks neither.** §9.9 reads a missing attribute as "any
-     * time in the past" or "any time in the future", which names no DATE or
-     * DATE-TIME value for the sentence above to be about — and a query open at
-     * one end is the ordinary way to ask for everything since a date.
+     * **An open end breaks neither.** §9.9 says to "assume '-infinity' and
+     * '+infinity' as their value" where an attribute is missing, which names
+     * no DATE or DATE-TIME value for the sentence above to be about — and a
+     * query open at one end is the ordinary way to ask for everything since a
+     * date.
      *
      * @throws Forbidden If either end lies outside them
      */
