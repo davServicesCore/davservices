@@ -143,8 +143,8 @@ final readonly class TimeRange
      *     <!ATTLIST limit-recurrence-set start CDATA #REQUIRED
      *                                    end   CDATA #REQUIRED>
      *
-     * **That is a different thing from §9.9's own element**, which reads a
-     * missing attribute as "any time in the past" or "any time in the future":
+     * **That is a different thing from §9.9's own element**, where a missing
+     * attribute means "assume '-infinity' and '+infinity' as their value":
      * a filter open at one end is an ordinary thing to ask, while a limit open
      * at one end limits nothing. Everything else about the two ends is the
      * same question, which §9.6.6 says itself — "The server MUST use the same
@@ -558,10 +558,14 @@ final readonly class TimeRange
      * spends on it, and R-CAL-09 wants a limit refused with its precondition
      * rather than reached with an abort.
      *
-     * `REPEAT` and `DURATION` belong together (§3.8.6.2: "This property MUST be
-     * specified along with the 'duration' property"), so a count without a
-     * length repeats nothing — and a length of nothing puts every repeat where
-     * the first trigger already was.
+     * **`REPEAT` and `DURATION` belong together as soon as there is anything
+     * to repeat.** §3.8.6.2:
+     *
+     * > If the alarm triggers more than once, then this property MUST be
+     * > specified along with the "DURATION" property.
+     *
+     * So a count without a length repeats nothing — and a length of nothing
+     * puts every repeat where the first trigger already was.
      */
     private function overlapsAnAlarm(Component $component, Moments $moments, ?Component $within): bool
     {
@@ -614,11 +618,12 @@ final readonly class TimeRange
      * duration, which is what would make it otherwise.
      *
      * **Where the range is open at the end the repeats walk towards, none of
-     * them is worth asking about at all.** §9.9 reads a missing attribute as
-     * "any time in the past" or "any time in the future", so on that side
-     * nothing can be too far — which means the first trigger was already the
-     * closest any of them gets, and it was asked about before this. Every step
-     * from there only increases the distance to the end that *is* fixed.
+     * them is worth asking about at all.** §9.9 says to "assume '-infinity'
+     * and '+infinity' as their value" where an attribute is missing, so on
+     * that side nothing can be too far — which means the first trigger was
+     * already the closest any of them gets, and it was asked about before
+     * this. Every step from there only increases the distance to the end that
+     * *is* fixed.
      * {@see self::holds()} answers null with false, so saying so costs nothing.
      *
      * @param int $step The seconds between repeats, never zero

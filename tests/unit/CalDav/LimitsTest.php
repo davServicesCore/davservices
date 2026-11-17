@@ -651,8 +651,8 @@ final class LimitsTest extends TestCase
 
     /**
      * And a range inside them is a question this server can answer, with the
-     * open end of §9.9 — "assume 'any time in the past' or 'any time in the
-     * future'" — meaning no limit to break rather than a limit broken.
+     * open end of §9.9 — "assume '-infinity' and '+infinity' as their value"
+     * — meaning no limit to break rather than a limit broken.
      *
      * @param string|null $from What the range's `start` attribute says
      * @param string|null $until What its `end` attribute says

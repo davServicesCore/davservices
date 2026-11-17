@@ -532,19 +532,11 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
-     * **§9.9 on `VALARM`:** "A VALARM component is said to overlap a given
-     * time range if the following condition holds: (start <= trigger-time) AND
-     * (end > trigger-time)".
-     *
-     * @param string $alarm The alarm's own properties
-     * @param bool $overlaps Whether it overlaps noon to one on 5.1.2026
-     */
-    /**
-     * **A range open at the end the repeats walk towards.** §9.9 reads a
-     * missing attribute as "any time in the past" or "any time in the future",
-     * so there is no edge to search for — the first repeat is then as close to
-     * the range as any of them, and the trigger before it was asked about
-     * already.
+     * **A range open at the end the repeats walk towards.** §9.9 says to
+     * "assume '-infinity' and '+infinity' as their value" where an attribute
+     * is missing, so there is no edge to search for — the first repeat is
+     * then as close to the range as any of them, and the trigger before it was
+     * asked about already.
      *
      * **So none of the repeats is worth asking about on that side.** The
      * first trigger was the closest any of them gets — every step from there
@@ -627,6 +619,14 @@ final class TimeRangeTest extends TestCase
         ];
     }
 
+    /**
+     * **§9.9 on `VALARM`:** "A VALARM component is said to overlap a given
+     * time range if the following condition holds: (start <= trigger-time) AND
+     * (end > trigger-time)".
+     *
+     * @param string $alarm The alarm's own properties
+     * @param bool $overlaps Whether it overlaps noon to one on 5.1.2026
+     */
     #[DataProvider('alarms')]
     public function testAnAlarmOverlapsWhenItTriggersInTheRange(string $alarm, bool $overlaps): void
     {
@@ -684,9 +684,10 @@ final class TimeRangeTest extends TestCase
 
         yield 'no trigger at all' => ["ATTACH:ftp://example.com/bell.aud\r\n", false];
 
-        // A `REPEAT` without a `DURATION` repeats nothing: §3.8.6.2 says the
-        // two belong together — "This property MUST be specified along with
-        // the 'duration' property."
+        // A `REPEAT` without a `DURATION` repeats nothing. §3.8.6.2 binds the
+        // two as soon as there is anything to repeat: if the alarm triggers
+        // more than once, then the property MUST be specified along with the
+        // "DURATION" property.
         yield 'a repeat with no duration' => ["TRIGGER:-PT6H\r\nREPEAT:3\r\n", false];
 
         // **The repeats are not walked, they are worked out**, and these are
@@ -946,9 +947,9 @@ final class TimeRangeTest extends TestCase
      *     <!ATTLIST limit-recurrence-set start CDATA #REQUIRED
      *                                    end   CDATA #REQUIRED>
      *
-     * And that is a different question from §9.9's, which reads a missing
-     * attribute as "any time in the past" or "any time in the future": a
-     * filter open at one end is an ordinary thing to ask, while a limit open
+     * And that is a different question from §9.9's, where a missing attribute
+     * means "assume '-infinity' and '+infinity' as their value": a filter
+     * open at one end is an ordinary thing to ask, while a limit open
      * at one end limits nothing.
      *
      * @param string|null $from What the `start` attribute says, or nothing
@@ -1164,9 +1165,9 @@ final class TimeRangeTest extends TestCase
     }
 
     /**
-     * **An open end stays open**: §9.9 reads a missing attribute as "any time
-     * in the past" or "any time in the future", and there is nothing to move
-     * about infinity.
+     * **An open end stays open**: §9.9 says to "assume '-infinity' and
+     * '+infinity' as their value" where an attribute is missing, and there is
+     * nothing to move about infinity.
      *
      * @param string|null $from What the range's `start` attribute says
      * @param string|null $until What its `end` attribute says
