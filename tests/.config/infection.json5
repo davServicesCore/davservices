@@ -169,6 +169,19 @@
                 // "server-specific, predefined limits" in the same words and
                 // names no value either.
                 "DavServices\\CalDav\\Report\\FreeBusyQuery::__construct",
+                // And the fourth of the same kind, for the same reason read
+                // out of a different memo: RFC 6638 §11.1 asks a server to
+                // "ensure that clients cannot consume excessive server
+                // resources" and names no figure at all, not even the
+                // "server-specific, predefined limits" of RFC 4791 §7.8. How
+                // many calendar object resources one busy time request may
+                // reach is therefore this server's own number, and five
+                // thousand against four thousand nine hundred and ninety-nine
+                // is the same promise. What the limit *does* is measured
+                // instead, with a limit the case sets itself — and measured
+                // twice over, because a count that ran the wrong way would
+                // never reach it.
+                "DavServices\\Plugin\\Scheduling::__construct",
             ]
         },
         // **A comparison against nothing, where nothing is already answered.**
@@ -212,6 +225,10 @@
                 "DavServices\\CalDav\\Report\\CalendarQuery::__construct",
                 "DavServices\\CalDav\\Report\\CalendarMultiGet::__construct",
                 "DavServices\\CalDav\\Report\\FreeBusyQuery::__construct",
+                // And of objects a busy time request will reach, which
+                // RFC 6638 §11.1 leaves to the server entirely — see the
+                // other half of this pair above.
+                "DavServices\\Plugin\\Scheduling::__construct",
                 // **Where in a hash the collection’s key is taken from is
                 // arbitrary**, and no test can say otherwise. RFC 6578 §3.2 asks
                 // the client to treat the token as opaque, so which digits they

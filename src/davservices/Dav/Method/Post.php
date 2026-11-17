@@ -35,7 +35,22 @@ use DavServices\Xml\Element;
  * So what a `POST` means belongs to whatever defines it, and the extensions
  * that use it each name the body they take: `caldav-sharing` §5.3.2 a
  * `CS:share` on a calendar, §5.4.1 a `CS:invite-reply` on a calendar home,
- * RFC 6638 §6 a free/busy request on an outbox.
+ * RFC 6638 §5 a free/busy request on an Outbox.
+ *
+ * **And that last body is not XML at all.** §5 has it be "a 'VFREEBUSY'
+ * calendar component with the 'METHOD' iCalendar property set to the value
+ * 'REQUEST'", which no root element can name. So the dispatch is two levels
+ * deep: first the media type the client stated, then — for a body nobody
+ * claimed that way — the root element inside it.
+ *
+ * **The first level reads what the client said, and does not look at the
+ * body.** RFC 9110 §8.3 makes `Content-Type` the sender's own statement:
+ * it "indicates the media type of the associated representation". The same
+ * section allows a recipient to "examine the data to determine its type"
+ * where the field is absent, and that is deliberately not done here —
+ * choosing a handler by the shape of a body would answer a request the
+ * client did not make. A body that names no media type goes the XML way and
+ * is answered there.
  *
  * **Which makes this a dispatcher and nothing else** — the same shape
  * {@see Report} has, and little more on its own:
@@ -76,6 +91,13 @@ final class Post
     /** @var array<string, Closure(Request, Element): Response> */
     private array $handlers = [];
 
+    /**
+     * By media type, lowercased and without its parameters.
+     *
+     * @var array<string, Closure(Request): Response>
+     */
+    private array $byMediaType = [];
+
     public function __construct(private readonly Server $server)
     {
     }
@@ -95,6 +117,30 @@ final class Post
     }
 
     /**
+     * Takes a handler for a body that is no XML document, by the media type
+     * the client states for it.
+     *
+     * This is how RFC 6638 §5's busy time request is answered: an iCalendar
+     * object has no root element to be named by, so what it is named by is
+     * what RFC 9110 §8.3 has the client say it is.
+     *
+     * **The handler gets the request and reads the body itself.** The XML
+     * level cannot read it first — there is nothing here to parse it with,
+     * and a dispatcher that guessed at a syntax it does not own would be
+     * deciding for the handler what the body was.
+     *
+     * @param string $mediaType As `type/subtype`; what the client sends is
+     *                          matched to it without its parameters and
+     *                          without regard to case, which is how RFC 9110
+     *                          §8.3.1 defines the comparison
+     * @param callable(Request): Response $handler What answers such a body
+     */
+    public function forBodyOfType(string $mediaType, callable $handler): void
+    {
+        $this->byMediaType[strtolower($mediaType)] = $handler(...);
+    }
+
+    /**
      * Hands the request to whichever handler its body names.
      *
      * @throws NotFound If there is nothing at the path
@@ -108,6 +154,12 @@ final class Post
         // request whatever it sent, and the more specific answer is the
         // useful one.
         $this->server->tree()->node($this->server->path($request));
+
+        $claimed = $this->byMediaType[self::mediaTypeOf($request)] ?? null;
+
+        if ($claimed !== null) {
+            return $claimed($request);
+        }
 
         // An empty body names nothing, and the reader is what says so — with
         // the `400` a malformed one gets, since both are bodies this server
@@ -123,5 +175,26 @@ final class Post
         }
 
         return $handler($request, $sent);
+    }
+
+    /**
+     * What the client said its body is, as the key a handler was taken under.
+     *
+     * RFC 9110 §8.3.1: a media type is `type/subtype` with optional
+     * parameters, and "the type/subtype MAY be followed by parameters in the
+     * form of name/value pairs". Those say how to read the body rather than
+     * what it is — §5's own example sends `text/calendar; charset="utf-8"` —
+     * so everything from the first `;` is cut off. And the type is matched
+     * without regard to case, §8.3.1 having "type, subtype, and parameter
+     * name tokens are case-insensitive".
+     *
+     * A request that states nothing answers with the empty string, which no
+     * media type is and so no handler is taken under.
+     */
+    private static function mediaTypeOf(Request $request): string
+    {
+        $stated = $request->headers()->first('Content-Type') ?? '';
+
+        return strtolower(trim(explode(';', $stated)[0]));
     }
 }

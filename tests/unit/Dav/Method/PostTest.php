@@ -20,12 +20,14 @@ use DavServices\Exception\BadRequest;
 use DavServices\Exception\NotFound;
 use DavServices\Exception\UnsupportedMediaType;
 use DavServices\Http\Body;
+use DavServices\Http\Headers;
 use DavServices\Http\Request;
 use DavServices\Http\Response;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
 use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -41,7 +43,15 @@ use PHPUnit\Framework\TestCase;
  * according to the resource's own specific semantics." So what a `POST` means
  * is the resource's business, and the extensions that use it say which body
  * they take — `caldav-sharing` §5.3.2 a `CS:share`, §5.4.1 a
- * `CS:invite-reply`, RFC 6638 §6 a free/busy request.
+ * `CS:invite-reply`, RFC 6638 §5 a free/busy request.
+ *
+ * **And one of those bodies is not XML at all.** §5's busy time request is
+ * an iCalendar object, which no root element can name, so the dispatch is
+ * two levels: the media type the client stated, and within XML the root
+ * element. RFC 9110 §8.3 is what makes the first level possible — the
+ * `Content-Type` field "indicates the media type of the associated
+ * representation" — and §15.5.16 is about exactly that: `415` for content "in
+ * a format not supported by this method on the target resource".
  *
  * **So this is a dispatcher and nothing else**, the same shape {@see Report}
  * has and for the same reason: a body naming what is wanted, and a server
@@ -66,6 +76,113 @@ final class PostTest extends TestCase
     private const SOMETHING = '{https://dav.services/test}something';
 
     private const ANOTHER = '{https://dav.services/test}another';
+    private const CALENDAR = 'text/calendar';
+
+    private const AN_OBJECT = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n";
+
+    /**
+     * **A body the client called `text/calendar` goes to whoever took that
+     * media type**, and is never read as XML. RFC 6638 §5 has the busy time
+     * request be "a 'VFREEBUSY' calendar component", which no root element
+     * names — and RFC 9110 §8.3 makes `Content-Type` the client's own
+     * statement of what it sent.
+     */
+    public function testItHandsOverABodyThatIsNotXmlByTheMediaTypeTheClientStated(): void
+    {
+        $seen = null;
+        $server = $this->serverTaking(self::CALENDAR, function (Request $request) use (&$seen): Response {
+            $seen = $request->body()->contents();
+
+            return new Response(200);
+        });
+
+        $response = $server->handle($this->request(self::AN_OBJECT, type: self::CALENDAR));
+
+        self::assertSame(200, $response->status());
+        self::assertSame(self::AN_OBJECT, $seen);
+    }
+
+    /**
+     * **The parameters of the media type are no part of the choice.** The
+     * example of §5 sends `text/calendar; charset="utf-8"`, and RFC 9110
+     * §8.3.1 has the type and subtype be case-insensitive — so a client that
+     * shouts, or that says which charset it used, is the same client.
+     */
+    #[DataProvider('theSameMediaTypeSaidDifferently')]
+    public function testItReadsTheMediaTypeWithoutItsParametersAndWithoutItsCase(string $stated): void
+    {
+        $server = $this->serverTaking(
+            self::CALENDAR,
+            static fn (Request $request): Response => new Response(200),
+        );
+
+        self::assertSame(200, $server->handle($this->request(self::AN_OBJECT, type: $stated))->status());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function theSameMediaTypeSaidDifferently(): array
+    {
+        return [
+            'bare' => ['text/calendar'],
+            'with a charset' => ['text/calendar; charset="utf-8"'],
+            'shouted' => ['TEXT/CALENDAR'],
+            'with space before the parameter' => ['text/calendar ; charset=utf-8'],
+        ];
+    }
+
+    /**
+     * **And the handler may be taken under a shouted media type too.**
+     * RFC 9110 §8.3.1 makes the comparison case-insensitive, and that is a
+     * statement about both sides of it: a deployment that writes
+     * `TEXT/CALENDAR` means the same media type as a client that sends
+     * `text/calendar`.
+     */
+    public function testItTakesAHandlerUnderAMediaTypeHoweverItIsWritten(): void
+    {
+        $server = $this->serverTaking(
+            'TEXT/Calendar',
+            static fn (Request $request): Response => new Response(200),
+        );
+
+        self::assertSame(200, $server->handle($this->request(self::AN_OBJECT, type: self::CALENDAR))->status());
+    }
+
+    /**
+     * **And a body nobody claimed by media type is still read as XML.**
+     * Without this the first level would swallow the second, and
+     * `caldav-sharing`'s two bodies would stop being answered.
+     */
+    public function testItStillDispatchesOnTheRootElementWhenNobodyClaimedTheMediaType(): void
+    {
+        $response = $this->postTaking(
+            self::CALENDAR,
+            static fn (Request $request): Response => new Response(500),
+            stated: 'application/xml',
+        );
+
+        self::assertSame(207, $response->status());
+    }
+
+    /**
+     * **A body with no `Content-Type` is not guessed at.** RFC 9110 §8.3 lets
+     * a recipient "either assume a media type of 'application/octet-stream'
+     * … or examine the data to determine its type" — and examining it would
+     * choose the handler by the shape of the body rather than by what the
+     * client said it was. So it goes the XML way and is answered there.
+     */
+    public function testItDoesNotGuessTheMediaTypeOfABodyThatNamesNone(): void
+    {
+        $response = $this->postTaking(
+            self::CALENDAR,
+            static fn (Request $request): Response => new Response(500),
+            body: self::AN_OBJECT,
+        );
+
+        self::assertSame(400, $response->status());
+    }
+
 
     /**
      * A server that was not given the method answers `501`, which is the case
@@ -262,13 +379,43 @@ final class PostTest extends TestCase
         return (new MemoryCollection(''))->add($calendars);
     }
 
-    private function request(?string $body = null, string $target = '/calendars/work'): Request
-    {
+    private function request(
+        ?string $body = null,
+        string $target = '/calendars/work',
+        ?string $type = null,
+    ): Request {
         return new Request(
             'POST',
             $target,
+            headers: new Headers($type === null ? [] : ['Content-Type' => $type]),
             body: new Body($body ?? '<t:something xmlns:t="https://dav.services/test"/>'),
         );
+    }
+
+    /**
+     * A server whose `POST` took one media type, and §5.3.2's `CS:share` by
+     * its root element as well — so that each case says which of the two
+     * levels answered it.
+     */
+    private function serverTaking(string $type, callable $handler): Server
+    {
+        $server = new Server(new Tree($this->tree()));
+        $post = new Post($server);
+
+        $post->on(self::SOMETHING, static fn (Request $request, Element $sent): Response => new Response(207));
+        $post->forBodyOfType($type, $handler);
+        $server->onMethod('POST', $post(...));
+
+        return $server;
+    }
+
+    private function postTaking(
+        string $type,
+        callable $handler,
+        ?string $body = null,
+        ?string $stated = null,
+    ): Response {
+        return $this->serverTaking($type, $handler)->handle($this->request($body, type: $stated));
     }
 
     private function server(string $name, callable $handler): Server
