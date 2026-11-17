@@ -601,6 +601,63 @@ final class TimeRangeTest extends TestCase
         // the 'duration' property."
         yield 'a repeat with no duration' => ["TRIGGER:-PT6H\r\nREPEAT:3\r\n", false];
 
+        // **The repeats are not walked, they are worked out**, and these are
+        // the edges of that arithmetic. The range holds its start and not its
+        // end — `from <= moment` and `until > moment` — so a trigger landing
+        // exactly on 13:00 is outside.
+        yield 'a repeat landing exactly on the start' => [
+            "TRIGGER:-PT3H\r\nREPEAT:1\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+
+        yield 'a repeat stepping over the range' => [
+            "TRIGGER:-PT3H\r\nREPEAT:1\r\nDURATION:PT2H\r\n",
+            false,
+        ];
+
+        // §3.3.6's grammar admits a negative duration — `dur-value = (["+"] /
+        // "-") "P" …` — so the repeats may walk backwards. The first trigger
+        // is at 13:00, which the range does not hold; the second is at 12:00,
+        // which it does.
+        yield 'a repeat walking backwards into the range' => [
+            "TRIGGER:-PT1H\r\nREPEAT:1\r\nDURATION:-PT1H\r\n",
+            true,
+        ];
+
+        // A duration of nothing puts every repeat where the first trigger
+        // already was, however many there are.
+        yield 'a repeat of no length, inside' => [
+            "TRIGGER:-PT2H\r\nREPEAT:5\r\nDURATION:PT0S\r\n",
+            true,
+        ];
+
+        yield 'a repeat of no length, outside' => [
+            "TRIGGER:-PT1H\r\nREPEAT:5\r\nDURATION:PT0S\r\n",
+            false,
+        ];
+
+        // A count below zero is no count. `REPEAT:0` is the same, and both
+        // leave the first trigger standing alone.
+        yield 'a repeat counted backwards' => [
+            "TRIGGER:-PT2H\r\nREPEAT:-5\r\nDURATION:PT1H\r\n",
+            true,
+        ];
+
+        // **And the number in a `REPEAT` is the client's.** Nothing in
+        // RFC 5545 bounds it, so a server that walked the repeats one by one
+        // would do as much work as a client asked for — twenty million
+        // objects, in the two cases below. The answer is the same as for one
+        // repeat, and it has to be reached without building them.
+        yield 'twenty million repeats, one of them inside' => [
+            "TRIGGER;VALUE=DATE-TIME:20260105T000000Z\r\nREPEAT:20000000\r\nDURATION:PT1S\r\n",
+            true,
+        ];
+
+        yield 'twenty million repeats, none of them inside' => [
+            "TRIGGER;VALUE=DATE-TIME:20200101T000000Z\r\nREPEAT:20000000\r\nDURATION:PT1S\r\n",
+            false,
+        ];
+
         // **`REPEAT` counts what follows the first trigger**, which §3.8.6.2
         // says in as many words: "This property defines the number of times
         // the alarm should be repeated, **after** the initial trigger." So
