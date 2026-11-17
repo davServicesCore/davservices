@@ -712,6 +712,25 @@ final class TimeRangeTest extends TestCase
             true,
         ];
 
+        // **And walking backwards the range is approached from its end**, which
+        // §9.9 does not hold: `until > moment`. The trigger is at 16:00 and the
+        // repeats step back through 15:00, 14:00, 13:00 to 12:00, so the first
+        // one the range can hold is the fourth — the third sits exactly on
+        // 13:00, which is past the end rather than inside it. A walk that
+        // stopped there would answer "no" for an alarm that does go off in the
+        // range.
+        yield 'a backwards walk that steps over the end before it lands inside' => [
+            "TRIGGER:PT2H\r\nREPEAT:5\r\nDURATION:-PT1H\r\n",
+            true,
+        ];
+
+        // And backwards, too, it counts no further than it says: 16:00, 15:30
+        // and 15:00, none of which has got anywhere near the range.
+        yield 'a backwards walk that runs out of count first' => [
+            "TRIGGER:PT2H\r\nREPEAT:2\r\nDURATION:-PT30M\r\n",
+            false,
+        ];
+
         // A duration of nothing puts every repeat where the first trigger
         // already was, however many there are.
         yield 'a repeat of no length, inside' => [
