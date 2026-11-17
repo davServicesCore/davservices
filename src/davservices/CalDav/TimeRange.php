@@ -631,7 +631,12 @@ final readonly class TimeRange
      */
     private function theRepeatWorthAsking(DateTimeImmutable $first, int $step, int $times): ?DateTimeImmutable
     {
-        $edge = $step > 0 ? $this->from : $this->until;
+        // **Which way the walk goes is one fact, so it is decided once.** The
+        // edge it heads for and the comparison that recognises the edge are
+        // the same question read twice, and a second reading of the sign is a
+        // second place to get it wrong.
+        $forwards = $step > 0;
+        $edge = $forwards ? $this->from : $this->until;
 
         if ($edge === null) {
             return null;
@@ -642,8 +647,14 @@ final readonly class TimeRange
 
         while ($low < $high) {
             $middle = intdiv($low + $high, 2);
+            $at = self::repeatAt($first, $step, $middle);
 
-            if (self::hasReached($first, $step, $middle, $edge)) {
+            // **Has this repeat got as far as the edge the walk heads for?**
+            // Forwards that is "at or after the start of the range",
+            // backwards "no longer at or after its end" — the two halves of
+            // §9.9's `(start <= trigger-time) AND (end > trigger-time)`, each
+            // read from the side the walk approaches it from.
+            if ($forwards ? $at >= $edge : $at < $edge) {
                 $high = $middle;
 
                 continue;
@@ -665,25 +676,6 @@ final readonly class TimeRange
     private static function countThatPasses(DateTimeImmutable $first, int $step, DateTimeImmutable $edge): int
     {
         return intdiv(abs($edge->getTimestamp() - $first->getTimestamp()), abs($step)) + 1;
-    }
-
-    /**
-     * Has the repeat of this count got as far as the edge the walk heads for?
-     *
-     * Forwards that is "at or after the start of the range", backwards "no
-     * longer at or after its end" — the two halves of §9.9's
-     * `(start <= trigger-time) AND (end > trigger-time)`, each read from the
-     * side the walk approaches it from.
-     */
-    private static function hasReached(
-        DateTimeImmutable $first,
-        int $step,
-        int $count,
-        DateTimeImmutable $edge,
-    ): bool {
-        $at = self::repeatAt($first, $step, $count);
-
-        return $step > 0 ? $at >= $edge : $at < $edge;
     }
 
     /**

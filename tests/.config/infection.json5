@@ -202,10 +202,32 @@
                 // repetition — tells the two apart, so the comparison is
                 // there to say "a later one replaces it" and nothing else.
                 "DavServices\\Sync\\Journal::revisionOf",
+                // **And the sign of an alarm's step, where a step of nothing
+                // has already been answered.** A duration of no length puts
+                // every repeat where the first trigger was, which
+                // {@see \DavServices\CalDav\TimeRange::overlapsAnAlarm()}
+                // settles before it asks which repeat is worth asking about:
+                // the search never sees a zero, so `> 0` and `>= 0` are the
+                // same program. The comparison is read **once** and carried
+                // as a direction, rather than derived again where the edge is
+                // recognised — which is what keeps this at one entry instead
+                // of two.
+                "DavServices\\CalDav\\TimeRange::theRepeatWorthAsking",
             ]
         },
         "IncrementInteger": {
             "ignore": [
+                // **A search window that is one too wide finds the same
+                // repeat.** The bound exists so that `count × step` stays
+                // inside an integer, not to pick the answer: the repeats are
+                // ordered, the search returns the lowest count that has
+                // reached the edge, and a window with one more count in it
+                // than it needs still has that same lowest one in it. What
+                // the bound *does* is measured instead, by an alarm whose
+                // first trigger lies before the epoch — where a bound
+                // computed the wrong way stops short of a repeat that really
+                // is in the range.
+                "DavServices\\CalDav\\TimeRange::countThatPasses",
                 "DavServices\\Backend\\File\\CardBackend::put",
                 "DavServices\\Backend\\File\\CalendarBackend::put",
                 // RFC 5051 step (2)(a) speaks of "the codepoints in the

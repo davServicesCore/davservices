@@ -751,6 +751,24 @@ final class TimeRangeTest extends TestCase
             true,
         ];
 
+        // **A step is not always hours.** §3.3.6's `dur-date` counts days and
+        // weeks, and each is a fixed number of seconds because the same
+        // grammar admits no months or years. An alarm two days before the
+        // range, repeating daily, reaches it on the second: 3.1. 12:30, then
+        // 4.1. 12:30, then 5.1. 12:30 — and that one is inside.
+        yield 'a step counted in days' => [
+            "TRIGGER;VALUE=DATE-TIME:20260103T123000Z\r\nREPEAT:5\r\nDURATION:P1D\r\n",
+            true,
+        ];
+
+        // **And a step's minutes weigh as much as its hours.** From 11:00 in
+        // half-hour steps the second repeat lands exactly on 12:00, the
+        // inclusive start of the range.
+        yield 'a step counted in minutes' => [
+            "TRIGGER:-PT3H\r\nREPEAT:4\r\nDURATION:PT30M\r\n",
+            true,
+        ];
+
         // **And the number in a `REPEAT` is the client's.** Nothing in
         // RFC 5545 bounds it, so a server that walked the repeats one by one
         // would do as much work as a client asked for — twenty million
@@ -764,6 +782,19 @@ final class TimeRangeTest extends TestCase
         yield 'twenty million repeats, none of them inside' => [
             "TRIGGER;VALUE=DATE-TIME:20200101T000000Z\r\nREPEAT:20000000\r\nDURATION:PT1S\r\n",
             false,
+        ];
+
+        // **A moment before 1970 is a negative number**, and the search is
+        // about the distance between two moments rather than about their
+        // values. A daily reminder begun on 1.1.1960 reaches this range on its
+        // 24111th repeat — realistic enough to find in a stored calendar, and
+        // the one shape where a sum of timestamps and a difference of them
+        // part company: the sum is the smaller of the two here, so a search
+        // bounded by it would stop at the 16807th repeat and report an alarm
+        // that does go off in the range as one that does not.
+        yield 'a first trigger from before the epoch' => [
+            "TRIGGER;VALUE=DATE-TIME:19600101T123000Z\r\nREPEAT:30000\r\nDURATION:P1D\r\n",
+            true,
         ];
 
         // **`REPEAT` counts what follows the first trigger**, which §3.8.6.2
