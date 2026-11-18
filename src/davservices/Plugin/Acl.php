@@ -157,8 +157,6 @@ final class Acl
      *                                   nothing at all, which is what a
      *                                   deployment wants where the existence
      *                                   of a resource is itself a secret
-     */
-    /**
      * @param GroupResolver|null $groups What the asker counts as besides
      *                                   themselves (RFC 3744 §2 and §5.5.1).
      *                                   Null where a server keeps no

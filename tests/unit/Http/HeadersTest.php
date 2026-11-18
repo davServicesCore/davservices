@@ -184,8 +184,7 @@ final class HeadersTest extends TestCase
      * The collection is handed to every plugin in turn. An immutable one
      * cannot be changed behind the back of whoever holds it, which is why
      * each of these returns a new collection instead of altering this one.
-     */
-    /**
+     *
      * @param Closure(Headers): Headers $write
      */
     #[DataProvider('writes')]

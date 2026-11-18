@@ -161,10 +161,6 @@ final class PrincipalBackendTest extends PrincipalBackendContract
     }
 
     /**
-     * Whatever else is in the directory belongs to somebody else, and
-     * reading the people must not take it along.
-     */
-    /**
      * **A name written across lines is still that name.** These files are
      * edited by people — that is the whole design of this backend — and a
      * person indents. A member read as `"
@@ -199,6 +195,10 @@ final class PrincipalBackendTest extends PrincipalBackendContract
         self::assertSame(['alice'], $loose->members());
     }
 
+    /**
+     * Whatever else is in the directory belongs to somebody else, and
+     * reading the people must not take it along.
+     */
     public function testLeavesAloneWhatIsNotItsOwn(): void
     {
         $stranger = $this->directory . '/notes.txt';

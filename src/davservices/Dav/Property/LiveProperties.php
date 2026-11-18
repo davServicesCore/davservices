@@ -139,15 +139,14 @@ final class LiveProperties
     }
 
     /**
-     * RFC 4918 §15.9: a resource that is no collection has an *empty*
-     * `resourcetype` rather than none. The property is how a client tells the
-     * two apart, and leaving it out leaves it guessing.
-     */
-    /**
      * What the server can tell by itself, plus whatever the node says it is.
      *
      * A principal, a calendar, an address book: none of those can be seen
      * from the outside, and {@see IResourceType} is how a node says so.
+     *
+     * RFC 4918 §15.9: a resource that is no collection has an *empty*
+     * `resourcetype` rather than none. The property is how a client tells the
+     * two apart, and leaving it out leaves it guessing.
      */
     private static function resourceType(INode $node): Element
     {

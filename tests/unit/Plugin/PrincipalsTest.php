@@ -378,11 +378,6 @@ final class PrincipalsTest extends TestCase
     }
 
     /**
-     * The plugin on a server of its own, **registered** — because what it
-     * knows about who is signed in it now says on the one event everything
-     * asks, and a plugin that was never switched on has said nothing.
-     */
-    /**
      * The one question about identity, asked of this plugin directly: what
      * the application knows is what it answers, and where the application
      * knows nothing it says nothing — which leaves the asker
@@ -406,6 +401,11 @@ final class PrincipalsTest extends TestCase
         self::assertNull($event->principal());
     }
 
+    /**
+     * The plugin on a server of its own, **registered** — because what it
+     * knows about who is signed in it now says on the one event everything
+     * asks, and a plugin that was never switched on has said nothing.
+     */
     private function plugin(?callable $whoIsThere = null): Principals
     {
         $plugin = new Principals(new Server(new Tree($this->tree())), 'principals', $whoIsThere);

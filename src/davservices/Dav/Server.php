@@ -71,6 +71,14 @@ final class Server
     private readonly string $base;
 
     /**
+     * What holds a request to the conditions it set itself. Core WebDAV
+     * rather than a plugin: a method nobody registers is refused honestly
+     * with `501`, but a condition nobody evaluates is one this server would
+     * silently pretend to have honoured.
+     */
+    private readonly RequestConditions $conditions;
+
+    /**
      * @param Tree $tree What this server serves
      * @param EventEmitter|null $events Null builds one of its own, which is
      *                                  all a server without plugins needs
@@ -81,14 +89,6 @@ final class Server
      *                        node's path is its path inside the tree, wherever
      *                        the tree hangs.
      */
-    /**
-     * What holds a request to the conditions it set itself. Core WebDAV
-     * rather than a plugin: a method nobody registers is refused honestly
-     * with `501`, but a condition nobody evaluates is one this server would
-     * silently pretend to have honoured.
-     */
-    private readonly RequestConditions $conditions;
-
     public function __construct(
         private readonly Tree $tree,
         ?EventEmitter $events = null,
