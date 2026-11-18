@@ -562,22 +562,55 @@ final class Scheduling
      * {@see \DavServices\CalDav\Report\FreeBusyQuery} passes one over: a
      * note in a calendar says nothing about when anybody is busy.
      *
+     * **A worklist rather than a walk that hands itself the next collection.**
+     * Xdebug's path coverage falls over on a generator that both yields and
+     * delegates with `yield from` in one frame — Xdebug bug 2252, the same
+     * shape and the same cure as
+     * {@see \DavServices\Sync\Report\SyncCollection::membersUnder()}, and
+     * measured here rather than assumed: this file's tests crashed the
+     * collector in 9 of 20 runs before and in 0 of 20 after.
+     *
+     * **And still a generator**, because §11.1's MUST is about the doing:
+     * "Servers MUST ensure that clients cannot consume excessive server
+     * resources by carrying out 'large' scheduling operations."
+     * {@see self::whenTheyAreBusy()} counts what this walk hands it, one
+     * object at a time. A walk that gathered the calendar into an array would
+     * read every one of them before anything was counted — so the refusal
+     * would arrive after exactly the work the sentence is there to prevent,
+     * which is the half of it a status code cannot answer for.
+     *
+     * **In no order of its own**, because nothing asks for one. What comes
+     * back is a set, and {@see \DavServices\CalDav\FreeBusy} orders what it
+     * builds from it: RFC 5545 §3.8.2.6 wants the periods "sorted in
+     * ascending order, based on start time and then end time", which is the
+     * answer's order and not the walk's. So a member is appended and taken
+     * from the front, and a deeper collection waits its turn — the plainest
+     * worklist there is, rather than one arranged to imitate the recursion it
+     * replaced.
+     *
      * @return Generator<string, array{INode, Component}>
      */
     private function objectsUnder(string $path, INode $node): Generator
     {
-        if (!$node instanceof ICollection) {
-            $object = CalendarObject::of($node);
+        /** @var list<array{string, INode}> $pending */
+        $pending = [[$path, $node]];
 
-            if ($object !== null) {
-                yield $path => [$node, $object];
+        while ($pending !== []) {
+            [$where, $member] = array_shift($pending);
+
+            if (!$member instanceof ICollection) {
+                $object = CalendarObject::of($member);
+
+                if ($object !== null) {
+                    yield $where => [$member, $object];
+                }
+
+                continue;
             }
 
-            return;
-        }
-
-        foreach (VisibleMembers::of($this->server->events(), $path, $node) as $member => $child) {
-            yield from $this->objectsUnder($member, $child);
+            foreach (VisibleMembers::of($this->server->events(), $where, $member) as $at => $child) {
+                $pending[] = [$at, $child];
+            }
         }
     }
 

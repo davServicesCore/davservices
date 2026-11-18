@@ -197,6 +197,41 @@ final class SchedulingFreeBusyTest extends TestCase
     }
 
     /**
+     * **The limit stops the walk rather than catching it afterwards.** §11.1
+     * asks a server to "ensure that clients cannot consume excessive server
+     * resources", and a walk that reads every calendar object resource before
+     * counting any of them does not: the refusal would arrive after exactly
+     * the work it is there to prevent.
+     *
+     * A third object that cannot be read stands for that work. With a limit of
+     * one it must never be reached — so a walk that gathers the calendar first
+     * answers with **its** refusal instead of §11.1's, and this case says
+     * which refusal arrived rather than only that one did.
+     */
+    public function testItStopsWalkingAtTheLimitRatherThanReadingTheCalendarFirst(): void
+    {
+        $response = $this->post($this->aRequest([self::WILFREDO]), atMost: 1, unreadable: true);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('number-of-matches-within-limits', (string) $response->body());
+    }
+
+    /**
+     * **And it goes further than one level down.** RFC 4791 §4.2 lets a
+     * calendar collection hold "collections that are not calendar
+     * collections", so an object inside one of those is busy time like any
+     * other — and a walk that stopped at a calendar's own members would
+     * answer without it. Nothing said so before: every calendar in these
+     * cases was one level deep, which is a depth any walk reaches.
+     */
+    public function testItReachesAnObjectInsideACollectionWithinACalendar(): void
+    {
+        $body = (string) $this->post($this->aRequest([self::WILFREDO]), nested: true)->body();
+
+        self::assertStringContainsString('20090603T160000Z/20090603T170000Z', $body);
+    }
+
+    /**
      * **And one response for each, in the order asked.** §5: "This element
      * MUST contain one CALDAV:response element for each calendar user."
      */
@@ -443,8 +478,10 @@ final class SchedulingFreeBusyTest extends TestCase
         string $target = self::OUTBOX,
         bool $directory = true,
         int $atMost = 5_000,
+        bool $unreadable = false,
+        bool $nested = false,
     ): Response {
-        return $this->server($directory, $atMost)->handle(new Request(
+        return $this->server($directory, $atMost, $unreadable, $nested)->handle(new Request(
             'POST',
             $target,
             headers: new Headers(['Content-Type' => 'text/calendar; charset="utf-8"']),
@@ -495,15 +532,47 @@ final class SchedulingFreeBusyTest extends TestCase
     /**
      * Cyrus's Outbox, three calendar users with calendars, and one calendar
      * that says it is transparent.
+     *
+     * @param bool $unreadable Whether Wilfredo's calendar carries a third
+     *                         object that refuses to be read, which a walk
+     *                         stopping at the limit never reaches
+     * @param bool $nested Whether Wilfredo's calendar carries a collection of
+     *                     its own, which §4.2 allows and only a walk going
+     *                     further than one level reaches into
      */
-    private function server(bool $directory = true, int $atMost = 5_000): Server
-    {
+    private function server(
+        bool $directory = true,
+        int $atMost = 5_000,
+        bool $unreadable = false,
+        bool $nested = false,
+    ): Server {
         $users = new MemoryCalendarUserBackend(self::ADDRESSES);
         $events = new EventEmitter();
 
         $events->on(PropertiesRequested::class, static function (PropertiesRequested $event) use ($users): void {
             self::answer($event, $users);
         });
+
+        $wilfredo = self::aCalendarCalled(
+            'work',
+            ['20090602T110000Z', '20090602T120000Z'],
+            ['20090603T080000Z', '20090603T090000Z'],
+        );
+
+        if ($unreadable) {
+            // **A third object, behind the limit.** A walk that stops counting
+            // at the limit never reaches it; a walk that gathers the calendar
+            // first reads it before it counts anything at all.
+            $wilfredo->add((new MemoryFile('2.ics'))->refuseReading());
+        }
+
+        if ($nested) {
+            // **A collection inside the calendar**, which §4.2 allows and
+            // `aCalendarCalled()` builds as a plain one: no `Calendar::of()`
+            // around it, so it is a collection that is not a calendar
+            // collection, holding one object an hour long.
+            $wilfredo->add(self::aCalendarCalled('archive', ['20090603T160000Z', '20090603T170000Z']));
+        }
 
         $tree = new Tree(
             (new MemoryCollection(''))
@@ -516,11 +585,7 @@ final class SchedulingFreeBusyTest extends TestCase
                             ['20090603T140000Z', '20090603T150000Z'],
                         ))))
                     ->add((new MemoryCollection('wilfredo'))
-                        ->add(Calendar::of(self::aCalendarCalled(
-                            'work',
-                            ['20090602T110000Z', '20090602T120000Z'],
-                            ['20090603T080000Z', '20090603T090000Z'],
-                        ))))
+                        ->add(Calendar::of($wilfredo)))
                     ->add((new MemoryCollection('bernard'))
                         // **The transparent one first.** §9.1 has it
                         // contribute nothing — and a guard that broke out of

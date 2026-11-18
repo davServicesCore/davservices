@@ -59,6 +59,27 @@ final class TestShards
      * the version (3.4.7 crashes as 3.5.3 did, only less often) and the
      * closure seam the bug report pointed at (an interface changed nothing).
      *
+     * **The same shape turned up a second time**, and this is what it looks
+     * like from the outside: on 18.11.2026 shard 14 crashed five attempts of
+     * five, and narrowing it down left one test file that crashes on its own
+     * in a second.
+     * {@see \DavServices\Plugin\Scheduling::objectsUnder()} was a generator
+     * that yielded and delegated to itself in one frame, exactly as
+     * `membersUnder()` had been. Measured on that one file rather than argued:
+     * nine crashes in twenty runs before, none in twenty after.
+     *
+     * **A flaky crash is not bisectable, which cost a wrong answer first.**
+     * One run of each of five commits read like a clean bisect and meant
+     * nothing — at that rate a single pass is a coin, and the branch head
+     * passed while the merge of the same content crashed. The first step with
+     * a crash like this is to measure its rate, not to halve the history.
+     *
+     * **And the shape alone is not enough to fall over.** Four more
+     * generators carry it — `CalendarQuery::matchesUnder()`,
+     * `FreeBusyQuery::objectsUnder()`, `AddressBookQuery::matchesUnder()` and
+     * `Serializer::lines()` — and none crashed in twelve runs each, so they
+     * were left alone. A resemblance is not a reproducer.
+     *
      * **This is a flaky instrument, not a flaky measurement.** Every attempt
      * that finishes gives the same figures, and a shard whose *tests* fail
      * exits 1 or 2, is no crash, and is not tried again. The cure is upstream:
