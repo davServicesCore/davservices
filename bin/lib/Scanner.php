@@ -92,6 +92,103 @@ final class Scanner
     }
 
     /**
+     * Every PHP file the repository owns: the four trees it writes, and the
+     * two files at its root.
+     *
+     * Wider than productionFiles() on purpose. "This needs documenting" is a
+     * rule about what ships, so it is asked of the package; "this DocBlock
+     * describes nothing" is true of any PHP file, and the accident that
+     * strands one happens most often in a test.
+     *
+     * @return list<string>
+     */
+    public static function repositoryFiles(): array
+    {
+        $root = __DIR__ . '/../..';
+        $files = [];
+
+        foreach (['src', 'tests', 'bin', 'examples'] as $tree) {
+            $files = array_merge($files, self::phpFiles($root . '/' . $tree));
+        }
+
+        foreach (['autoload.php', '.php-cs-fixer.dist.php'] as $atTheRoot) {
+            $path = realpath($root . '/' . $atTheRoot);
+
+            if ($path !== false) {
+                $files[] = $path;
+            }
+        }
+
+        sort($files);
+
+        return $files;
+    }
+
+    /**
+     * The lines of DocBlocks that describe nothing, because another DocBlock
+     * follows them.
+     *
+     * PHP attaches the **last** DocBlock before a declaration, so a DocBlock
+     * with another behind it has lost its element — while a check that walks
+     * backwards from the declaration to the nearest DocBlock still finds one.
+     * That is why such a pair reads as documented from the only side the
+     * other check looks from.
+     *
+     * Whitespace, ordinary comments and attributes between the two change
+     * nothing and are stepped over. An attribute is itself written above the
+     * element it belongs to, so it settles nothing about what a DocBlock
+     * above *it* describes — and an insertion anchored on a signature rather
+     * than on the attribute lands exactly there.
+     *
+     * @return list<int>
+     */
+    public static function strandedDocBlocks(string $code): array
+    {
+        $stranded = [];
+        $pending = null;
+        $attribute = 0;
+
+        foreach (token_get_all($code) as $token) {
+            // An attribute is stepped over whole. Its brackets are counted,
+            // because an argument may bring its own: `#[Of([1, 2])]` would
+            // otherwise look as though it ended at the inner one.
+            if ($attribute > 0) {
+                if ($token === '[' || (is_array($token) && $token[0] === T_ATTRIBUTE)) {
+                    $attribute++;
+                } elseif ($token === ']') {
+                    $attribute--;
+                }
+
+                continue;
+            }
+
+            if (is_array($token) && $token[0] === T_ATTRIBUTE) {
+                $attribute = 1;
+
+                continue;
+            }
+
+            if (is_array($token) && in_array($token[0], [T_WHITESPACE, T_COMMENT], true)) {
+                continue;
+            }
+
+            if (is_array($token) && $token[0] === T_DOC_COMMENT) {
+                if ($pending !== null) {
+                    $stranded[] = $pending;
+                }
+
+                $pending = $token[2];
+
+                continue;
+            }
+
+            $pending = null;
+        }
+
+        return $stranded;
+    }
+
+    /**
      * Extracts `use` imports without executing or including the file.
      *
      * @return array<int, string> Line number => fully qualified name.
