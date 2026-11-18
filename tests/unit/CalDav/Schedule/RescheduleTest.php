@@ -100,8 +100,44 @@ final class RescheduleTest extends TestCase
      * A rule that names a day that never comes, as {@see
      * \DavServices\CalDav\Limits} puts it: the expansion gives up on it, and
      * so the properties are read instead of the set.
+     *
+     * **It gives up only after the whole allowance**, R-CAL-08's ten thousand
+     * turns, and both versions of a series are expanded, so a test that puts
+     * it on each side costs twenty thousand. So it is written once, in
+     * {@see testARuleThatCannotBeExpandedIsTakenAsAffected()}, whose subject
+     * is the giving up and which puts it on one side only. Every other test
+     * that wants a series it cannot expand asks for {@see REFUSED} instead.
      */
     private const SPINS = 'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30';
+
+    /**
+     * A rule the expansion refuses before its first turn, which is the same
+     * door for a tenth of a second rather than ten thousand turns.
+     *
+     * RFC 5545 §3.3.10: "The value of the UNTIL rule part MUST have the same
+     * value type as the 'DTSTART' property." {@see aSeries()} starts its
+     * series on a date **with** a time, so an UNTIL that is a bare date
+     * contradicts it, and {@see \DavServices\VObject\Recur\Iterator} says so
+     * by refusing to build at all.
+     *
+     * **Which is the same door**, because
+     * {@see \DavServices\CalDav\Schedule\Reschedule} asks only whether the
+     * set can be had: its one `catch` takes `ParseError` and
+     * `TooManyIterations` together and answers both with the properties. A
+     * test whose subject is a series that cannot be expanded is therefore
+     * answered by either, and every test here that asks for this says exactly
+     * that of itself.
+     *
+     * **And the dear door was dear enough to be worth a constant.** Measured
+     * on 18.11.2026 with path coverage, the four tests that spun cost
+     * **9 min 19 s** between them — on their own, four of the suite's 5643 —
+     * and their shard took **1 h 16 m** of a run whose every other job was
+     * done inside four minutes. Xdebug's branch check grows with every
+     * measured call a process has made ({@see \TestShards}), so twenty
+     * thousand turns of a loop are not twenty thousand times one turn but far
+     * worse.
+     */
+    private const REFUSED = 'RRULE:FREQ=DAILY;UNTIL=20270101';
 
     /**
      * **A start that moves takes every answer with it.** The table's first
@@ -376,26 +412,32 @@ final class RescheduleTest extends TestCase
     public function testARuleThatCannotBeExpandedIsTakenAsAffected(): void
     {
         $was = $this->anObject($this->aSeries(self::DAILY, self::ACCEPTED));
-        $is = $this->anObject(
-            $this->aSeries('RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30', self::ACCEPTED),
-        );
+        $is = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED));
 
         self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
         self::assertStringContainsString(self::RESET, self::text($is));
     }
 
     /**
-     * **A series nobody touched is not expanded at all.** The three
-     * conditional rows each begin with a change to the property they name, so
-     * where `RRULE`, `RDATE` and `EXDATE` all stand as they stood there is
-     * nothing for an expansion to answer — and the rule that cannot be
-     * expanded, left alone, says so: it comes back false.
+     * **A series nobody touched keeps its answers, expandable or not.** The
+     * three conditional rows each begin with a change to the property they
+     * name, so where `RRULE`, `RDATE` and `EXDATE` all stand as they stood
+     * there is nothing for an expansion to answer — and the rule that cannot
+     * be expanded, left alone, says so: it comes back false. This is the
+     * other half of {@see testARuleThatCannotBeExpandedIsTakenAsAffected()},
+     * where the same unreadable rule had changed.
+     *
+     * **It says nothing about the work done to answer it**, and the claim
+     * that such a series is not expanded at all would be false:
+     * {@see \DavServices\CalDav\Schedule\Reschedule} expands both versions
+     * before it compares their shapes. That is a question about carrying out
+     * rather than about answering, which is R-CAL-35's, and no assertion here
+     * reaches it.
      */
     public function testARuleLeftAsItStandsIsNotAskedAboutAtAll(): void
     {
-        $rule = 'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30';
-        $was = $this->anObject($this->aSeries($rule, self::ACCEPTED . "\r\nSUMMARY:One"));
-        $is = $this->anObject($this->aSeries($rule, self::ACCEPTED . "\r\nSUMMARY:Two"));
+        $was = $this->anObject($this->aSeries(self::REFUSED, self::ACCEPTED . "\r\nSUMMARY:One"));
+        $is = $this->anObject($this->aSeries(self::REFUSED, self::ACCEPTED . "\r\nSUMMARY:Two"));
 
         self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
         self::assertStringContainsString(self::ACCEPTED, self::text($is));
@@ -605,8 +647,8 @@ final class RescheduleTest extends TestCase
     {
         $first = "EXDATE:20270202T100000Z\r\nEXDATE:20270203T100000Z";
         $second = "EXDATE:20270203T100000Z\r\nEXDATE:20270202T100000Z";
-        $was = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $first, self::ACCEPTED));
-        $is = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $second, self::ACCEPTED));
+        $was = $this->anObject($this->aSeries(self::REFUSED . "\r\n" . $first, self::ACCEPTED));
+        $is = $this->anObject($this->aSeries(self::REFUSED . "\r\n" . $second, self::ACCEPTED));
 
         self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
         self::assertStringContainsString(self::ACCEPTED, self::text($is));
@@ -620,8 +662,8 @@ final class RescheduleTest extends TestCase
     {
         $first = "EXDATE:20270202T100000Z\r\nEXDATE:20270203T100000Z";
         $second = "EXDATE:20270202T100000Z\r\nEXDATE:20270204T100000Z";
-        $was = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $first, self::ACCEPTED));
-        $is = $this->anObject($this->aSeries(self::SPINS . "\r\n" . $second, self::ACCEPTED));
+        $was = $this->anObject($this->aSeries(self::REFUSED . "\r\n" . $first, self::ACCEPTED));
+        $is = $this->anObject($this->aSeries(self::REFUSED . "\r\n" . $second, self::ACCEPTED));
 
         self::assertTrue(Reschedule::appliedTo($was, $is, self::OWNERS));
         self::assertStringContainsString(self::RESET, self::text($is));
@@ -633,11 +675,11 @@ final class RescheduleTest extends TestCase
      * own, and where the set cannot say which instance that is, the doubt is
      * §3.2.8's own MAY to resolve.
      */
-    public function testAnOverrideArrivingOnASeriesThatSpinsTakesTheAnswers(): void
+    public function testAnOverrideArrivingOnASeriesThatCannotBeExpandedTakesTheAnswers(): void
     {
-        $was = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED));
+        $was = $this->anObject($this->aSeries(self::REFUSED, self::ACCEPTED));
         $is = $this->anObject(
-            $this->aSeries(self::SPINS, self::ACCEPTED),
+            $this->aSeries(self::REFUSED, self::ACCEPTED),
             $this->anInstance('20270228T100000Z', '20270228T140000Z'),
         );
 
@@ -654,8 +696,8 @@ final class RescheduleTest extends TestCase
     {
         $first = $this->anInstance('20270228T100000Z', '20270228T140000Z');
         $second = $this->anInstance('20270301T100000Z', '20270301T140000Z');
-        $was = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED), $first, $second);
-        $is = $this->anObject($this->aSeries(self::SPINS, self::ACCEPTED), $second, $first);
+        $was = $this->anObject($this->aSeries(self::REFUSED, self::ACCEPTED), $first, $second);
+        $is = $this->anObject($this->aSeries(self::REFUSED, self::ACCEPTED), $second, $first);
 
         self::assertFalse(Reschedule::appliedTo($was, $is, self::OWNERS));
         self::assertStringContainsString(self::ACCEPTED, self::text($is));
