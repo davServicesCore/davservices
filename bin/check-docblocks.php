@@ -243,4 +243,21 @@ foreach (Scanner::productionFiles() as $file) {
     }
 }
 
-Scanner::report('DocBlocks on the public API', $violations);
+// **Asked the other way round, and of every file the repository owns.**
+// The check above walks backwards from a declaration to the nearest DocBlock,
+// so a DocBlock that has had its element taken away looks to it like an
+// ordinary comment and the declaration still answers "documented". Asking
+// instead whether a DocBlock has anything to describe needs no exceptions —
+// and it is true of any PHP file, not only of what ships, which is where it
+// matters: the insertion that strands one happens most often in a test.
+foreach (Scanner::repositoryFiles() as $file) {
+    foreach (Scanner::strandedDocBlocks((string) file_get_contents($file)) as $line) {
+        $violations[] = sprintf(
+            '%s:%d  this DocBlock describes nothing — the one below it is what PHP attaches',
+            Scanner::rel($file),
+            $line,
+        );
+    }
+}
+
+Scanner::report('DocBlocks on the public API, and none stranded', $violations);

@@ -1524,10 +1524,6 @@ final class CalDavTest extends TestCase
     }
 
     /**
-     * One `VEVENT` within every limit, in a calendar object a client would
-     * send.
-     */
-    /**
      * One `VTIMEZONE` and nothing else, which §5.2.3 calls a calendar object
      * resource of its own kind.
      */
@@ -1539,6 +1535,10 @@ final class CalDavTest extends TestCase
             . "END:STANDARD\r\nEND:VTIMEZONE\r\nEND:VCALENDAR\r\n";
     }
 
+    /**
+     * One `VEVENT` within every limit, in a calendar object a client would
+     * send.
+     */
     private static function meeting(string $summary = 'One-off Meeting', string $uid = '1@example.com'): string
     {
         return "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example Corp.//CalDAV Client//EN\r\n"
