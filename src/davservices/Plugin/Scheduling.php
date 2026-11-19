@@ -369,6 +369,8 @@ final class Scheduling
         $events->on(BeforeUnbind::class, $this->guardTheCollections(...));
         $events->on(BeforeUnbind::class, $this->readWhatIsGoing(...));
         $events->on(AfterUnbind::class, $this->cancelOnRemove(...));
+        $events->on(BeforeCreateFile::class, $this->limitWhatAnInboxTakes(...));
+        $events->on(BeforeWriteContent::class, $this->limitWhatAnInboxTakes(...));
         $events->on(BeforeCreateFile::class, $this->deliverOnWrite(...));
         $events->on(BeforeWriteContent::class, $this->deliverOnWrite(...));
 
@@ -727,6 +729,61 @@ final class Scheduling
                 $address,
             );
         }
+    }
+
+    /**
+     * §11.1's three preconditions, on what a client writes into an Inbox.
+     *
+     * > Servers MUST ensure that clients cannot consume excessive server
+     * > resources by carrying out "large" scheduling operations. In
+     * > particular, servers SHOULD enforce CALDAV:max-resource-size,
+     * > CALDAV:max-instances, and CALDAV:max-attendees-per-instance
+     * > preconditions as applicable for scheduling Inbox and Outbox
+     * > collections.
+     *
+     * **"As applicable" leaves the Outbox out**, and leaves it out of itself
+     * rather than by a choice made here: all three are about a calendar
+     * object resource being **stored**, and nothing can be stored in an
+     * Outbox — §2.1 reserves what such a resource would mean, so
+     * {@see \DavServices\CalDav\Schedule\Outbox::createFile()} refuses before
+     * any limit is reached. What §11.1 does reach there is §5's `POST`, held
+     * to the two date limits and to a count of the objects it may walk by
+     * {@see self::busyTime()}.
+     *
+     * **Before the delivery**, which is why it is registered first: the MUST
+     * is about carrying out, and a message built and sent and then refused
+     * would be about a resource that was never stored — the same ordering
+     * {@see self::deliverOnWrite()} keeps within itself.
+     *
+     * **And the parent alone is asked, where {@see self::calendarOver()}
+     * walks all the way up.** That difference is not a shortcut but the two
+     * memos saying opposite things. RFC 4791 §4.2 lets a calendar collection
+     * hold "collections that are not calendar collections", so a resource
+     * there can lie several steps below the calendar it belongs to. §2.2 says
+     * the other thing of an Inbox:
+     *
+     * > scheduling Inbox collections MUST NOT contain any types of collection
+     * > resources.
+     *
+     * {@see \DavServices\CalDav\Schedule\Inbox::createCollection()} refuses
+     * on that sentence, so a resource in an Inbox is a child of it, and a
+     * walk looking for a grandparent would be asking after something this
+     * server will not make.
+     *
+     * {@see \DavServices\CalDav\Limits::mustTakeASchedulingObject()} is where
+     * the three questions are asked, and why they are three.
+     */
+    private function limitWhatAnInboxTakes(BeforeCreateFile|BeforeWriteContent $event): void
+    {
+        [$parent] = Path::split($event->path());
+
+        if (!$this->server->tree()->node($parent) instanceof Inbox) {
+            return;
+        }
+
+        $bytes = self::bytesIn($event);
+
+        $this->limits->mustTakeASchedulingObject($bytes, CalendarObject::in($bytes));
     }
 
     /**
