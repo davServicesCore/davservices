@@ -166,15 +166,21 @@ final class CompFilterTest extends TestCase
     }
 
     /**
-     * And a range no instance reaches is still a no: the series is weekly on a
-     * Monday, and this asks about a Tuesday.
+     * And a range no instance reaches is still a no: the series falls on
+     * Mondays, and this asks about the Tuesday between the first two of them.
+     *
+     * **The series is given an end so that the expansion can reach one.**
+     * Against a rule that never stops, nothing runs out but R-CAL-08's
+     * allowance, and the answer would come from giving up — which is
+     * {@see testASeriesThatOutrunsTheAllowanceIsAskedAsItStands()}'s subject
+     * and the opposite of this one's, at ten thousand turns to say it.
      */
     public function testARangeNoInstanceReachesIsStillANo(): void
     {
-        $weekly = str_replace("SUMMARY:", "RRULE:FREQ=WEEKLY\r\nSUMMARY:", self::MEETING);
+        $weekly = str_replace("SUMMARY:", "RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:", self::MEETING);
         $onATuesday = $this->filter(
             'VCALENDAR',
-            $this->comp('VEVENT', $this->range('20260303T000000Z', '20260304T000000Z')),
+            $this->comp('VEVENT', $this->range('20260106T000000Z', '20260107T000000Z')),
         );
 
         self::assertFalse($this->holds($onATuesday, $weekly));
@@ -594,6 +600,34 @@ final class CompFilterTest extends TestCase
         );
 
         self::assertTrue($this->holds($filter, $broken));
+    }
+
+    /**
+     * **And a series that outruns the allowance is asked as it stands too.**
+     * The `catch` above takes `TooManyIterations` beside `ParseError` and
+     * answers both from the component as written, so the giving up needs a
+     * case of its own beside the unreadable rule — it is the one thing here
+     * that R-CAL-08's limit, rather than RFC 5545, decides.
+     *
+     * The rule names the 30th of February, which
+     * {@see \DavServices\CalDav\Limits} calls a day that never comes, so the
+     * expansion yields nothing whatever before it gives up. That is what makes
+     * this decisive: the range covers the hour the master itself occupies, and
+     * an expansion that gave up without falling back would answer no.
+     */
+    public function testASeriesThatOutrunsTheAllowanceIsAskedAsItStands(): void
+    {
+        $never = str_replace(
+            "SUMMARY:",
+            "RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30\r\nSUMMARY:",
+            self::MEETING,
+        );
+        $filter = $this->filter(
+            'VCALENDAR',
+            $this->comp('VEVENT', $this->range('20260105T120000Z', '20260105T130000Z')),
+        );
+
+        self::assertTrue($this->holds($filter, $never));
     }
 
     /**
