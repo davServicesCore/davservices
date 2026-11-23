@@ -203,9 +203,14 @@ final class DeadProperties
      */
     private function theNamesKeptAt(string $path): array
     {
-        return array_values(array_diff(
-            $this->storage->propertyNames($path),
-            $this->withheldFromEverything,
-        ));
+        $names = [];
+
+        foreach ($this->storage->propertyNames($path) as $name) {
+            if (!in_array($name, $this->withheldFromEverything, true)) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
     }
 }
