@@ -141,17 +141,29 @@ final class DeadPropertiesTest extends TestCase
     }
 
     /**
-     * **And a name nobody withheld still comes with `allprop`**, which is the
-     * half that says this list refuses nothing else.
+     * **And every name nobody withheld still comes with `allprop`**, which is
+     * the half that says this list refuses nothing else.
+     *
+     * **Two of them, beside the withheld one.** One would say only that
+     * something came through; the mutation run found that a list cut down to
+     * its first entry passed every case there was, because no case had a
+     * second entry to lose.
      */
-    public function testANameNobodyWithheldStillComesWithAllProp(): void
+    public function testEveryNameNobodyWithheldStillComesWithAllProp(): void
     {
         $storage = new MemoryPropertyStorage();
-        $storage->patchProperties('work.ics', ['{http://apple.com/ns/ical/}calendar-color' => '#711A76']);
+        $storage->patchProperties('work.ics', [
+            '{http://apple.com/ns/ical/}calendar-color' => '#711A76',
+            self::TRANSPARENCY => '<C:opaque/>',
+            '{DAV:}displayname' => 'Work',
+        ]);
 
         $answers = $this->answers($storage, PropFindForm::Everything, withheld: [self::TRANSPARENCY]);
 
-        self::assertSame(['{http://apple.com/ns/ical/}calendar-color' => '#711A76'], $answers);
+        self::assertSame([
+            '{http://apple.com/ns/ical/}calendar-color' => '#711A76',
+            '{DAV:}displayname' => 'Work',
+        ], $answers);
     }
 
     /**
