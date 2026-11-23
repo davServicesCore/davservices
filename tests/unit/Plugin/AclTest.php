@@ -418,6 +418,50 @@ final class AclTest extends TestCase
         self::assertNotSame([], $answer->children());
     }
 
+    /**
+     * **And asks it once for the whole request.** Identity is wanted by every
+     * check and by two of the five properties, and the walk behind it reaches
+     * the group resolver — so a server that went back for the answer each
+     * time would multiply one question by however many paths a `PROPFIND`
+     * touches.
+     *
+     * **The worse half is not the count.** Two answers to one question inside
+     * one response could differ, and {@see CurrentPrincipalRequested} is
+     * built so that they cannot: "of all the things to decide by accident of
+     * order, who somebody is would be the worst". Asking once is what makes
+     * that hold within a request as well as between listeners.
+     *
+     * A new request is a new asker all the same — see
+     * {@see Acl::guardTheRequest()}, where the memo is dropped.
+     */
+    public function testItAsksWhoIsThereOnceForTheWholeRequest(): void
+    {
+        $server = new Server(new Tree($this->tree()));
+        $plugin = new Acl($server, ArrayPrivilegeResolver::asTheContractExpects());
+        $asked = 0;
+
+        $plugin->register(new Report($server));
+        $server->events()->on(
+            CurrentPrincipalRequested::class,
+            static function (CurrentPrincipalRequested $event) use (&$asked): void {
+                ++$asked;
+
+                $event->answerWith(self::ALICE);
+            },
+        );
+
+        $plugin->guardTheRequest(new BeforeMethod(new Request('PROPFIND', '/calendars/work')));
+
+        foreach (['calendars/work', 'calendars/private'] as $path) {
+            $plugin->describe(new PropertiesRequested(
+                new PropFindResult($path, PropFindForm::Named, ['{DAV:}current-user-privilege-set']),
+                new MemoryFile('work', ''),
+            ));
+        }
+
+        self::assertSame(1, $asked);
+    }
+
     private function tree(): MemoryCollection
     {
         $root = new MemoryCollection('');

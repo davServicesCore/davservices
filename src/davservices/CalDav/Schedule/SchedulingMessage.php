@@ -597,6 +597,34 @@ final class SchedulingMessage
     }
 
     /**
+     * Which of RFC 6638 §6.1's two privileges governs delivering this.
+     *
+     * > §6.1.2: The CALDAV:schedule-deliver-invite privilege controls the
+     * > processing and delivery of scheduling messages coming **from an
+     * > "Organizer"**.
+     * >
+     * > §6.1.3: The CALDAV:schedule-deliver-reply privilege controls the
+     * > processing and delivery of scheduling messages coming **from an
+     * > "Attendee"**.
+     *
+     * **Who a message comes from is the `METHOD`**, and that is read here
+     * rather than at the delivery because this class is the one thing that
+     * knows it. RFC 5546 §1.4 gives the property that role, and §3.2's table
+     * puts `REPLY` on the attendee's side of the exchange: everything else
+     * this server sends — `REQUEST` and `CANCEL` — is the organizer's.
+     *
+     * It is a different question from {@see self::whatTheOrganizerProcesses()}
+     * although the same field answers both. That one asks which half of §4 a
+     * recipient does with the message; this asks whose grant lets it arrive at
+     * all, and the two would come apart the moment a fifth method was added
+     * for one of them and not the other.
+     */
+    public function deliveryPrivilege(): string
+    {
+        return $this->method === self::REPLY ? Privileges::DELIVER_REPLY : Privileges::DELIVER_INVITE;
+    }
+
+    /**
      * The bytes the recipient keeps: the message without its `METHOD`.
      *
      * RFC 4791 §4.1: "Calendar object resources contained in calendar

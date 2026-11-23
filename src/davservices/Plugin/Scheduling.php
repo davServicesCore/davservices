@@ -373,7 +373,11 @@ final class Scheduling
      * triggers any is only known once they are built — which has to happen
      * before the resource goes, so that the refusal can still stop it.
      *
-     * @var array<string, list<array{string, SchedulingMessage}>>
+     * **Whose they are travels with them**, because §6.1 asks the recipient's
+     * grant of the **sending** calendar user and the owner of the collection
+     * is no longer there to be read once the resource has gone.
+     *
+     * @var array<string, array{string, list<array{string, SchedulingMessage}>}>
      */
     private array $goingWith = [];
 
@@ -759,7 +763,9 @@ final class Scheduling
         // §6.2.2's privilege is asked while the resource is still there,
         // which is the last moment a refusal can leave it where it is: the
         // sending itself is §3.2.1.3's and happens once it is gone.
-        $this->goingWith[$path] = $this->theCancellationsOf($owner, $object, $addresses);
+        [$sender] = $owner;
+
+        $this->goingWith[$path] = [$sender, $this->theCancellationsOf($owner, $object, $addresses)];
     }
 
     /**
@@ -786,7 +792,7 @@ final class Scheduling
 
         unset($this->goingWith[$event->path()]);
 
-        $this->sendTheCancellations($going);
+        $this->sendTheCancellations(...$going);
     }
 
     /**
@@ -859,10 +865,10 @@ final class Scheduling
      *
      * @param list<array{string, SchedulingMessage}> $cancellations
      */
-    private function sendTheCancellations(array $cancellations): void
+    private function sendTheCancellations(string $sender, array $cancellations): void
     {
         foreach ($cancellations as [$address, $message]) {
-            $this->deliver($message, $address);
+            $this->deliver($message, $address, $sender);
         }
     }
 
@@ -1150,7 +1156,9 @@ final class Scheduling
         // its own data, and a server that tidied it would be editing a resource
         // it has no part in.
         if ($original !== null && $was === SchedulingObject::Organizers) {
-            $this->sendTheCancellations($this->theCancellationsOf($owner, $original, $addresses));
+            [$sender] = $owner;
+
+            $this->sendTheCancellations($sender, $this->theCancellationsOf($owner, $original, $addresses));
         }
     }
 
@@ -1362,13 +1370,14 @@ final class Scheduling
             $this->mustBeAllowedToSend($owner, Privileges::SEND_INVITE);
         }
 
+        [$sender] = $owner;
         $stamped = false;
 
         foreach ($sending as [$address, $messages, $properties]) {
             foreach ($messages as $message) {
                 $status = self::schedulingStatus(
                     $forced->wasIgnoredOnTheAttendee($address),
-                    $this->deliver($message, $address)->value,
+                    $this->deliver($message, $address, $sender)->value,
                 );
 
                 foreach ($properties as $property) {
@@ -1474,10 +1483,16 @@ final class Scheduling
         if ($answered !== []) {
             $this->mustBeAllowedToSend($owner, Privileges::SEND_REPLY);
 
+            [$sender] = $owner;
+
             // Built before anything is written on the resource, because §7.3
             // keeps its parameter out of a message and the resource is about
             // to carry one.
-            $delivered = $this->deliver(SchedulingMessage::replying($object, $answered), $address)->value;
+            $delivered = $this->deliver(
+                SchedulingMessage::replying($object, $answered),
+                $address,
+                $sender,
+            )->value;
         }
 
         $status = self::schedulingStatus($ignored, $delivered);
@@ -1615,7 +1630,7 @@ final class Scheduling
      * the message. This is likely a temporary failure, and the originator can
      * try to send the message again at a later time."
      */
-    private function deliver(SchedulingMessage $message, string $address): DeliveryStatus
+    private function deliver(SchedulingMessage $message, string $address, string $sender): DeliveryStatus
     {
         $url = $this->calendarUsers?->principalFor($address);
 
@@ -1637,6 +1652,27 @@ final class Scheduling
         }
 
         [$where, $collection] = $inbox;
+
+        // **§6.1: the recipient decides who may schedule with them**, and
+        // §3.2.9's `3.8` is how a no is answered — nothing is delivered and
+        // the request carries on. Asked of the **sender**, which §6.1 says in
+        // so many words: the privileges "determine whether delivery of
+        // scheduling messages from a calendar user is allowed by the calendar
+        // user who 'owns' the scheduling Inbox collection".
+        //
+        // **Before everything else the delivery does**, including §4's
+        // automatic processing: §6.1's second paragraph puts that under this
+        // same grant — "the ability to create or update the scheduling object
+        // resource in the calendar is controlled by the privileges assigned
+        // to the scheduling Inbox collection" — so a delivery that was not
+        // allowed must not have written on a calendar of theirs either. And
+        // before the shortcut below, because a message nobody may deliver is
+        // not delivered whether or not one like it arrived once.
+        if ($this->server->events()->emit(
+            new PrivilegeNeeded($where, $message->deliveryPrivilege(), $sender),
+        )->refusal() !== null) {
+            return DeliveryStatus::InsufficientPrivileges;
+        }
 
         // **The same message again has been processed already.** A second copy
         // would overwrite whatever the calendar user has made of the first —

@@ -521,11 +521,16 @@ final class SchedulingSendPrivilegesTest extends TestCase
                         'calendars/bernard/work' => self::WRITING,
                         'calendars/bernard/work/' . self::NAME => self::WRITING,
                         'calendars/bernard/outbox' => $granting,
+                        // §6.1 is the other slice, and what these cases ask
+                        // of it is that it does not get in the way: Cyrus is
+                        // willing to hear from Bernard, so a write §6.2 lets
+                        // through reaches him.
+                        'calendars/cyrus/inbox' => [Privileges::DELIVER_INVITE, Privileges::DELIVER_REPLY],
                     ],
                 ],
-                // §6.2 hangs its three on an Outbox, which is where §6.2.2
-                // and §6.2.3 have the grant made.
-                Privileges::anOutboxDefines(Privilege::standard()),
+                // §6.2 hangs its three on an Outbox and §6.1 its three on an
+                // Inbox, each where that section has the grant made.
+                Privileges::anInboxDefines(Privileges::anOutboxDefines(Privilege::standard())),
             )))->register(new Report($server));
         }
 

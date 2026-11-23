@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace DavServices\Tests\Unit\CalDav\Schedule;
 
 use DavServices\CalDav\CalendarObject;
+use DavServices\CalDav\Schedule\Privileges;
 use DavServices\CalDav\Schedule\SchedulingMessage;
 use DavServices\VObject\Component;
 use DavServices\VObject\Parameter;
@@ -351,6 +352,34 @@ final class SchedulingMessageTest extends TestCase
 
         self::assertStringContainsString("METHOD:REQUEST\r\n", $message->text());
         self::assertStringNotContainsString('METHOD', $this->keptOf($message));
+    }
+
+    /**
+     * **Which of RFC 6638 §6.1's two privileges lets a message be
+     * delivered.** §6.1.2 governs the ones "coming from an 'Organizer'" and
+     * §6.1.3 those "coming from an 'Attendee'", and the `METHOD` is what says
+     * which a message is (RFC 5546 §1.4). So the three an organizer sends
+     * want the first and a reply wants the second — a recipient willing to
+     * hear invitations has not thereby agreed to hear replies.
+     *
+     * Read here rather than through a delivery, because this class is the one
+     * thing that knows the method, and a reading only ever exercised from
+     * another class is a reading nothing checks.
+     */
+    public function testWhichPrivilegeAMessageWantsFollowsItsMethod(): void
+    {
+        $object = $this->objectWith(self::INVITATION);
+
+        self::assertSame(Privileges::DELIVER_INVITE, SchedulingMessage::requesting($object)->deliveryPrivilege());
+        self::assertSame(Privileges::DELIVER_INVITE, SchedulingMessage::cancelling($object)->deliveryPrivilege());
+        self::assertSame(
+            Privileges::DELIVER_INVITE,
+            $this->uninvitationOf($object)->deliveryPrivilege(),
+        );
+        self::assertSame(
+            Privileges::DELIVER_REPLY,
+            $this->replyAbout($object, null, 'ACCEPTED')->deliveryPrivilege(),
+        );
     }
 
     /**

@@ -91,6 +91,31 @@ enum DeliveryStatus: string
     case NoSuchCalendarUser = '3.7';
 
     /**
+     * §3.2.9's `3.8`: "The scheduling message was not delivered due to
+     * insufficient privileges."
+     *
+     * **The recipient's rules, not the sender's.** §6.1 says what the
+     * privileges of a scheduling Inbox collection are for: they "determine
+     * whether delivery of scheduling messages **from a calendar user** is
+     * allowed by the calendar user who 'owns' the scheduling Inbox
+     * collection. This allows calendar users to choose which other calendar
+     * users can schedule with them."
+     *
+     * **So this is a report and not a refusal**, which is what §3.2.9's note
+     * — "this code applies to privileges granted by both the 'Organizer' and
+     * 'Attendee' calendar users" — names two **recipients** for: whichever
+     * way the message is going, the one who would receive it is the one who
+     * did not grant it. An organizer's event is therefore neither lost nor
+     * withheld from the other attendees because one recipient will not hear
+     * from them.
+     *
+     * The other half of §6 refuses instead, and says so in its own words:
+     * §6.2.2 wants its privilege "in order to be allowed to create, modify,
+     * or delete", which is a condition on the write and a `403`.
+     */
+    case InsufficientPrivileges = '3.8';
+
+    /**
      * §3.2.9's `5.1`: the server could not complete the delivery, and the
      * message may be worth sending again later.
      */

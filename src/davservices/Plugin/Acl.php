@@ -423,18 +423,35 @@ final class Acl
      * about a resource whose existence is a secret, and the asker already
      * holds the one it was writing: a `404` for an Outbox it never named
      * would answer a question nobody asked.
+     *
+     * **And the question may be about somebody else.** RFC 6638 §6.1 grants
+     * on a recipient's Inbox and looks at what the *sending* calendar user
+     * holds there, who need not be signed in at all; the event says why.
+     * Such an answer goes through the same walk — §5.5.1's entries and §2's
+     * groups — because a right a group was given is a right its members
+     * hold, whoever is asking after it.
      */
     public function sayWhatIsMissing(PrivilegeNeeded $event): void
     {
         $path = $event->path();
         $privilege = $event->privilege();
+        $principal = $event->principal();
 
-        if ($this->heldOn($path)->has($privilege)) {
+        if ($this->heldOn($path, $principal)->has($privilege)) {
             return;
         }
 
         $event->refuseWith(new Forbidden(
-            sprintf('Whoever is asking does not hold "%s" on "%s".', $privilege, $path),
+            sprintf(
+                '"%s" is not held on "%s" by %s.',
+                $privilege,
+                $path,
+                // Named where a question was about somebody else, because a
+                // deployment reading this in a log would otherwise be told
+                // about the wrong calendar user — and under RFC 6638 §6.1 the
+                // one in question is the sender, who is not the asker.
+                $principal === null ? 'whoever is asking' : sprintf('"%s"', $principal),
+            ),
             $this->needing($path, $privilege),
         ));
     }
@@ -733,12 +750,24 @@ final class Acl
      * rather than leaving each application to remember it. A resolver that
      * only ever compared the principal who signed in would deny somebody a
      * group had been given the right to, and say nothing about it.
+     *
+     * **A principal other than the asker is asked about the same way**, which
+     * is what {@see PrivilegeNeeded::principal()} is for: RFC 6638 §6.1 grants
+     * on a recipient's Inbox and looks at what the *sending* calendar user
+     * holds there. §5.5.1 and §2 are no different for them — a group the
+     * sender is in is a grant to the sender — so the one difference is which
+     * principal the walk starts at.
+     *
+     * @param string|null $principal Whose holding to work out, as a path;
+     *                               null is this request's own asker, and
+     *                               only that answer is remembered
      */
-    private function heldOn(string $path): PrivilegeSet
+    private function heldOn(string $path, ?string $principal = null): PrivilegeSet
     {
+        $identities = $principal === null ? $this->identitiesAsking() : $this->identitiesOf($principal);
         $held = PrivilegeSet::nothing();
 
-        foreach ($this->identitiesAsking() as $identity) {
+        foreach ($identities as $identity) {
             $held = $held->merged($this->resolver->forPath($identity, $path));
         }
 
@@ -772,31 +801,48 @@ final class Acl
     /**
      * Everything the asker counts as, worked out once for this request.
      *
-     * Nobody signed in counts as nobody — one identity, and a null one,
-     * because an entry may name `DAV:unauthenticated` and that has to be
-     * asked about too (§5.5.1). A server with no principal collection has no
-     * groups, so the asker counts as themselves alone; that is R-ARC-02, not
-     * a gap.
+     * **Once**, because the walk reaches the group resolver and a `PROPFIND`
+     * over a collection asks after it per member. A new request forgets it —
+     * see {@see self::guardTheRequest()}, where remembering across one would
+     * go on granting what somebody had just been taken out of a group for.
+     *
+     * {@see self::identitiesOf()} is the walk itself, and says what nobody
+     * being signed in comes to.
      *
      * @return list<string|null>
      */
     private function identitiesAsking(): array
     {
-        if ($this->identities !== null) {
-            return $this->identities;
-        }
+        return $this->identities ??= $this->identitiesOf($this->pathAsking());
+    }
 
-        $path = $this->pathAsking();
-
+    /**
+     * Everything one principal counts as, which is the same walk for anybody.
+     *
+     * **Not remembered, unlike {@see self::identitiesAsking()}.** That answer
+     * is one per request; this is asked about whoever a question names — RFC
+     * 6638 §6.1's sending calendar user, for one — so a memo of it would have
+     * to be keyed by principal to hold more than one, and the walk is a
+     * resolver call rather than a property read.
+     *
+     * @param string|null $path The principal, or null where nobody is signed
+     *                          in — which counts as one identity and a null
+     *                          one, because an entry may name
+     *                          `DAV:unauthenticated` (§5.5.1)
+     *
+     * @return list<string|null>
+     */
+    private function identitiesOf(?string $path): array
+    {
         if ($path === null) {
-            return $this->identities = [null];
+            return [null];
         }
 
         $paths = $this->groups === null ? [$path] : $this->groups->identitiesOf($path);
 
         // The resolver is given URLs, because that is what an access control
         // entry names; the tree deals in paths.
-        return $this->identities = array_map($this->server->href(...), $paths);
+        return array_map($this->server->href(...), $paths);
     }
 
     /**
