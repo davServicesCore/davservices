@@ -30,6 +30,7 @@ use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\Schedule\Instances;
 use DavServices\CalDav\Schedule\Modification;
 use DavServices\CalDav\Schedule\Outbox;
+use DavServices\CalDav\Schedule\Privileges;
 use DavServices\CalDav\Schedule\Reply;
 use DavServices\CalDav\Schedule\Reschedule;
 use DavServices\CalDav\Schedule\Restriction;
@@ -41,6 +42,7 @@ use DavServices\Dav\Event\AfterUnbind;
 use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\BeforeWriteContent;
+use DavServices\Dav\Event\PrivilegeNeeded;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
@@ -365,7 +367,13 @@ final class Scheduling
      * once. An entry whose removal was refused is never collected, and goes
      * when the request does.
      *
-     * @var array<string, array{Component, list<string>}>
+     * **The messages themselves, built while the resource was still there.**
+     * §6.2.2 asks the sending privilege of a write "in a way that will trigger
+     * the CalDAV server to deliver scheduling messages", and whether a removal
+     * triggers any is only known once they are built — which has to happen
+     * before the resource goes, so that the refusal can still stop it.
+     *
+     * @var array<string, list<array{string, SchedulingMessage}>>
      */
     private array $goingWith = [];
 
@@ -731,13 +739,27 @@ final class Scheduling
         }
 
         [$where, $collection] = $calendar;
-        $addresses = $this->addressesOfTheOwnerOf($where, $collection);
+        $owner = $this->ownerAt($where, $collection);
+
+        // **A calendar this server names no owner of holds no scheduling
+        // object resources**, so there is nothing here to tell anybody of.
+        // §3.1 decides both kinds by comparing against "one of the calendar
+        // user addresses of the owner of the calendar collection", and there
+        // are none of those to compare against.
+        if ($owner === null) {
+            return;
+        }
+
+        $addresses = $this->addressesOf($owner);
 
         if (SchedulingObject::in($object, $addresses) !== SchedulingObject::Organizers) {
             return;
         }
 
-        $this->goingWith[$path] = [$object, $addresses];
+        // §6.2.2's privilege is asked while the resource is still there,
+        // which is the last moment a refusal can leave it where it is: the
+        // sending itself is §3.2.1.3's and happens once it is gone.
+        $this->goingWith[$path] = $this->theCancellationsOf($owner, $object, $addresses);
     }
 
     /**
@@ -764,13 +786,12 @@ final class Scheduling
 
         unset($this->goingWith[$event->path()]);
 
-        [$object, $addresses] = $going;
-
-        $this->cancelTheWholeOf($object, $addresses);
+        $this->sendTheCancellations($going);
     }
 
     /**
-     * §3.2.1.3: that cancellation to every calendar user on the list it is for.
+     * §3.2.1.3: the cancellation every calendar user on the list is to be
+     * sent.
      *
      * The table is §3.2.1.1's with one word changed — `SERVER` sends a `CANCEL`
      * where it sent a `REQUEST`, `CLIENT` and `NONE` send nothing — and
@@ -787,22 +808,123 @@ final class Scheduling
      * 'VEVENT' components each with a 'RECURRENCE-ID' property corresponding to
      * one of the instances to be cancelled."
      *
+     * **Built apart from being sent**, because §6.2.2 asks its privilege of a
+     * write "in a way that will trigger the CalDAV server to deliver
+     * scheduling messages" — and whether this one triggers any is the
+     * question this list answers. An empty list is a removal that tells
+     * nobody, which §6.2.2 does not reach.
+     *
+     * @param array{string, Principal} $owner Whose collection it is, as
+     *                                        {@see self::ownerAt()} found
+     *                                        them
      * @param Component $object The resource as it stood, which is both the
      *                          attendee list and what each message is built
      *                          from
      * @param list<string> $addresses The owner's own addresses (§2.4.1)
+     *
+     * @throws IHttpFailure If §6.2.2's privilege is wanted and not held
+     *
+     * @return list<array{string, SchedulingMessage}> Each calendar user with
+     *                                                the message they are sent
      */
-    private function cancelTheWholeOf(Component $object, array $addresses): void
+    private function theCancellationsOf(array $owner, Component $object, array $addresses): array
     {
+        $cancellations = [];
+
         foreach (self::attendeesOf($object) as [$address, $agent]) {
             if (in_array($address, $addresses, true) || $agent !== ScheduleAgent::Server) {
                 continue;
             }
 
-            $this->deliver(
-                SchedulingMessage::cancelling(Restriction::whatTheyMayBeTold($object, $address)),
+            $cancellations[] = [
                 $address,
-            );
+                SchedulingMessage::cancelling(Restriction::whatTheyMayBeTold($object, $address)),
+            ];
+        }
+
+        if ($cancellations !== []) {
+            $this->mustBeAllowedToSend($owner, Privileges::SEND_INVITE);
+        }
+
+        return $cancellations;
+    }
+
+    /**
+     * And sends them, which is all §3.2.1.3 has left to do.
+     *
+     * What {@see self::deliver()} answers is read and let go: §3.2.1.1 and
+     * §3.2.1.2 have the server record what came of each delivery in the
+     * resource, and §3.2.1.3 asks for no such thing — there is no resource
+     * left to record it in.
+     *
+     * @param list<array{string, SchedulingMessage}> $cancellations
+     */
+    private function sendTheCancellations(array $cancellations): void
+    {
+        foreach ($cancellations as [$address, $message]) {
+            $this->deliver($message, $address);
+        }
+    }
+
+    /**
+     * **RFC 6638 §6.2.2 and §6.2.3: the sending is the owner's to allow, not
+     * the writer's.**
+     *
+     * > Users granted the DAV:bind privilege on a calendar collection, or the
+     * > DAV:write privilege on scheduling object resources, will also need the
+     * > CALDAV:schedule-send-invite privilege granted on the scheduling Outbox
+     * > collection of the owner of the calendar collection or scheduling
+     * > object resource in order to be allowed to create, modify, or delete
+     * > scheduling object resources in a way that will trigger the CalDAV
+     * > server to deliver scheduling messages to "Attendees".
+     *
+     * **Without this, whoever holds `DAV:bind` on somebody else's calendar can
+     * make this server send invitations in that owner's name.** §6.2.2 and
+     * §6.2.3 divide the work by who is sending — "by 'Organizers'" against "by
+     * 'Attendees'" — so the caller names which, each of them knowing which
+     * section it is carrying out.
+     *
+     * **Asked only where something is actually going.** "In a way that will
+     * trigger" is a condition and not decoration: an event nobody but the
+     * owner is on, and an attendee's copy whose organizer left the sending to
+     * the client, set nothing off and are not this section's business. So
+     * every caller asks after the messages are known and before the first one
+     * is sent — which is also what keeps a refusal from leaving an invitation
+     * in somebody's Inbox for a resource that was never stored.
+     *
+     * **One question, asked once per write.** The privilege does not vary by
+     * recipient: it is granted on the sender's Outbox, so the first answer is
+     * the answer for all of them.
+     *
+     * **An owner with no Outbox is not refused**, and that is not a hole.
+     * §6.2.2 wants the privilege "granted on the scheduling Outbox collection
+     * of the owner", so a deployment that publishes none leaves nowhere a
+     * grant could have been made — and "insufficient privileges" describes
+     * nothing there. Refusing instead would make this server unusable
+     * wherever scheduling is wanted without an Outbox.
+     * {@see PrivilegeNeeded} says what the other way out is: nobody
+     * answering.
+     *
+     * @param array{string, Principal} $owner Whose collection it is, as
+     *                                        {@see self::ownerAt()} found
+     *                                        them
+     * @param string $privilege §6.2.2's or §6.2.3's, by who is sending
+     *
+     * @throws IHttpFailure If whoever manages access says it is not held
+     */
+    private function mustBeAllowedToSend(array $owner, string $privilege): void
+    {
+        [$principal, $who] = $owner;
+        $outbox = $this->find(Outbox::OUTBOX, $principal, $who);
+
+        if ($outbox === null) {
+            return;
+        }
+
+        $refusal = $this->server->events()->emit(new PrivilegeNeeded($outbox, $privilege))->refusal();
+
+        if ($refusal !== null) {
+            throw $refusal;
         }
     }
 
@@ -939,7 +1061,21 @@ final class Scheduling
         }
 
         [$where, $node] = $calendar;
-        $addresses = $this->addressesOfTheOwnerOf($where, $node);
+
+        // The owner is kept rather than only their addresses, because §6.2.2
+        // has the sending privilege granted on their Outbox.
+        $owner = $this->ownerAt($where, $node);
+
+        // **A calendar this server names no owner of holds no scheduling
+        // object resources**: §3.1 decides both kinds by comparing against
+        // "one of the calendar user addresses of the owner of the calendar
+        // collection", and there are none of those to compare against — so
+        // neither what is there nor what is arriving can be one.
+        if ($owner === null) {
+            return;
+        }
+
+        $addresses = $this->addressesOf($owner);
         $original = $this->theOneAlreadyAt($path);
         $was = $original === null ? null : SchedulingObject::in($original, $addresses);
         $becoming = SchedulingObject::in($object, $addresses);
@@ -976,7 +1112,7 @@ final class Scheduling
             // asked for travels on instead of in the resource, and the
             // write-back carries the taking away even where nothing was sent.
             $forced = ForceSend::takenOutOf($object);
-            $told = $this->tellTheAttendeesOf($theirs, $object, $addresses, $forced);
+            $told = $this->tellTheAttendeesOf($owner, $theirs, $object, $addresses, $forced);
 
             if ($told || $reset || $forced->wasThere()) {
                 $event->writeInstead((new Serializer())->write($object));
@@ -989,7 +1125,7 @@ final class Scheduling
             $theirs = $was === SchedulingObject::Attendees ? $original : null;
             $forced = ForceSend::takenOutOf($object);
 
-            if ($this->tellTheOrganizerOf($theirs, $object, $addresses, $forced) || $forced->wasThere()) {
+            if ($this->tellTheOrganizerOf($owner, $theirs, $object, $addresses, $forced) || $forced->wasThere()) {
                 $event->writeInstead((new Serializer())->write($object));
             }
 
@@ -1014,7 +1150,7 @@ final class Scheduling
         // its own data, and a server that tidied it would be editing a resource
         // it has no part in.
         if ($original !== null && $was === SchedulingObject::Organizers) {
-            $this->cancelTheWholeOf($original, $addresses);
+            $this->sendTheCancellations($this->theCancellationsOf($owner, $original, $addresses));
         }
     }
 
@@ -1165,6 +1301,17 @@ final class Scheduling
      * message" does not arise on this side of the exchange. The parameter is
      * still taken off the resource, §7.2 asking for that of every property.
      *
+     * **What is to go is worked out before any of it goes**, and that is
+     * §6.2.2: the privilege it wants is of a write "in a way that will trigger
+     * the CalDAV server to deliver scheduling messages to 'Attendees'", so
+     * whether anything is wanted at all is only known once the messages are.
+     * {@see self::mustBeAllowedToSend()} is then asked once — and asked before
+     * the first delivery, so that a refusal leaves nothing in anybody's Inbox
+     * about a resource that was never stored.
+     *
+     * @param array{string, Principal} $owner Whose collection it is, as
+     *                                        {@see self::ownerAt()} found
+     *                                        them
      * @param Component|null $original The resource as it stands, where it is
      *                                 the owner's to send; null makes every
      *                                 attendee `<Absent>`, which is §3.2.1.1
@@ -1172,15 +1319,18 @@ final class Scheduling
      * @param ForceSend $forced What §7.2's parameter asked for before it was
      *                          taken away
      *
+     * @throws IHttpFailure If §6.2.2's privilege is wanted and not held
+     *
      * @return bool Whether anything was written on the resource
      */
     private function tellTheAttendeesOf(
+        array $owner,
         ?Component $original,
         Component $object,
         array $addresses,
         ForceSend $forced,
     ): bool {
-        $stamped = false;
+        $sending = [];
 
         foreach (Modification::whatEachCalendarUserIsTold($original, $object) as $told) {
             [$address, $requested, $cancelled, $properties] = $told;
@@ -1203,6 +1353,18 @@ final class Scheduling
                 $messages[] = SchedulingMessage::requesting(Restriction::whatTheyMayBeTold($object, $address));
             }
 
+            if ($messages !== []) {
+                $sending[] = [$address, $messages, $properties];
+            }
+        }
+
+        if ($sending !== []) {
+            $this->mustBeAllowedToSend($owner, Privileges::SEND_INVITE);
+        }
+
+        $stamped = false;
+
+        foreach ($sending as [$address, $messages, $properties]) {
             foreach ($messages as $message) {
                 $status = self::schedulingStatus(
                     $forced->wasIgnoredOnTheAttendee($address),
@@ -1256,6 +1418,16 @@ final class Scheduling
      * creation reads it: every instance answered as though for the first time,
      * which is what the organizer has not been told.
      *
+     * **And §6.2.3's privilege is asked for where there is a `REPLY` to
+     * send**, which is the sentence §6.2.2 is for the other side: the
+     * privilege "controls the sending of scheduling messages by 'Attendees'".
+     * Asked after the answers are worked out and before the message goes, for
+     * the reason {@see self::mustBeAllowedToSend()} gives — an organizer who
+     * left the sending to the client sets nothing off, so nothing is wanted.
+     *
+     * @param array{string, Principal} $owner Whose collection it is, as
+     *                                        {@see self::ownerAt()} found
+     *                                        them
      * @param Component|null $original The resource as it stands, where it is
      *                                 the owner's own copy; null makes every
      *                                 answer new, which is §3.2.2.2
@@ -1263,9 +1435,12 @@ final class Scheduling
      * @param ForceSend $forced What §7.2's parameter asked for before it was
      *                          taken away
      *
+     * @throws IHttpFailure If §6.2.3's privilege is wanted and not held
+     *
      * @return bool Whether anything was written on the resource
      */
     private function tellTheOrganizerOf(
+        array $owner,
         ?Component $original,
         Component $object,
         array $addresses,
@@ -1294,12 +1469,17 @@ final class Scheduling
             return false;
         }
 
-        // Built before anything is written on the resource, because §7.3 keeps
-        // its parameter out of a message and the resource is about to carry
-        // one.
-        $delivered = $answered === []
-            ? null
-            : $this->deliver(SchedulingMessage::replying($object, $answered), $address)->value;
+        $delivered = null;
+
+        if ($answered !== []) {
+            $this->mustBeAllowedToSend($owner, Privileges::SEND_REPLY);
+
+            // Built before anything is written on the resource, because §7.3
+            // keeps its parameter out of a message and the resource is about
+            // to carry one.
+            $delivered = $this->deliver(SchedulingMessage::replying($object, $answered), $address)->value;
+        }
+
         $status = self::schedulingStatus($ignored, $delivered);
 
         foreach ($organizers as $property) {
@@ -1898,10 +2078,25 @@ final class Scheduling
     {
         $owner = $this->ownerAt($path, $node);
 
-        if ($owner === null) {
-            return [];
-        }
+        return $owner === null ? [] : $this->addressesOf($owner);
+    }
 
+    /**
+     * The same of an owner already found.
+     *
+     * **Two callers go on to need the owner themselves**, because §6.2.2 has
+     * the sending privilege granted on *their* Outbox — and finding them
+     * twice would be two readings of `DAV:owner` that a store is free to
+     * answer differently. So they find the owner once and ask this for the
+     * addresses.
+     *
+     * @param array{string, Principal} $owner As {@see self::ownerAt()}
+     *                                        answers
+     *
+     * @return list<string>
+     */
+    private function addressesOf(array $owner): array
+    {
         [$where, $who] = $owner;
 
         return self::hrefsIn(

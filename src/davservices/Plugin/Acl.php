@@ -31,6 +31,7 @@ use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\ListingMembers;
 use DavServices\Dav\Event\OptionsRequested;
+use DavServices\Dav\Event\PrivilegeNeeded;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\INode;
@@ -204,6 +205,10 @@ final class Acl
         $events->on(BeforeMove::class, $this->guardMoving(...));
         $events->on(PropertiesChanging::class, $this->guardChangingProperties(...));
         $events->on(ListingMembers::class, $this->concealWhatMayNotBeRead(...));
+
+        // And the one check that hangs on no seam of its own, because the
+        // privilege it is about is not on the path the request touches.
+        $events->on(PrivilegeNeeded::class, $this->sayWhatIsMissing(...));
 
         $this->answerTheReportsItOwes($report);
     }
@@ -393,6 +398,45 @@ final class Acl
                 $event->conceal($path);
             }
         }
+    }
+
+    /**
+     * Answers {@see PrivilegeNeeded}: a privilege wanted somewhere the
+     * request never named.
+     *
+     * **The seams above guard a path the request touches, and this one does
+     * not.** RFC 6638 §6.2.2 wants `CALDAV:schedule-send-invite` on an Outbox
+     * when a client writes to a calendar collection, and nothing in this
+     * plugin could know the two are connected. So the layer that does asks,
+     * and this answers — with the refusal rather than with a no, because
+     * §7.1.1's shape is built here and {@see self::needing()} is what builds
+     * it. The event says why that matters.
+     *
+     * **Silence is yes**, which is the one place this plugin does not fail
+     * closed, and it is not a decision taken here: an asker only reaches this
+     * through an event, so a deployment without this plugin has nobody to ask
+     * and gets no answer. What this answers it answers closed — a privilege
+     * that was not granted is missing — and the difference is between no
+     * grant and no access control.
+     *
+     * **Nothing is hidden here**, however R-ACL-06 is set. That setting is
+     * about a resource whose existence is a secret, and the asker already
+     * holds the one it was writing: a `404` for an Outbox it never named
+     * would answer a question nobody asked.
+     */
+    public function sayWhatIsMissing(PrivilegeNeeded $event): void
+    {
+        $path = $event->path();
+        $privilege = $event->privilege();
+
+        if ($this->heldOn($path)->has($privilege)) {
+            return;
+        }
+
+        $event->refuseWith(new Forbidden(
+            sprintf('Whoever is asking does not hold "%s" on "%s".', $privilege, $path),
+            $this->needing($path, $privilege),
+        ));
     }
 
     /**

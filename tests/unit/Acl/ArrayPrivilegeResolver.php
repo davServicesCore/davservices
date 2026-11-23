@@ -44,10 +44,15 @@ final class ArrayPrivilegeResolver implements IPrivilegeResolver
      *                                                          nobody being
      *                                                          signed in
      *                                                          (RFC 3744 §5.5.1)
+     * @param Privilege|null $tree What this server can be asked to grant,
+     *                             where the rules name something outside
+     *                             RFC 3744 §3 — the scheduling privileges of
+     *                             RFC 6638 §6, say, which a deployment hangs
+     *                             on its Inbox and Outbox collections
      */
-    public function __construct(private readonly array $rules)
+    public function __construct(private readonly array $rules, ?Privilege $tree = null)
     {
-        $this->tree = Privilege::standard();
+        $this->tree = $tree ?? Privilege::standard();
     }
 
     /**
