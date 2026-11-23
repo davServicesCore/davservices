@@ -45,8 +45,19 @@ use DavServices\Xml\Element;
  */
 final class DeadProperties
 {
-    public function __construct(private readonly IPropertyStorageBackend $storage)
-    {
+    /**
+     * @param list<string> $withheldFromEverything Names this plugin keeps out
+     *                                             of an `allprop` answer, as `{namespace}localname`.
+     *                                             Empty by default, because RFC 4918 §9.1 asks for
+     *                                             "all custom properties" there and a deployment's
+     *                                             own are exactly what that means — see
+     *                                             {@see self::theNamesKeptAt()} for the ones that
+     *                                             ask to be left out.
+     */
+    public function __construct(
+        private readonly IPropertyStorageBackend $storage,
+        private readonly array $withheldFromEverything = [],
+    ) {
     }
 
     /**
@@ -151,13 +162,51 @@ final class DeadProperties
     private function namesToAnswer(PropFindResult $result, string $path): array
     {
         $candidates = $result->form() === PropFindForm::Everything
-            ? $this->storage->propertyNames($path)
+            ? $this->theNamesKeptAt($path)
             : $result->stillWanted();
 
         $names = [];
 
         foreach ($candidates as $name) {
             if ($result->wants($name)) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * The names the store keeps here, less the ones a memo withholds from
+     * `allprop`.
+     *
+     * **Only this can keep that sentence for a stored property.** RFC 4791
+     * §5.2.3 to §5.2.9 and RFC 6638 §2.1.1, §2.2.1 and §9.1 each close with
+     * "SHOULD NOT be returned by a PROPFIND DAV:allprop request". A plugin
+     * answering such a property of its own keeps it by asking
+     * {@see PropFindResult::wasNamed()}; one a **deployment** keeps is found
+     * by its name in the store, and `allprop` is the one request that asks
+     * the store what there is.
+     *
+     * **Which deployments those are is theirs to say**, so the list is a
+     * parameter rather than a constant here. §9.1 is why: "This property
+     * SHOULD be defined on all calendar collections" puts
+     * `CALDAV:schedule-calendar-transp` on the deployment, and the plain way
+     * to define a property is to store it. This plugin knows nothing of
+     * CalDAV, and the names live where the memo does —
+     * {@see \DavServices\Plugin\Scheduling::WITHHELD_FROM_ALLPROP}.
+     *
+     * **Named, it is answered all the same.** The sentence is about what
+     * comes unasked, and a `prop` request never reaches here.
+     *
+     * @return list<string>
+     */
+    private function theNamesKeptAt(string $path): array
+    {
+        $names = [];
+
+        foreach ($this->storage->propertyNames($path) as $name) {
+            if (!in_array($name, $this->withheldFromEverything, true)) {
                 $names[] = $name;
             }
         }

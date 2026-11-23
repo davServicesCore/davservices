@@ -59,6 +59,15 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(DeadProperties::class)]
 final class DeadPropertiesTest extends TestCase
 {
+    /**
+     * RFC 6638 §9.1's property, written out rather than borrowed from
+     * {@see \DavServices\Plugin\Scheduling}: this plugin knows nothing of
+     * CalDAV and the cases below are about a name, not about that memo.
+     * {@see \DavServices\Tests\Unit\Plugin\SchedulingTest} is where the
+     * library's own list of such names is held to its sections.
+     */
+    private const TRANSPARENCY = '{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp';
+
     public function testAnswersAKeptPropertyThatWasAskedForByName(): void
     {
         $storage = new MemoryPropertyStorage();
@@ -82,6 +91,79 @@ final class DeadPropertiesTest extends TestCase
         $answers = $this->answers($storage, PropFindForm::Everything);
 
         self::assertSame(['{http://apple.com/ns/ical/}calendar-color' => '#711A76'], $answers);
+    }
+
+    /**
+     * **And one whose memo withholds it from `allprop` is left out of it.**
+     *
+     * RFC 4791 §5.2.3 to §5.2.9 and RFC 6638 §2.1.1, §2.2.1 and §9.1 each
+     * close with "SHOULD NOT be returned by a PROPFIND DAV:allprop request".
+     * A plugin that answers such a property of its own keeps that by asking
+     * {@see PropFindResult::wasNamed()}. One a **deployment** keeps is found
+     * by its name in the store, and `allprop` is precisely the request that
+     * asks the store what there is — so nothing but this could keep the
+     * sentence for it.
+     *
+     * §9.1's `CALDAV:schedule-calendar-transp` is what this matters for.
+     * "This property SHOULD be defined on all calendar collections" puts it
+     * on the deployment, and the plain way for a deployment to define a
+     * property is to store it.
+     */
+    public function testAPropertyWithheldFromAllPropIsLeftOutOfIt(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', [self::TRANSPARENCY => '<C:opaque/>']);
+
+        $answers = $this->answers($storage, PropFindForm::Everything, withheld: [self::TRANSPARENCY]);
+
+        self::assertSame([], $answers);
+    }
+
+    /**
+     * **Withheld from `allprop` is not withheld from a client that names
+     * it.** The sentence is about what comes unasked; asked for, the property
+     * is a dead property like any other, and a deployment that stores one
+     * stores it to be read.
+     */
+    public function testAPropertyWithheldFromAllPropIsAnsweredWhenNamed(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', [self::TRANSPARENCY => '<C:opaque/>']);
+
+        $answers = $this->answers(
+            $storage,
+            PropFindForm::Named,
+            [self::TRANSPARENCY],
+            withheld: [self::TRANSPARENCY],
+        );
+
+        self::assertSame([self::TRANSPARENCY => '<C:opaque/>'], $answers);
+    }
+
+    /**
+     * **And every name nobody withheld still comes with `allprop`**, which is
+     * the half that says this list refuses nothing else.
+     *
+     * **Two of them, beside the withheld one.** One would say only that
+     * something came through; the mutation run found that a list cut down to
+     * its first entry passed every case there was, because no case had a
+     * second entry to lose.
+     */
+    public function testEveryNameNobodyWithheldStillComesWithAllProp(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $storage->patchProperties('work.ics', [
+            '{http://apple.com/ns/ical/}calendar-color' => '#711A76',
+            self::TRANSPARENCY => '<C:opaque/>',
+            '{DAV:}displayname' => 'Work',
+        ]);
+
+        $answers = $this->answers($storage, PropFindForm::Everything, withheld: [self::TRANSPARENCY]);
+
+        self::assertSame([
+            '{http://apple.com/ns/ical/}calendar-color' => '#711A76',
+            '{DAV:}displayname' => 'Work',
+        ], $answers);
     }
 
     /**
@@ -372,6 +454,7 @@ final class DeadPropertiesTest extends TestCase
 
     /**
      * @param list<string> $names
+     * @param list<string> $withheld
      *
      * @return array<string, Element|string|null>
      */
@@ -379,10 +462,12 @@ final class DeadPropertiesTest extends TestCase
         MemoryPropertyStorage $storage,
         PropFindForm $form,
         array $names = [],
+        array $withheld = [],
     ): array {
         $result = new PropFindResult('work.ics', $form, $names);
 
-        (new DeadProperties($storage))->answer(new PropertiesRequested($result, new StreamFile('work.ics')));
+        (new DeadProperties($storage, $withheld))
+            ->answer(new PropertiesRequested($result, new StreamFile('work.ics')));
 
         return $result->byStatus()[200] ?? [];
     }
