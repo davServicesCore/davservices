@@ -46,6 +46,14 @@ use DavServices\Xml\Element;
 final class DeadProperties
 {
     /**
+     * RFC 4918 §9.2, for a `PROPPATCH` that goes for one of these: „If
+     * returning this error, the server SHOULD use the precondition code
+     * 'cannot-modify-protected-property' inside the response body." The
+     * element itself is §16's, and the status it goes with is `403`.
+     */
+    private const CANNOT_MODIFY_PROTECTED = '{DAV:}cannot-modify-protected-property';
+
+    /**
      * @param list<string> $withheldFromEverything Names this plugin keeps out
      *                                             of an `allprop` answer, as `{namespace}localname`.
      *                                             Empty by default, because RFC 4918 §9.1 asks for
@@ -53,10 +61,17 @@ final class DeadProperties
      *                                             own are exactly what that means — see
      *                                             {@see self::theNamesKeptAt()} for the ones that
      *                                             ask to be left out.
+     * @param list<string> $protectedFromChange Names a client may not change,
+     *                                          refused with RFC 4918 §9.2's
+     *                                          `{DAV:}cannot-modify-protected-property`. Empty by
+     *                                          default, because a dead property is the client's to
+     *                                          write — see {@see self::keep()} for the ones a
+     *                                          memo lets a deployment take back.
      */
     public function __construct(
         private readonly IPropertyStorageBackend $storage,
         private readonly array $withheldFromEverything = [],
+        private readonly array $protectedFromChange = [],
     ) {
     }
 
@@ -106,7 +121,27 @@ final class DeadProperties
      *
      * Nothing is written here: the writers run once the whole request has been
      * agreed to, which is what keeps a refused `PROPPATCH` from leaving half
-     * of itself behind (R-DAV-05).
+     * of itself behind (R-DAV-05). A name refused below therefore takes the
+     * rest of its request with it, which RFC 4918 §9.2 asks for in as many
+     * words: "If one instruction fails, no instructions are executed."
+     *
+     * **And a name a deployment declared protected is refused here, because
+     * nowhere else could.** A dead property is the client's to write, so the
+     * list is empty by default. What fills it are the properties a memo lets
+     * a deployment take back — and the memos say it conditionally, which
+     * is why the names are not a constant of this library's:
+     *
+     * - RFC 6638 §9.1, of `CALDAV:schedule-calendar-transp`: "This
+     *   property MAY be protected." A deployment that lets a client choose
+     *   whether its calendar counts towards busy time is as conformant as one
+     *   that does not.
+     * - §9.2, of `CALDAV:schedule-default-calendar-URL`: "This property
+     *   MAY be protected **in the case where a server does not support
+     *   changing the default calendar**, or does not support a default
+     *   calendar." Which is a condition only the deployment knows.
+     *
+     * A library that protected either by itself would answer a question the
+     * memos put to somebody else.
      */
     public function keep(PropertiesChanging $event): void
     {
@@ -118,6 +153,12 @@ final class DeadProperties
         $path = $result->path();
 
         foreach (array_keys($result->open()) as $name) {
+            if (in_array($name, $this->protectedFromChange, true)) {
+                $result->set($name, 403, self::CANNOT_MODIFY_PROTECTED);
+
+                continue;
+            }
+
             $result->willWrite($name, function (Element|string|null $value) use ($path, $name): void {
                 $this->storage->patchProperties($path, [$name => $value]);
             });
