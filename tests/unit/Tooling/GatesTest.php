@@ -218,6 +218,50 @@ final class GatesTest extends TestCase
     }
 
     /**
+     * **The mutation gate gives PHP more memory than the default, because its
+     * own report needs it.**
+     *
+     * Measured on 23.11.2026: a full run over `src/` generates 8951 mutants,
+     * finishes them all, prints its figures — 97% MSI and 98% covered, both
+     * over the thresholds this gate sets — and then dies writing a report:
+     *
+     * > PHP Fatal error: Allowed memory size of 536870912 bytes exhausted
+     * > (tried to allocate 12587008 bytes) in
+     * > vendor/thecodingmachine/safe/generated/8.1/json.php
+     *
+     * The run exits 255 all the same, so **a gate that had passed reported
+     * failure**, which is worse than one that does not run: the figures were
+     * there to read and the exit code said to ignore them.
+     *
+     * **The figure is measured rather than guessed.** The same run with the
+     * limit raised finishes and reports `Memory: 0.54GB` — so the gate wants
+     * about 540 MB and the default offers 512, and it was failing by some
+     * twenty-eight. `1G` is not quite twice what was measured, which is
+     * headroom for a tree that grows rather than a number chosen to look
+     * generous.
+     *
+     * The limit belongs on the invocation rather than in `php.ini`, because a
+     * gate that needs an environment nobody can see from the repository is a
+     * gate that works on one machine.
+     */
+    public function testTheMutationGateRaisesTheMemoryLimit(): void
+    {
+        $mutation = self::scripts()['mutation'] ?? null;
+
+        self::assertIsArray($mutation);
+
+        $running = array_values(array_filter(
+            $mutation,
+            static fn (mixed $step): bool => is_string($step) && str_contains($step, 'infection '),
+        ));
+
+        $step = $running[0] ?? self::fail('One step of the mutation gate runs Infection.');
+
+        self::assertCount(1, $running, 'Only one step of it runs Infection.');
+        self::assertStringContainsString('-d memory_limit=', $step);
+    }
+
+    /**
      * **An unknown stage is refused**, so that a hook named after something
      * nobody wrote is an error rather than a hook that checks nothing.
      */
