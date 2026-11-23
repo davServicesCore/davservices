@@ -182,6 +182,31 @@ final class SchedulingTest extends TestCase
     }
 
     /**
+     * **The list of names a deployment must withhold from `allprop` is
+     * §9.1's property, and nothing else.**
+     *
+     * §9.1 closes its Protected clause with "SHOULD NOT be returned by a
+     * PROPFIND DAV:allprop request" and in the same breath puts the property
+     * on the deployment, so it is stored — and a stored property is what
+     * `allprop` goes looking for. Only the thing reading the store can keep
+     * that sentence, so this plugin hands it the name.
+     *
+     * **§9.2 is not in the list**, and that is the case this makes: its
+     * Protected clause reads "This property MAY be protected in the case
+     * where a server does not support changing the default calendar, or does
+     * not support a default calendar" and stops there. Withholding
+     * `CALDAV:schedule-default-calendar-URL` would withhold what the memo
+     * lets through.
+     */
+    public function testWhatADeploymentWithholdsFromAllpropIsSection91sPropertyAlone(): void
+    {
+        self::assertSame(
+            ['{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp'],
+            Scheduling::WITHHELD_FROM_ALLPROP,
+        );
+    }
+
+    /**
      * **An Inbox publishes the three limits it keeps.**
      *
      * §2.2 lists eight properties of RFC 4791 that "MAY also be defined on

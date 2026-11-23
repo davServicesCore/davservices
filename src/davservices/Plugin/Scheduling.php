@@ -276,6 +276,36 @@ final class Scheduling
     private const TRANSPARENT = '{urn:ietf:params:xml:ns:caldav}transparent';
 
     /**
+     * The properties of this memo a deployment keeps that ask to be left out
+     * of an `allprop` answer.
+     *
+     * **One, and the list says which by saying why.** §9.1 closes its
+     * Protected clause with "SHOULD NOT be returned by a PROPFIND
+     * DAV:allprop request", and the same section puts the property on the
+     * deployment — "This property SHOULD be defined on all calendar
+     * collections" — so the plain way to define it is to store it, and a
+     * stored property is what `allprop` goes looking for. Nothing this plugin
+     * answers could keep that sentence for it; only the thing that reads the
+     * store can, which is why
+     * {@see \DavServices\Plugin\DeadProperties::__construct()} takes this
+     * list:
+     *
+     *     new DeadProperties($storage, Scheduling::WITHHELD_FROM_ALLPROP);
+     *
+     * **§9.2 is deliberately not here.** `CALDAV:schedule-default-calendar-URL`
+     * is a deployment's too, and its Protected clause carries no such
+     * sentence — "This property MAY be protected in the case where a server
+     * does not support changing the default calendar" and nothing further. A
+     * list that withheld it would withhold what the memo lets through.
+     *
+     * **And §2.1.1 and §2.2.1 are not here either**, although both do close
+     * with that sentence: those two are this plugin's own to answer, and
+     * {@see self::nameTheCollection()} keeps it for them by asking after the
+     * name. This list is for what somebody else keeps.
+     */
+    public const WITHHELD_FROM_ALLPROP = [self::TRANSPARENCY];
+
+    /**
      * RFC 3744 §5.3's own precondition for "there are more of these than I
      * will report", which {@see \DavServices\CalDav\Report\FreeBusyQuery}
      * answers the same computation with.
