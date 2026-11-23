@@ -270,6 +270,37 @@ final class DeadPropertiesTest extends TestCase
     }
 
     /**
+     * **And the names after it are still answered, with §9.2's own
+     * status.** RFC 4918 §9.2 does not stop at saying no instruction is
+     * executed; the response has to say as much of each of them:
+     *
+     * > 424 (Failed Dependency) status code for properties that would have
+     * > been modified but were not, in order to maintain the atomicity of
+     * > this method
+     *
+     * So the refusal passes over that name rather than giving up on the
+     * request: a client that is told nothing about `DAV:displayname` cannot
+     * tell a property it may not change from one the server never looked at.
+     * The mutation run found this — with the refusal **breaking** out of
+     * the walk instead of carrying on, every case still passed, because the
+     * protected name came last in all of them.
+     */
+    public function testTheNamesAfterARefusedOneAreAnsweredAsFailedDependencies(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $answer = (string) $this->server($storage, protectedFromChange: [self::TRANSPARENCY])
+            ->handle($this->propPatch(
+                self::SETTING_TRANSPARENCY
+                . '<D:set><D:prop><D:displayname>Work</D:displayname></D:prop></D:set>',
+            ))
+            ->body();
+
+        self::assertStringContainsString('424 Failed Dependency', $answer);
+        self::assertStringContainsString('<d:displayname/>', $answer);
+        self::assertSame([], $storage->propertyNames('work.ics'));
+    }
+
+    /**
      * **A name nobody protected is written as before**, which is the half
      * that says this list refuses nothing else — and the half §9.1's MAY
      * depends on, a deployment that declares nothing protected keeping every
