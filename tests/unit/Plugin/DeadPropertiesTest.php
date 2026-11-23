@@ -68,6 +68,11 @@ final class DeadPropertiesTest extends TestCase
      */
     private const TRANSPARENCY = '{urn:ietf:params:xml:ns:caldav}schedule-calendar-transp';
 
+    /** The same property as a client sends it, which §9.1 has two shapes of. */
+    private const SETTING_TRANSPARENCY = '<D:set><D:prop>'
+        . '<C:schedule-calendar-transp xmlns:C="urn:ietf:params:xml:ns:caldav"><C:transparent/>'
+        . '</C:schedule-calendar-transp></D:prop></D:set>';
+
     public function testAnswersAKeptPropertyThatWasAskedForByName(): void
     {
         $storage = new MemoryPropertyStorage();
@@ -216,6 +221,100 @@ final class DeadPropertiesTest extends TestCase
         (new DeadProperties($storage))->answer(new PropertiesRequested($result, new StreamFile('work.ics')));
 
         self::assertSame(['{DAV:}displayname' => 'What a plugin said first'], $result->byStatus()[200] ?? []);
+    }
+
+    /**
+     * **A name a deployment declared protected is refused, with the
+     * precondition that says why.**
+     *
+     * RFC 6638 §9.1: "This property **MAY** be protected". A MAY, so the
+     * library cannot decide it — a deployment that lets a client choose
+     * whether its calendar counts towards busy time is as conformant as one
+     * that does not. What the library owes is the means to say so, and for a
+     * property the deployment **stores** there was none: a `PROPPATCH` went
+     * straight through to the store.
+     *
+     * RFC 4918 §9.2 names the refusal:
+     * `{DAV:}cannot-modify-protected-property`, with `403`.
+     */
+    public function testAProtectedNameIsRefusedWithThePreconditionThatSaysWhy(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $answer = (string) $this->server($storage, protectedFromChange: [self::TRANSPARENCY])
+            ->handle($this->propPatch(self::SETTING_TRANSPARENCY))
+            ->body();
+
+        self::assertStringContainsString('403 Forbidden', $answer);
+        self::assertStringContainsString('cannot-modify-protected-property', $answer);
+        self::assertSame([], $storage->propertyNames('work.ics'));
+    }
+
+    /**
+     * **And the rest of that request is not written either.** RFC 4918 §9.2:
+     * "If one instruction fails, no instructions are executed." The writers
+     * run once the whole request has been agreed to, which is what this
+     * refusal has to leave standing — a protected property that took an
+     * unrelated change down with it would be right, and one that let the
+     * change through would not.
+     */
+    public function testARefusedProtectedNameLeavesTheRestOfThePatchUnwritten(): void
+    {
+        $storage = new MemoryPropertyStorage();
+
+        $this->server($storage, protectedFromChange: [self::TRANSPARENCY])->handle($this->propPatch(
+            '<D:set><D:prop><D:displayname>Work</D:displayname></D:prop></D:set>'
+            . self::SETTING_TRANSPARENCY,
+        ));
+
+        self::assertSame([], $storage->propertyNames('work.ics'));
+    }
+
+    /**
+     * **And the names after it are still answered, with §9.2's own
+     * status.** RFC 4918 §9.2 does not stop at saying no instruction is
+     * executed; the response has to say as much of each of them:
+     *
+     * > 424 (Failed Dependency) status code for properties that would have
+     * > been modified but were not, in order to maintain the atomicity of
+     * > this method
+     *
+     * So the refusal passes over that name rather than giving up on the
+     * request: a client that is told nothing about `DAV:displayname` cannot
+     * tell a property it may not change from one the server never looked at.
+     * The mutation run found this — with the refusal **breaking** out of
+     * the walk instead of carrying on, every case still passed, because the
+     * protected name came last in all of them.
+     */
+    public function testTheNamesAfterARefusedOneAreAnsweredAsFailedDependencies(): void
+    {
+        $storage = new MemoryPropertyStorage();
+        $answer = (string) $this->server($storage, protectedFromChange: [self::TRANSPARENCY])
+            ->handle($this->propPatch(
+                self::SETTING_TRANSPARENCY
+                . '<D:set><D:prop><D:displayname>Work</D:displayname></D:prop></D:set>',
+            ))
+            ->body();
+
+        self::assertStringContainsString('424 Failed Dependency', $answer);
+        self::assertStringContainsString('<d:displayname/>', $answer);
+        self::assertSame([], $storage->propertyNames('work.ics'));
+    }
+
+    /**
+     * **A name nobody protected is written as before**, which is the half
+     * that says this list refuses nothing else — and the half §9.1's MAY
+     * depends on, a deployment that declares nothing protected keeping every
+     * property a client may change.
+     */
+    public function testANameNobodyProtectedIsWrittenAsBefore(): void
+    {
+        $storage = new MemoryPropertyStorage();
+
+        $this->server($storage, protectedFromChange: [self::TRANSPARENCY])->handle(
+            $this->propPatch('<D:set><D:prop><D:displayname>Work</D:displayname></D:prop></D:set>'),
+        );
+
+        self::assertSame(['{DAV:}displayname'], $storage->propertyNames('work.ics'));
     }
 
     /**
@@ -481,11 +580,14 @@ final class DeadPropertiesTest extends TestCase
         return (new MemoryCollection(''))->add(new StreamFile('work.ics'));
     }
 
-    private function server(MemoryPropertyStorage $storage): Server
+    /**
+     * @param list<string> $protectedFromChange
+     */
+    private function server(MemoryPropertyStorage $storage, array $protectedFromChange = []): Server
     {
         $events = new EventEmitter();
 
-        (new DeadProperties($storage))->registerOn($events);
+        (new DeadProperties($storage, protectedFromChange: $protectedFromChange))->registerOn($events);
 
         return $this->serverFor($this->tree(), $events);
     }
