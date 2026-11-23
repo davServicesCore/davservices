@@ -45,9 +45,16 @@ use PHPUnit\Framework\TestCase;
  * of a calendar are **not** in this sentence: `CALDAV:min-date-time` and
  * `CALDAV:max-date-time`, and the kind of component. Each has a case here
  * saying so, because a guard that refuses more than its sentence allows is as
- * wrong as one that refuses less — and refusing an invitation for a distant
- * year, or a `VTODO` a calendar does not take, would turn a limit meant
- * against exhaustion into a filter on what may be delivered.
+ * wrong as one that refuses less.
+ *
+ * **Which is a choice this server makes, not one the memo makes for it**, and
+ * an earlier wording here claimed otherwise. §2.2 lets all five be defined on
+ * an Inbox — "MAY also be defined on scheduling Inbox collections **and apply
+ * to scheduling messages delivered to the collection**" — so a server that
+ * published `CALDAV:min-date-time` there would hold deliveries to it and be
+ * right to. This one publishes exactly the three it keeps
+ * ({@see \DavServices\Plugin\Scheduling::INBOX_LIMITS}), so none of the five
+ * applies here; §11.1 asks for the three and is silent on the rest.
  *
  * **"As applicable" is what decides the Outbox, and it decides it away.**
  * All three preconditions are about a calendar object resource being
@@ -182,8 +189,11 @@ final class SchedulingLimitsTest extends TestCase
      * **A date outside the server's range is taken all the same.** §11.1 does
      * not name `CALDAV:min-date-time` or `CALDAV:max-date-time`, and neither
      * is about exhausting a server: an invitation to a distant year is one
-     * instance like any other. Refusing it would make this limit a filter on
-     * what may be delivered.
+     * instance like any other.
+     *
+     * **This server therefore does not publish them on an Inbox**, and that
+     * is the whole of why they do not apply — §2.2 would let it, and then
+     * they would. See {@see \DavServices\Plugin\Scheduling::INBOX_LIMITS}.
      */
     public function testADateOutsideTheServersRangeIsTakenInAnInbox(): void
     {

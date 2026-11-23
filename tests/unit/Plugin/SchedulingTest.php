@@ -15,6 +15,7 @@ namespace DavServices\Tests\Unit\Plugin;
 
 use DavServices\Acl\Principal;
 use DavServices\CalDav\Calendar;
+use DavServices\CalDav\Limits;
 use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\Schedule\Outbox;
 use DavServices\Dav\Acl\PrincipalInfo;
@@ -178,6 +179,162 @@ final class SchedulingTest extends TestCase
         // quietly cost.
         self::assertStringContainsString('<d:resourcetype>', $withheld);
         self::assertStringContainsString($property, $included);
+    }
+
+    /**
+     * **An Inbox publishes the three limits it keeps.**
+     *
+     * §2.2 lists eight properties of RFC 4791 that "MAY also be defined on
+     * scheduling Inbox collections **and apply to scheduling messages
+     * delivered to the collection**". It is a MAY, and the second half is
+     * what decides which of the eight: a property written there promises that
+     * it **applies**, so publishing one this server does not keep would
+     * promise an enforcement that is not there.
+     *
+     * Three are kept, §11.1's own three, by
+     * {@see \DavServices\CalDav\Limits::mustTakeASchedulingObject()}. Those
+     * three are published.
+     */
+    public function testAnInboxPublishesTheThreeLimitsItKeeps(): void
+    {
+        $answer = $this->asking(
+            '<C:max-resource-size/><C:max-instances/><C:max-attendees-per-instance/>',
+            '/calendars/bernard/inbox',
+        );
+
+        self::assertStringContainsString('max-resource-size>10485760<', $answer);
+        self::assertStringContainsString('max-instances>5000<', $answer);
+        self::assertStringContainsString('max-attendees-per-instance>250<', $answer);
+        self::assertStringNotContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * **And withholds the five it does not keep**, which is the same sentence
+     * read the other way. `min-date-time` and `max-date-time` bound what a
+     * calendar is willing to keep and nothing here holds a delivery to them;
+     * `supported-calendar-component-set` and `supported-calendar-data` say
+     * what a calendar takes, and §2.2 itself lifts §4.1's restrictions off an
+     * Inbox; `calendar-timezone` is a default for a client's queries, and an
+     * Inbox answers no query.
+     *
+     * Publishing any of them would be a promise this server does not keep.
+     */
+    #[DataProvider('theLimitsAnInboxDoesNotKeep')]
+    public function testAnInboxWithholdsALimitItDoesNotKeep(string $property): void
+    {
+        $answer = $this->asking('<C:' . $property . '/>', '/calendars/bernard/inbox');
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function theLimitsAnInboxDoesNotKeep(): iterable
+    {
+        foreach ([
+            'min-date-time',
+            'max-date-time',
+            'supported-calendar-component-set',
+            'supported-calendar-data',
+            'calendar-timezone',
+        ] as $property) {
+            yield $property => [$property];
+        }
+    }
+
+    /**
+     * **An Outbox publishes the two it keeps, which are not the Inbox's
+     * three.** §2.1 gives it a list of its own — six, without
+     * `max-instances` and without `calendar-timezone` — and they "apply to
+     * scheduling messages submitted to the scheduling Outbox collection
+     * **with the POST method**".
+     *
+     * What this server holds a `POST` to is the range it asks about, against
+     * `CALDAV:min-date-time` and `CALDAV:max-date-time`
+     * ({@see \DavServices\CalDav\Limits::mustTakeTheRange()}). So those two
+     * are published there and the Inbox's three are not: nothing can be
+     * stored in an Outbox at all, §2.1 reserving what such a resource would
+     * mean.
+     */
+    public function testAnOutboxPublishesTheTwoDateLimitsItKeeps(): void
+    {
+        $answer = $this->asking('<C:min-date-time/><C:max-date-time/>', '/calendars/bernard/outbox');
+
+        self::assertStringContainsString('min-date-time>19000101T000000Z<', $answer);
+        self::assertStringContainsString('max-date-time>20991231T235959Z<', $answer);
+        self::assertStringNotContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * **And withholds the rest**, including the three the Inbox publishes:
+     * `max-resource-size` and `max-attendees-per-instance` stand in §2.1's
+     * list but are about a resource being stored, which an Outbox never
+     * does, and `max-instances` is not in that list at all.
+     */
+    #[DataProvider('theLimitsAnOutboxDoesNotKeep')]
+    public function testAnOutboxWithholdsALimitItDoesNotKeep(string $property): void
+    {
+        $answer = $this->asking('<C:' . $property . '/>', '/calendars/bernard/outbox');
+
+        self::assertStringContainsString('404 Not Found', $answer);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function theLimitsAnOutboxDoesNotKeep(): iterable
+    {
+        foreach ([
+            'max-resource-size',
+            'max-instances',
+            'max-attendees-per-instance',
+            'supported-calendar-component-set',
+            'supported-calendar-data',
+        ] as $property) {
+            yield $property => [$property];
+        }
+    }
+
+    /**
+     * **Withheld from `allprop` like every other limit.** RFC 4791 §5.2.5 to
+     * §5.2.9 each close with "SHOULD NOT be returned by a PROPFIND
+     * DAV:allprop request", and borrowing a property onto another collection
+     * borrows that sentence with it — these are limits, uninteresting in
+     * bulk, and listing them on every collection of a response is what the
+     * line exists to prevent.
+     */
+    public function testTheLimitsOfASchedulingCollectionAreWithheldFromAllprop(): void
+    {
+        $withheld = $this->askingWhole('<D:allprop/>', '/calendars/bernard/inbox');
+
+        self::assertStringNotContainsString('max-resource-size', $withheld);
+        // And it was an allprop request at all.
+        self::assertStringContainsString('<d:resourcetype>', $withheld);
+        self::assertStringContainsString(
+            'max-resource-size>10485760<',
+            $this->askingWhole(
+                '<D:allprop/><D:include><C:max-resource-size/></D:include>',
+                '/calendars/bernard/inbox',
+            ),
+        );
+    }
+
+    /**
+     * **The figures published are the ones the plugin was given**, so that
+     * what a client reads is what the guard will hold it to rather than a
+     * default written out beside a limit somebody lowered.
+     */
+    public function testTheLimitsPublishedAreTheOnesItWasGiven(): void
+    {
+        $answer = $this->asking(
+            '<C:max-resource-size/><C:max-instances/>',
+            '/calendars/bernard/inbox',
+            limits: new Limits(maxResourceSize: 1024, maxInstances: 7),
+        );
+
+        self::assertStringContainsString('max-resource-size>1024<', $answer);
+        self::assertStringContainsString('max-instances>7<', $answer);
     }
 
     /**
@@ -369,14 +526,22 @@ final class SchedulingTest extends TestCase
         return $names;
     }
 
-    private function asking(string $properties, string $path, ?Element $homeSet = null): string
-    {
-        return $this->askingWhole('<D:prop>' . $properties . '</D:prop>', $path, $homeSet);
+    private function asking(
+        string $properties,
+        string $path,
+        ?Element $homeSet = null,
+        ?Limits $limits = null,
+    ): string {
+        return $this->askingWhole('<D:prop>' . $properties . '</D:prop>', $path, $homeSet, $limits);
     }
 
-    private function askingWhole(string $body, string $path, ?Element $homeSet = null): string
-    {
-        return (string) $this->server($homeSet)->handle(new Request(
+    private function askingWhole(
+        string $body,
+        string $path,
+        ?Element $homeSet = null,
+        ?Limits $limits = null,
+    ): string {
+        return (string) $this->server($homeSet, $limits)->handle(new Request(
             'PROPFIND',
             $path,
             headers: new Headers(['Depth' => '0']),
@@ -399,7 +564,7 @@ final class SchedulingTest extends TestCase
      * publishes as a principal's calendar home is where the collections are
      * looked for.
      */
-    private function server(?Element $homeSet = null): Server
+    private function server(?Element $homeSet = null, ?Limits $limits = null): Server
     {
         $events = new EventEmitter();
 
@@ -449,7 +614,7 @@ final class SchedulingTest extends TestCase
 
         $server->onMethod('PROPFIND', (new PropFind($server))(...));
 
-        (new Scheduling($server))->register();
+        (new Scheduling($server, limits: $limits ?? new Limits()))->register();
 
         return $server;
     }
