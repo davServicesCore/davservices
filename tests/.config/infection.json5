@@ -8,6 +8,26 @@
     "source": {
         "directories": ["src"]
     },
+    // These reports are why `composer mutation` runs PHP with a raised
+    // memory limit. Measured on 23.11.2026 at the 512 MB default: a full run
+    // generates 8951 mutants, finishes every one of them, prints 97% MSI and
+    // 98% covered — both over the thresholds below — and then dies at
+    // `Generated Reports:` with "Allowed memory size of 536870912 bytes
+    // exhausted" inside thecodingmachine/safe's json.php, exiting 255. So the
+    // gate reported failure on a run that had passed, which is worse than one
+    // that does not run: the figures were there to read and the exit code
+    // said to ignore them.
+    //
+    // The same run with the limit raised reports `Memory: 0.54GB` and exits
+    // 0, so the gate wants about 540 MB where the default offers 512: it was
+    // failing by some twenty-eight. The 1G in `composer.json` is not quite
+    // twice the measured peak, which is headroom for a tree that grows.
+    //
+    // The reports are kept rather than thinned, because what a mutation run
+    // is for is the list of survivors, and the HTML report is where that list
+    // can be read. The limit is set on the invocation in `composer.json`
+    // instead of in `php.ini`, so that the figure travels with the
+    // repository.
     "logs": {
         "text": "../../build/test/log/infection.log",
         "html": "../../build/test/log/infection.html",
