@@ -269,6 +269,76 @@ final class Limits
      */
     public function mustTake(string $bytes, Component $object, array $kinds): void
     {
+        $this->mustNotBeTooLarge($bytes);
+        $this->mustBeTheVersionItKeeps($object);
+        $this->mustBeAKindItKeeps($object, $kinds);
+        $this->mustNotCrowdAnInstance($object);
+        $this->mustBeWithinTheDates($object);
+        $this->mustNotGenerateTooMany($object);
+    }
+
+    /**
+     * Holds what a client writes into a scheduling collection to the three
+     * preconditions RFC 6638 §11.1 names, and to no others.
+     *
+     * > Servers MUST ensure that clients cannot consume excessive server
+     * > resources by carrying out "large" scheduling operations. In
+     * > particular, servers SHOULD enforce CALDAV:max-resource-size,
+     * > CALDAV:max-instances, and CALDAV:max-attendees-per-instance
+     * > preconditions as applicable for scheduling Inbox and Outbox
+     * > collections.
+     *
+     * **Three are named, and the other three questions
+     * {@see self::mustTake()} asks are not.** `CALDAV:min-date-time` and
+     * `CALDAV:max-date-time` bound what a calendar is willing to **keep**,
+     * and `CALDAV:supported-calendar-component-set` says which kinds one
+     * holds; neither is about a client exhausting a server, and either one
+     * applied here would turn a limit against exhaustion into a filter on
+     * what may be delivered. An invitation to a distant year is one instance
+     * like any other, and RFC 5546 carries `VTODO` and `VJOURNAL` as readily
+     * as `VEVENT`.
+     *
+     * **The size is asked of the octets alone**, before anything is parsed,
+     * because §5.3.2.1 asks it of them: "The resource submitted in the PUT
+     * request MUST have an octet size less than or equal to the value of the
+     * CALDAV:max-resource-size property value." A body too large to keep
+     * costs nothing to refuse and need not be read first — which is what the
+     * MUST above the SHOULD asks for, the sentence being about carrying out
+     * rather than about answering.
+     *
+     * **Which is also why the body need not be a calendar object at all.**
+     * The octets are asked of whatever arrived; the other two are asked of an
+     * object, and where there is none there is no instance to count and no
+     * attendee to crowd it. What may be written into an Inbox is §2.2's
+     * question and is answered elsewhere — this sentence is about size.
+     *
+     * @param string $bytes The resource as it arrived, which is what §5.2.5
+     *                      measures
+     * @param Component|null $object What it reads as, or null where it reads
+     *                               as no calendar object
+     *
+     * @throws PayloadTooLarge If it is larger than §5.2.5 allows
+     * @throws Forbidden If an instance count or an attendee count is outside
+     *                   what this server keeps
+     */
+    public function mustTakeASchedulingObject(string $bytes, ?Component $object): void
+    {
+        $this->mustNotBeTooLarge($bytes);
+
+        if ($object === null) {
+            return;
+        }
+
+        $this->mustNotCrowdAnInstance($object);
+        $this->mustNotGenerateTooMany($object);
+    }
+
+    /**
+     * @throws PayloadTooLarge If the octets that arrived are more than §5.2.5
+     *                         allows
+     */
+    private function mustNotBeTooLarge(string $bytes): void
+    {
         if (strlen($bytes) > $this->maxResourceSize) {
             throw new PayloadTooLarge(
                 sprintf(
@@ -278,12 +348,6 @@ final class Limits
                 self::MAX_RESOURCE_SIZE,
             );
         }
-
-        $this->mustBeTheVersionItKeeps($object);
-        $this->mustBeAKindItKeeps($object, $kinds);
-        $this->mustNotCrowdAnInstance($object);
-        $this->mustBeWithinTheDates($object);
-        $this->mustNotGenerateTooMany($object);
     }
 
     /**
