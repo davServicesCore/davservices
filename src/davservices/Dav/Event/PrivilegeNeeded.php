@@ -81,10 +81,15 @@ final class PrivilegeNeeded extends Event
      *                     the tree — not the one the request named
      * @param string $privilege Its name, as a privilege appears in
      *                          `DAV:supported-privilege-set`
+     * @param string|null $principal Who is asked about, as the path of their
+     *                               principal inside the tree; null asks
+     *                               about whoever is making the request, and
+     *                               is the ordinary case
      */
     public function __construct(
         private readonly string $path,
         private readonly string $privilege,
+        private readonly ?string $principal = null,
     ) {
     }
 
@@ -102,6 +107,33 @@ final class PrivilegeNeeded extends Event
     public function privilege(): string
     {
         return $this->privilege;
+    }
+
+    /**
+     * Whose holding of it is in question, or null for whoever is asking.
+     *
+     * **Somebody other than the asker is the second thing this seam is for.**
+     * RFC 6638 §6.1 grants on a recipient's scheduling Inbox collection, and
+     * says whose grant it is looking at: the privileges "determine whether
+     * delivery of scheduling messages **from a calendar user** is allowed by
+     * the calendar user who 'owns' the scheduling Inbox collection. This
+     * allows calendar users to choose which other calendar users can schedule
+     * with them."
+     *
+     * The calendar user sending need not be the one signed in — a delegate
+     * writes an event that goes out in the organizer's name — so a seam that
+     * could only ask about the asker would answer a different question, and
+     * would both let anybody schedule with anybody who could write somewhere
+     * and refuse a delegate acting for somebody the recipient *had* granted.
+     *
+     * **Null is not "nobody".** It means the question is about this request's
+     * own asker, which is what every other check on this server is about;
+     * nobody signed in is a case of that and is answered the way it is
+     * everywhere ({@see CurrentPrincipalRequested}).
+     */
+    public function principal(): ?string
+    {
+        return $this->principal;
     }
 
     /**

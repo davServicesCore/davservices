@@ -440,6 +440,51 @@ final class AclEnforcementTest extends TestCase
         $named = $privilege->children()[0] ?? self::fail('The privilege names nothing.');
 
         self::assertSame('{DAV:}bind', $named->name());
+
+        // The message is protocol too, RFC 4918 §14.5 putting it in
+        // `DAV:responsedescription` — "a message that might be presented to
+        // the user".
+        self::assertSame(
+            '"{DAV:}bind" is not held on "calendars/work.ics" by whoever is asking.',
+            $refusal->getMessage(),
+        );
+    }
+
+    /**
+     * **And a question about somebody else says whose holding it was.** RFC
+     * 6638 §6.1 asks what the *sending* calendar user holds on a recipient's
+     * Inbox, who need not be the one signed in — so a refusal that still
+     * said "whoever is asking" would describe the wrong calendar user to
+     * whoever read it.
+     */
+    public function testItSaysWhoDoesNotHoldItWhereTheQuestionNamesSomebody(): void
+    {
+        $event = new PrivilegeNeeded('calendars/work.ics', '{DAV:}bind', 'principals/bob');
+
+        $this->plugin(['calendars/work.ics' => ['{DAV:}bind']])->sayWhatIsMissing($event);
+
+        $refusal = $event->refusal() ?? self::fail('Nothing was refused.');
+
+        self::assertSame(
+            '"{DAV:}bind" is not held on "calendars/work.ics" by "principals/bob".',
+            $refusal->getMessage(),
+        );
+    }
+
+    /**
+     * **And a principal the question names holds what was granted to them**,
+     * which is the other half: Alice is signed in and holds nothing here,
+     * while Bob does — so an answer that looked at the asker would get this
+     * exactly backwards.
+     */
+    public function testAPrincipalTheQuestionNamesIsAskedAboutRatherThanTheAsker(): void
+    {
+        $event = new PrivilegeNeeded('calendars/work.ics', '{DAV:}read', 'principals/bob');
+
+        $this->plugin([], ['/principals/bob' => ['calendars/work.ics' => ['{DAV:}read']]])
+            ->sayWhatIsMissing($event);
+
+        self::assertNull($event->refusal());
     }
 
     /**
@@ -551,9 +596,17 @@ final class AclEnforcementTest extends TestCase
      * The plugin on a server of its own, with Alice signed in and holding
      * what the test says she holds.
      *
-     * @param array<string, list<string>> $granted
+     * @param array<string, list<string>> $granted What Alice holds, by path
+     * @param array<string, array<string, list<string>>> $others What anybody
+     *                                                           else holds,
+     *                                                           for a
+     *                                                           question that
+     *                                                           names a
+     *                                                           principal
+     *                                                           other than
+     *                                                           the asker
      */
-    private function plugin(array $granted): Acl
+    private function plugin(array $granted, array $others = []): Acl
     {
         $server = $this->server();
 
@@ -562,7 +615,7 @@ final class AclEnforcementTest extends TestCase
             static fn (CurrentPrincipalRequested $event) => $event->answerWith('principals/alice'),
         );
 
-        $acl = new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted]));
+        $acl = new Acl($server, new ArrayPrivilegeResolver([self::ALICE => $granted, ...$others]));
 
         $acl->register(new Report($server));
         $acl->guardTheRequest(new BeforeMethod(new Request('OPTIONS', '/calendars/work.ics')));
