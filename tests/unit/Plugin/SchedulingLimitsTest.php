@@ -91,6 +91,30 @@ final class SchedulingLimitsTest extends TestCase
     }
 
     /**
+     * **And a resource replaced is measured like one created.** §3.2.3.1's
+     * table knows both and §11.1 distinguishes neither: a client that may
+     * write over what stands in its Inbox can send as much that way as by
+     * creating something new. That is why the guard is registered on
+     * `BeforeWriteContent` beside `BeforeCreateFile`, and this case is what
+     * holds it there — the mutation run found the second registration could
+     * be taken away without a single case falling, because every other one
+     * here writes to a name that is free.
+     */
+    public function testAnObjectLargerThanTheServerKeepsIsRefusedWhenItReplacesOne(): void
+    {
+        $server = $this->serverTaking(new Limits(maxResourceSize: 1_000));
+        $made = $server->handle(new Request('PUT', self::INBOX, body: new Body(self::MEETING)));
+
+        self::assertContains($made->status(), [201, 204]);
+
+        $long = str_replace('SUMMARY:A Meeting', 'SUMMARY:' . str_repeat('A', 2_000), self::MEETING);
+        $refused = $server->handle(new Request('PUT', self::INBOX, body: new Body($long)));
+
+        self::assertSame(413, $refused->status());
+        self::assertStringContainsString('max-resource-size', (string) $refused->body());
+    }
+
+    /**
      * **§5.2.8's precondition, on the Inbox.** A rule with no end generates
      * more than any limit, and the count stops at the first instance past it
      * rather than expanding the whole series — which is the MUST above the
@@ -235,6 +259,15 @@ final class SchedulingLimitsTest extends TestCase
 
     private function putting(string $path, string $body, ?Limits $limits = null): Response
     {
+        return $this->serverTaking($limits)->handle(new Request('PUT', $path, body: new Body($body)));
+    }
+
+    /**
+     * A server with the plugin wired, a scheduling Inbox, an Outbox, a
+     * calendar and a collection that is none of those.
+     */
+    private function serverTaking(?Limits $limits = null): Server
+    {
         $tree = new Tree(
             (new MemoryCollection(''))
                 ->add((new MemoryCollection('calendars'))
@@ -250,6 +283,6 @@ final class SchedulingLimitsTest extends TestCase
 
         (new Scheduling($server, null, $limits ?? new Limits()))->register();
 
-        return $server->handle(new Request('PUT', $path, body: new Body($body)));
+        return $server;
     }
 }
