@@ -517,7 +517,29 @@ final class Scheduling
         // scheduling operation" that sentence is about.
         $this->limits->mustTakeTheRange($asked->range());
 
-        if (!in_array($asked->organizer(), $this->addressesOfTheOwnerOf($path, $node), true)) {
+        // **§6.2.4, and here rather than earlier.** The privilege "controls
+        // the use of the POST method to submit scheduling messages that
+        // specify the scheduling method 'REQUEST' with a 'VFREEBUSY' calendar
+        // component" — a condition on what kind of message this is, which is
+        // not known until the body has been read. A body that is no such
+        // message is answered §5.2.1's precondition instead, whatever the
+        // client holds.
+        //
+        // **And before §5.2.2**, which compares the `ORGANIZER` against the
+        // owner's addresses: a client that may not post at all is told
+        // nothing about whose Outbox this is, nor whether an address it
+        // guessed is one of theirs.
+        $this->mustHold($path, Privileges::SEND_FREEBUSY);
+
+        $owner = $this->ownerAt($path, $node);
+
+        // **An Outbox this server names no owner of is nobody's to ask
+        // from.** §5.2.2 compares against "one of the calendar user addresses
+        // of the owner of the scheduling Outbox collection", and there are
+        // none of those where there is no owner — so the comparison fails,
+        // which is the only answer that does not send busy time out on behalf
+        // of somebody this server cannot name.
+        if ($owner === null || !in_array($asked->organizer(), $this->addressesOf($owner), true)) {
             throw new Forbidden(
                 sprintf(
                     'RFC 6638 §5.2.2: the ORGANIZER of a busy time request matches "one of the calendar user addresses of the owner of the scheduling Outbox collection", and "%s" does not.',
@@ -527,6 +549,7 @@ final class Scheduling
             );
         }
 
+        [$asker] = $owner;
         $answer = new ScheduleResponse();
 
         foreach ($asked->recipients() as $recipient) {
@@ -534,6 +557,13 @@ final class Scheduling
 
             if ($whose === null) {
                 $answer->tell($recipient, ScheduleResponse::NO_SUCH_USER);
+
+                continue;
+            }
+
+            // §6.1.4: and each of them decides whether the asker may ask.
+            if (!$this->mayBeAskedBy($asker, $whose)) {
+                $answer->tell($recipient, ScheduleResponse::NO_AUTHORITY);
 
                 continue;
             }
@@ -927,11 +957,97 @@ final class Scheduling
             return;
         }
 
-        $refusal = $this->server->events()->emit(new PrivilegeNeeded($outbox, $privilege))->refusal();
+        $this->mustHold($outbox, $privilege);
+    }
+
+    /**
+     * **RFC 6638 §6.2.4: the one privilege that guards a method rather than
+     * an operation.**
+     *
+     * > The CALDAV:schedule-send-freebusy privilege controls **the use of the
+     * > POST method** to submit scheduling messages that specify the
+     * > scheduling method "REQUEST" with a "VFREEBUSY" calendar component.
+     *
+     * So it is the request that is refused, and §5 says in what shape: §5.1
+     * gives "403 (Forbidden) - The client cannot submit a scheduling message
+     * to the specified Request-URI", and §5.2 lists `DAV:need-privileges`
+     * among the "existing preconditions that are reused for the POST method
+     * on an Outbox collection". Appendix B.6 shows that body for the sibling
+     * privilege of §6.2.2, down to the Outbox href.
+     *
+     * **About whoever is asking**, unlike {@see self::mayBeAskedBy()}: there
+     * is no sending in anybody's name here, only a client using a method on
+     * a collection it named itself.
+     *
+     * @throws IHttpFailure If whoever manages access says it is not held
+     */
+    private function mustHold(string $where, string $privilege): void
+    {
+        $refusal = $this->refusalOf($where, $privilege);
 
         if ($refusal !== null) {
             throw $refusal;
         }
+    }
+
+    /**
+     * **RFC 6638 §6.1.4: and each calendar user asked about decides whether
+     * the asker may ask.**
+     *
+     * > The CALDAV:schedule-query-freebusy privilege controls freebusy
+     * > requests targeted at the owner of the scheduling Inbox collection.
+     *
+     * **Whose right it is, is Appendix A.1's own sentence**: its tables
+     * "specify which scheduling privileges grant the right to **a calendar
+     * user** to deliver a scheduling message to the scheduling Inbox
+     * collection of **another calendar user**", and `schedule-query-freebusy`
+     * is in the `VFREEBUSY` table there. So the right belongs to the asking
+     * calendar user, who is the owner of the Outbox the request was posted to
+     * (§5, tied to the `ORGANIZER` by §5.2.2) and not whoever is signed in —
+     * a delegate posting for them asks on their standing.
+     *
+     * **A calendar user with no Inbox is not refused.** §6.1.4 wants the
+     * privilege on "the scheduling Inbox collection", and §6.1 adds that its
+     * privileges "are ignored if applied to a resource other than a
+     * scheduling Inbox collection": where this server publishes none there is
+     * nowhere the grant could have been made, and "no authority" would
+     * describe a privilege nobody could hold. The same reading
+     * {@see self::mustBeAllowedToSend()} makes of §6.2.2's Outbox.
+     *
+     * @param string $asker The asking calendar user, as the path of their
+     *                      principal
+     * @param array{string, Principal} $whose The calendar user being asked
+     *                                        about, as
+     *                                        {@see self::theCalendarUserAt()}
+     *                                        found them
+     */
+    private function mayBeAskedBy(string $asker, array $whose): bool
+    {
+        [$principal, $node] = $whose;
+        $inbox = $this->find(Inbox::INBOX, $principal, $node);
+
+        if ($inbox === null) {
+            return true;
+        }
+
+        return $this->refusalOf($inbox, Privileges::QUERY_FREEBUSY, $asker) === null;
+    }
+
+    /**
+     * Why that privilege is not held there, or null where nothing says it is
+     * not.
+     *
+     * The one place {@see PrivilegeNeeded} is asked, because the three things
+     * this plugin does with the answer are three and the question is one: a
+     * write refuses (§6.2.2, §6.2.3), a `POST` refuses (§6.2.4), and a
+     * delivery reports (§6.1, §3.2.9's `3.8`).
+     *
+     * @param string|null $principal Whose holding is in question; null is
+     *                               whoever is asking
+     */
+    private function refusalOf(string $where, string $privilege, ?string $principal = null): ?IHttpFailure
+    {
+        return $this->server->events()->emit(new PrivilegeNeeded($where, $privilege, $principal))->refusal();
     }
 
     /**
@@ -1668,9 +1784,7 @@ final class Scheduling
         // allowed must not have written on a calendar of theirs either. And
         // before the shortcut below, because a message nobody may deliver is
         // not delivered whether or not one like it arrived once.
-        if ($this->server->events()->emit(
-            new PrivilegeNeeded($where, $message->deliveryPrivilege(), $sender),
-        )->refusal() !== null) {
+        if ($this->refusalOf($where, $message->deliveryPrivilege(), $sender) !== null) {
             return DeliveryStatus::InsufficientPrivileges;
         }
 
@@ -1982,7 +2096,7 @@ final class Scheduling
      * them apart — nor needs to, §9.2 making them one answer.
      *
      * **Read through {@see Answers} rather than from the node**, for the reason
-     * {@see self::addressesOfTheOwnerOf()} gives: that is the one way this
+     * {@see self::addressesOf()} gives: that is the one way this
      * server finds out what it says about a property. The property is nobody's
      * to answer here — §9.2 makes it "MAY be defined" and "MAY be protected",
      * which is a deployment's decision — and a deployment that keeps a default
@@ -2094,37 +2208,24 @@ final class Scheduling
     }
 
     /**
-     * The calendar user addresses of the owner of this collection (§2.4.1),
-     * or none where this server names none.
+     * The calendar user addresses of the owner of a collection (§2.4.1).
      *
-     * Two properties, each read through {@see Answers} rather than off the
-     * node, because that is the one way this server finds out what it says
-     * about a property: it is where a dead property store is reached and where
-     * access control gets the first word. The same reading
-     * {@see Sharing::sharerOf()} makes of §5.5.5.
+     * Read through {@see Answers} rather than off the node, because that is
+     * the one way this server finds out what it says about a property: it is
+     * where a dead property store is reached and where access control gets
+     * the first word. The same reading {@see Sharing::sharerOf()} makes of
+     * §5.5.5.
      *
      * An empty answer is §2.4.1's own: "If not present, then the associated
      * calendar user is not enabled for scheduling on the server." A calendar
-     * whose owner has no addresses holds no scheduling object resources, which
-     * is what {@see SchedulingObject::in()} makes of an empty list.
+     * whose owner has no addresses holds no scheduling object resources,
+     * which is what {@see SchedulingObject::in()} makes of an empty list.
      *
-     * @return list<string>
-     */
-    private function addressesOfTheOwnerOf(string $path, INode $node): array
-    {
-        $owner = $this->ownerAt($path, $node);
-
-        return $owner === null ? [] : $this->addressesOf($owner);
-    }
-
-    /**
-     * The same of an owner already found.
-     *
-     * **Two callers go on to need the owner themselves**, because §6.2.2 has
-     * the sending privilege granted on *their* Outbox — and finding them
+     * **The owner is passed in rather than looked up here**, because every
+     * caller goes on to need them: §6.2.2 has the sending privilege granted
+     * on *their* Outbox and §6.1.4 asks on *their* standing, and finding them
      * twice would be two readings of `DAV:owner` that a store is free to
-     * answer differently. So they find the owner once and ask this for the
-     * addresses.
+     * answer differently.
      *
      * @param array{string, Principal} $owner As {@see self::ownerAt()}
      *                                        answers

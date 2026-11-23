@@ -75,6 +75,23 @@ final class ScheduleResponse
      */
     public const NO_SUCH_USER = '3.7;Invalid calendar user';
 
+    /**
+     * RFC 5546 §3.6.21: "No authority" — the code for an operation that
+     * "failed because an Attendee does not have suitable privileges".
+     *
+     * **It is the calendar user asked about who did not grant them**, which
+     * is RFC 6638 §6.1.4: `CALDAV:schedule-query-freebusy` "controls freebusy
+     * requests targeted at the owner of the scheduling Inbox collection". So
+     * this is reported **per recipient** and the others are still answered —
+     * one calendar user's rules do not decide what is said about anybody
+     * else.
+     *
+     * Not to be confused with §6.2.4, which is the asker's own right to use
+     * the method at all: that one refuses the request outright with §5.1's
+     * `403`.
+     */
+    public const NO_AUTHORITY = '3.8;No authority';
+
     private const NS = 'urn:ietf:params:xml:ns:caldav';
 
     /** @var list<array{string, string, string|null}> */
