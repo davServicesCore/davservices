@@ -218,6 +218,51 @@ final class Scheduling
     public const OUTBOX_URL = '{urn:ietf:params:xml:ns:caldav}schedule-outbox-URL';
 
     /**
+     * The limits of RFC 4791 an Inbox carries here, out of the eight §2.2
+     * allows.
+     *
+     * > The following WebDAV properties specified in CalDAV
+     * > "calendar-access" [RFC4791] MAY also be defined on scheduling Inbox
+     * > collections **and apply to scheduling messages delivered to the
+     * > collection**
+     *
+     * **A MAY, and the second half is what picks which of the eight.** A
+     * property written on a collection promises that it applies there, so
+     * publishing one this server does not hold a delivery to would promise an
+     * enforcement that is not there — the same reasoning §2.2's own iTIP
+     * table gets in {@see self::register()}, where half a table enforced
+     * would promise more than it keeps.
+     *
+     * Three are held to, §11.1's three, by
+     * {@see \DavServices\CalDav\Limits::mustTakeASchedulingObject()}. The
+     * five left out are bounds on what a **calendar** keeps rather than on
+     * what may be delivered: the two dates, the two that say which kinds and
+     * which data a calendar takes — §2.2 lifts §4.1's restrictions off an
+     * Inbox in the same breath — and `CALDAV:calendar-timezone`, a default
+     * for queries where an Inbox answers none.
+     */
+    private const INBOX_LIMITS = [Limits::MAX_RESOURCE_SIZE, Limits::MAX_INSTANCES, Limits::MAX_ATTENDEES];
+
+    /**
+     * And the ones an Outbox carries, which are not the same two sets.
+     *
+     * §2.1 gives it a list of its own — six, without `CALDAV:max-instances`
+     * and without `CALDAV:calendar-timezone` — and says they "apply to
+     * scheduling messages submitted to the scheduling Outbox collection
+     * **with the POST method**".
+     *
+     * What a `POST` is held to here is the range it asks about, against the
+     * two dates ({@see self::busyTime()} and
+     * {@see \DavServices\CalDav\Limits::mustTakeTheRange()}). So those two
+     * are published and the Inbox's three are not: every one of them is
+     * about a calendar object resource being **stored**, and nothing can be
+     * stored in an Outbox at all — §2.1 reserves what such a resource would
+     * mean, and {@see \DavServices\CalDav\Schedule\Outbox::createFile()}
+     * refuses on it.
+     */
+    private const OUTBOX_LIMITS = [Limits::MIN_DATE_TIME, Limits::MAX_DATE_TIME];
+
+    /**
      * §5.2.2's precondition, used with `403` as that section says.
      */
     private const VALID_ORGANIZER = '{urn:ietf:params:xml:ns:caldav}valid-organizer';
@@ -1865,11 +1910,28 @@ final class Scheduling
     }
 
     /**
-     * Answers whichever of the two was asked for by name.
+     * Answers whatever a node of this plugin's was asked for by name.
+     *
+     * A principal is asked where its two collections are (§2.1.1, §2.2.1);
+     * the collections themselves are asked for the limits they keep, each
+     * from its own list — {@see self::INBOX_LIMITS} and
+     * {@see self::OUTBOX_LIMITS} say which, and why those.
      */
     private function describe(PropertiesRequested $event): void
     {
         $node = $event->node();
+
+        if ($node instanceof Inbox) {
+            $this->publishTheLimits($event->result(), self::INBOX_LIMITS);
+
+            return;
+        }
+
+        if ($node instanceof Outbox) {
+            $this->publishTheLimits($event->result(), self::OUTBOX_LIMITS);
+
+            return;
+        }
 
         if (!$node instanceof Principal) {
             return;
@@ -1879,6 +1941,35 @@ final class Scheduling
 
         $this->nameTheCollection($result, $node, self::INBOX_URL, Inbox::INBOX);
         $this->nameTheCollection($result, $node, self::OUTBOX_URL, Outbox::OUTBOX);
+    }
+
+    /**
+     * Those of this server's limits, and no others.
+     *
+     * **Each only to a client that named it.** RFC 4791 §5.2.5 to §5.2.9 each
+     * close with "SHOULD NOT be returned by a PROPFIND DAV:allprop request",
+     * and borrowing a property onto another collection borrows that sentence
+     * with it: they are limits, uninteresting in bulk.
+     * {@see PropFindResult::wasNamed()} is what keeps that, and counts a
+     * `DAV:include` as naming one.
+     *
+     * @param list<string> $names
+     */
+    private function publishTheLimits(PropFindResult $result, array $names): void
+    {
+        $values = [
+            Limits::MAX_RESOURCE_SIZE => (string) $this->limits->maxResourceSize(),
+            Limits::MAX_INSTANCES => (string) $this->limits->maxInstances(),
+            Limits::MAX_ATTENDEES => (string) $this->limits->maxAttendees(),
+            Limits::MIN_DATE_TIME => $this->limits->earliest(),
+            Limits::MAX_DATE_TIME => $this->limits->latest(),
+        ];
+
+        foreach ($values as $name => $value) {
+            if (in_array($name, $names, true) && $result->wasNamed($name)) {
+                $result->set($name, $value);
+            }
+        }
     }
 
     /**

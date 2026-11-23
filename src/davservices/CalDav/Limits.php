@@ -292,11 +292,19 @@ final class Limits
      * {@see self::mustTake()} asks are not.** `CALDAV:min-date-time` and
      * `CALDAV:max-date-time` bound what a calendar is willing to **keep**,
      * and `CALDAV:supported-calendar-component-set` says which kinds one
-     * holds; neither is about a client exhausting a server, and either one
-     * applied here would turn a limit against exhaustion into a filter on
-     * what may be delivered. An invitation to a distant year is one instance
-     * like any other, and RFC 5546 carries `VTODO` and `VJOURNAL` as readily
-     * as `VEVENT`.
+     * holds; neither is about a client exhausting a server. An invitation to
+     * a distant year is one instance like any other, and RFC 5546 carries
+     * `VTODO` and `VJOURNAL` as readily as `VEVENT`.
+     *
+     * **That the three are the ones asked here is a choice of this server's,
+     * though**, and an earlier wording claimed the memo made it. RFC 6638
+     * §2.2 lets all of them be defined on an Inbox and says that where they
+     * are, they "apply to scheduling messages delivered to the collection".
+     * A server publishing `CALDAV:min-date-time` there would hold deliveries
+     * to it and be right to; this one publishes the three it keeps, so what
+     * this method asks and what
+     * {@see \DavServices\Plugin\Scheduling::INBOX_LIMITS} publishes are the
+     * same three.
      *
      * **The size is asked of the octets alone**, before anything is parsed,
      * because §5.3.2.1 asks it of them: "The resource submitted in the PUT
