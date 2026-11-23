@@ -20,6 +20,7 @@ use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\CurrentPrincipalRequested;
 use DavServices\Dav\Event\ListingMembers;
+use DavServices\Dav\Event\PrivilegeNeeded;
 use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Method\Copy;
 use DavServices\Dav\Method\Delete;
@@ -42,6 +43,7 @@ use DavServices\Plugin\Acl;
 use DavServices\Tests\Unit\Acl\ArrayPrivilegeResolver;
 use DavServices\Tests\Unit\Dav\MemoryCollection;
 use DavServices\Tests\Unit\Dav\MemoryFile;
+use DavServices\Xml\Element;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -397,6 +399,61 @@ final class AclEnforcementTest extends TestCase
         ));
 
         self::expectNotToPerformAssertions();
+    }
+
+    /**
+     * **A privilege wanted somewhere the request never named is asked for
+     * through {@see PrivilegeNeeded}**, and this is where RFC 3744 §7.1.1's
+     * shape is built:
+     *
+     * > the response body to the "403 Forbidden" error MUST contain the
+     * > `<DAV:error>` element, which in turn contains the
+     * > `<DAV:need-privileges>` element, which contains one or more
+     * > `<DAV:resource>` elements indicating which resource had insufficient
+     * > privileges, and what the lacking privileges were
+     *
+     * Read apart from any one caller, because the shape is what every caller
+     * of the seam gets and none of them builds it: a plugin that built its
+     * own would be a second answer to one question, and the href is the part
+     * a client acts on.
+     */
+    public function testItSaysWhichPrivilegeWasMissingAndWhere(): void
+    {
+        $event = new PrivilegeNeeded('calendars/work.ics', '{DAV:}bind');
+
+        $this->plugin([])->sayWhatIsMissing($event);
+
+        $refusal = $event->refusal() ?? self::fail('Nothing was refused.');
+
+        self::assertSame(403, $refusal->status());
+
+        $needed = $refusal->errorElement();
+
+        self::assertInstanceOf(Element::class, $needed);
+        self::assertSame('{DAV:}need-privileges', $needed->name());
+
+        $resource = $needed->child('{DAV:}resource') ?? self::fail('No resource was named.');
+
+        self::assertSame('/calendars/work.ics', $resource->child('{DAV:}href')?->text());
+
+        $privilege = $resource->child('{DAV:}privilege') ?? self::fail('No privilege was named.');
+        $named = $privilege->children()[0] ?? self::fail('The privilege names nothing.');
+
+        self::assertSame('{DAV:}bind', $named->name());
+    }
+
+    /**
+     * **And says nothing of one that is held**, which is what makes silence
+     * the yes: {@see PrivilegeNeeded} has no way to answer that a privilege
+     * *is* held, because an asker with nobody to ask has to go on.
+     */
+    public function testItSaysNothingOfAPrivilegeThatIsHeld(): void
+    {
+        $event = new PrivilegeNeeded('calendars/work.ics', '{DAV:}bind');
+
+        $this->plugin(['calendars/work.ics' => ['{DAV:}bind']])->sayWhatIsMissing($event);
+
+        self::assertNull($event->refusal());
     }
 
     /**

@@ -344,6 +344,23 @@ final class SchedulingFreeBusyTest extends TestCase
     }
 
     /**
+     * **And an Outbox nobody owns is nobody's to ask from.** §5.2.2 compares
+     * the `ORGANIZER` against "one of the calendar user addresses of the
+     * owner of the scheduling Outbox collection", and `DAV:owner` is what
+     * names that owner (RFC 3744 §5.1). Where a deployment names none there
+     * is nothing to compare against, so the comparison fails and the same
+     * precondition is reported — which is the only answer that does not have
+     * this server send busy time out on behalf of somebody it cannot name.
+     */
+    public function testItRefusesAnOutboxThatNamesNoOwner(): void
+    {
+        $response = $this->post($this->aRequest([self::WILFREDO]), owned: false);
+
+        self::assertSame(403, $response->status());
+        self::assertStringContainsString('valid-organizer', (string) $response->body());
+    }
+
+    /**
      * **§5.2.1: a body that breaks RFC 5546 §3.3.2 is refused with `400`**
      * and the precondition that section names.
      */
@@ -480,8 +497,9 @@ final class SchedulingFreeBusyTest extends TestCase
         int $atMost = 5_000,
         bool $unreadable = false,
         bool $nested = false,
+        bool $owned = true,
     ): Response {
-        return $this->server($directory, $atMost, $unreadable, $nested)->handle(new Request(
+        return $this->server($directory, $atMost, $unreadable, $nested, $owned)->handle(new Request(
             'POST',
             $target,
             headers: new Headers(['Content-Type' => 'text/calendar; charset="utf-8"']),
@@ -539,19 +557,26 @@ final class SchedulingFreeBusyTest extends TestCase
      * @param bool $nested Whether Wilfredo's calendar carries a collection of
      *                     its own, which §4.2 allows and only a walk going
      *                     further than one level reaches into
+     * @param bool $owned Whether the Outbox has a `DAV:owner` at all. A
+     *                    deployment that names none has nobody for §5.2.2 to
+     *                    compare the `ORGANIZER` against
      */
     private function server(
         bool $directory = true,
         int $atMost = 5_000,
         bool $unreadable = false,
         bool $nested = false,
+        bool $owned = true,
     ): Server {
         $users = new MemoryCalendarUserBackend(self::ADDRESSES);
         $events = new EventEmitter();
 
-        $events->on(PropertiesRequested::class, static function (PropertiesRequested $event) use ($users): void {
-            self::answer($event, $users);
-        });
+        $events->on(
+            PropertiesRequested::class,
+            static function (PropertiesRequested $event) use ($users, $owned): void {
+                self::answer($event, $users, $owned);
+            },
+        );
 
         $wilfredo = self::aCalendarCalled(
             'work',
@@ -657,9 +682,14 @@ final class SchedulingFreeBusyTest extends TestCase
      * and `CALDAV:schedule-calendar-transp` is §9.1's, said here only of the
      * one calendar that is transparent — every other answers nothing, which
      * is the case §9.1's default is for.
+     *
+     * @param bool $owned Whether `DAV:owner` is answered at all
      */
-    private static function answer(PropertiesRequested $event, MemoryCalendarUserBackend $users): void
-    {
+    private static function answer(
+        PropertiesRequested $event,
+        MemoryCalendarUserBackend $users,
+        bool $owned = true,
+    ): void {
         $result = $event->result();
         $segments = array_values(array_filter(explode('/', $result->path()), static fn (string $part): bool => $part !== ''));
 
@@ -684,7 +714,7 @@ final class SchedulingFreeBusyTest extends TestCase
             return;
         }
 
-        if ($result->wants(self::OWNER) && ($segments[0] ?? '') === 'calendars' && count($segments) === 3) {
+        if ($owned && $result->wants(self::OWNER) && ($segments[0] ?? '') === 'calendars' && count($segments) === 3) {
             $result->set(self::OWNER, self::naming(self::OWNER, '/principals/' . $segments[1] . '/'));
 
             return;
