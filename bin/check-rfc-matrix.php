@@ -16,6 +16,8 @@
  *
  * A section with no row means the matrix has stopped being complete. A row naming a section the memo does not have means a typo nobody would ever notice, since nothing else in the repository reads these numbers.
  *
+ * The last column is held to the same standard, because naming the test is half of what R-CODE-12 asks for: a case that no longer exists is a claim with nothing behind it, and a row that says something is kept and names no case is a claim with nothing beside it. The column before it is prose about where the thing lives and is left to a reader — a gate over prose would be a gate about wording.
+ *
  * COVERED is the record of which memos the matrix speaks for, and adding one to it is what makes this gate red until its rows are written. That is deliberate: the list is a promise, and a promise that goes green on its own would be none.
  *
  * @license Apache-2.0
@@ -73,6 +75,52 @@ function rowsIn(string $block): array
     return $found[1];
 }
 
+/**
+ * What each row claims, as the section number, the state and the cases it
+ * names.
+ *
+ * Five columns: the section, what it asks, the state, where it is kept, and
+ * the cases. Only the first, the third and the last are read — the fourth is
+ * prose.
+ *
+ * @return list<array{string, string, list<string>}>
+ */
+function claimsIn(string $block): array
+{
+    preg_match_all(
+        '/^\|\s*(\d+(?:\.\d+)*|[A-Z](?:\.\d+)*)\s*\|[^|]*\|\s*(\S*)\s*\|[^|]*\|([^|]*)\|/m',
+        $block,
+        $found,
+        PREG_SET_ORDER,
+    );
+
+    $claims = [];
+
+    foreach ($found as $row) {
+        preg_match_all('/`([A-Za-z][A-Za-z0-9]*)`/', $row[3], $named);
+
+        $claims[] = [$row[1], $row[2], $named[1]];
+    }
+
+    return $claims;
+}
+
+/**
+ * Every test class this repository holds, by its name.
+ *
+ * @return list<string>
+ */
+function theCases(): array
+{
+    $names = [];
+
+    foreach (Scanner::phpFiles(__DIR__ . '/../tests') as $file) {
+        $names[] = basename($file, '.php');
+    }
+
+    return $names;
+}
+
 $matrix = file_get_contents(MATRIX);
 
 if (!is_string($matrix)) {
@@ -119,6 +167,19 @@ foreach (COVERED as $number => $title) {
     foreach (array_count_values($rows) as $claimed => $times) {
         if ($times > 1) {
             $violations[] = sprintf('RFC %s §%s has %d rows in the matrix', $rfc, $claimed, $times);
+        }
+    }
+
+    foreach (claimsIn($block) as [$section, $state, $cases]) {
+        // A row that says something is kept owes the case that tries it,
+        // which is the half of R-CODE-12 that says "den zugehörigen Test
+        // benennen". Nothing is owed where there is nothing to keep.
+        if ($state === '✔' && $cases === []) {
+            $violations[] = sprintf('RFC %s §%s is kept and names no case', $rfc, $section);
+        }
+
+        foreach (array_diff($cases, theCases()) as $gone) {
+            $violations[] = sprintf('RFC %s §%s names "%s", and there is no such case', $rfc, $section, $gone);
         }
     }
 }
