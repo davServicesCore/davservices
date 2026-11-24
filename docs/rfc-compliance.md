@@ -49,7 +49,7 @@ the chunk that found it.
 | 3.2.1.2 | Modify: the table of what each calendar user is told | ✔ | `CalDav\Schedule\Modification` | `ModificationTest`, `SchedulingModifyTest` |
 | 3.2.1.3 | Remove: a `CANCEL` to everybody on the list | ✔ | `Plugin\Scheduling::theCancellationsOf()` | `SchedulingCancelTest` |
 | 3.2.2 | The attendee's side | ✔ | `Plugin\Scheduling::tellTheOrganizerOf()` | `SchedulingReplyTest` |
-| 3.2.2.1 | The eleven changes an attendee may make | ⚠ | Open, with §3.2.4.4: an attendee's copy is written without the guard, so a change the memo does not allow is stored | — |
+| 3.2.2.1 | The eleven changes a server MUST **allow** an attendee to make | ✔ | Nothing on the attendee's side is refused, which is what the MUST asks for; eleven cases, one per item | `SchedulingAttendeeChangesTest` |
 | 3.2.2.2 | Create: a `REPLY` for every instance answered | ✔ | `CalDav\Schedule\Answer` | `AnswerTest`, `SchedulingReplyTest` |
 | 3.2.2.3 | Modify: a `REPLY` where the answer changed | ✔ | `CalDav\Schedule\Answer` | `SchedulingReplyTest` |
 | 3.2.2.4 | Remove: the attendee's copy goes | ⚠ | Open, with §8.1: it turns on the `Schedule-Reply` request header, which is not read | — |
@@ -62,7 +62,7 @@ the chunk that found it.
 | 3.2.4.1 | `CALDAV:unique-scheduling-object-resource` | ✔ | `Plugin\CalDav` (RFC 4791 §4.1's one `UID` per collection) | `CalDavTest` |
 | 3.2.4.2 | `CALDAV:same-organizer-in-all-components` | ✔ | `CalDav\Schedule\SchedulingObject::in()` reads it; the precondition is `Plugin\Scheduling`'s | `SchedulingObjectTest` |
 | 3.2.4.3 | `CALDAV:allowed-organizer-scheduling-object-change` | ✔ | `Plugin\Scheduling::mustLeaveTheirAnswersAlone()` | `SchedulingModifyTest` |
-| 3.2.4.4 | `CALDAV:allowed-attendee-scheduling-object-change` | ⚠ | Open, with §3.2.2.1 — the same guard | — |
+| 3.2.4.4 | `CALDAV:allowed-attendee-scheduling-object-change` | ◻ | A MAY: "Servers MAY impose restrictions on modifications allowed by an 'Attendee', subject to the allowed changes specified in Section 3.2.2.1". This server imposes none, so there is nothing to report it for — the same shape §2.4.2 has | — |
 | 3.2.5 | `DTSTAMP` and `SEQUENCE` | ✔ | `CalDav\Schedule\SchedulingMessage` | `SchedulingMessageTest` |
 | 3.2.6 | An attendee is told only of the instances that include them | ✔ | `CalDav\Schedule\Restriction` | `RestrictionTest` |
 | 3.2.7 | `SCHEDULE-FORCE-SEND` | ✔ | `CalDav\Schedule\ForceSend` | `ForceSendTest` |
