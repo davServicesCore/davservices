@@ -45,6 +45,13 @@
  * three times and survived three, twice in a row each way, which leaves a
  * single retry red on about a quarter of pushes.
  *
+ * **That rate was too kind, and twenty runs say so.** Measured on 24.11.2026
+ * with bin/measure-crash-rate.php on Linux, shard 4 crashed **18 of 20** runs
+ * on Xdebug 3.4.7. Four of the eighteen crashed after all 258 tests had run
+ * and are taken as reports that survived, so a usable attempt is about 30%,
+ * not about 50% — and five of those failing is about one push in six. The
+ * figures and what they rule out are in TestShards::ATTEMPTS.
+ *
  * A shard whose **tests** fail exits 1 or 2, is no crash, and is not run
  * again: a real failure repeats.
  *
