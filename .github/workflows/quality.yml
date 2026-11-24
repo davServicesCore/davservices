@@ -63,6 +63,12 @@ jobs:
       - name: DocBlocks on the public API
         run: php bin/check-docblocks.php
 
+      # Held against docs/rfc-sections/, which is committed, so this runs
+      # on a bare checkout: the memos themselves are fetched on demand and
+      # are deliberately not in the repository.
+      - name: The RFC conformance matrix
+        run: php bin/check-rfc-matrix.php
+
       - name: composer.json is valid
         run: composer validate --strict --no-check-lock
 
