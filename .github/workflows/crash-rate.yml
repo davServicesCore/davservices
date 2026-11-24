@@ -1,0 +1,68 @@
+name: Crash rate
+
+# ---------------------------------------------------------------------------
+# Measures how often Xdebug's coverage collector falls over, on Linux, where
+# it actually does.
+#
+# Xdebug bug 2252 has been open since March 2024. It is answered here by
+# retries and, twice, by a cure: a generator that both yielded and delegated
+# with `yield from` in one frame, written as a worklist instead. Both cures
+# were earned the same way — narrow the crashing shard to one test file that
+# falls over on its own, then measure twenty runs before and twenty after.
+#
+# bin/lib/TestShards.php records what happens without that measurement: "A
+# flaky crash is not bisectable, which cost a wrong answer first. One run of
+# each of five commits read like a clean bisect and meant nothing." And it
+# cannot be measured where the code is written: a shard that crashes five of
+# five in CI went twelve runs on Windows with Xdebug 3.4.0 without a murmur.
+#
+# So this runs by hand, gates nothing, and answers one question with a number.
+# The Xdebug version is an input because the rate depends on it — 3.5.x
+# crashes six of six on another suite where 3.4.7 crashes none, while 3.4.7
+# still crashes here — so "is it our code or the version?" is a question worth
+# being able to ask.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'A shard number, or a path under tests/unit'
+        required: true
+        default: '4'
+      runs:
+        description: 'How many times to run it'
+        required: true
+        default: '20'
+      xdebug:
+        description: 'Which Xdebug to measure against'
+        required: true
+        default: '3.4.7'
+
+permissions:
+  contents: read
+
+jobs:
+  rate:
+    name: ${{ inputs.target }} × ${{ inputs.runs }} on Xdebug ${{ inputs.xdebug }}
+    runs-on: ubuntu-latest
+    # Twenty runs of the heaviest shard take a few minutes; a wrong input
+    # should not sit in the queue for an hour.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: xdebug
+          # The same list the coverage shards use, so that what is measured is
+          # the collector and not a different build of PHP.
+          extensions: dom, xml, xmlreader, xmlwriter, mbstring, json, filter, hash, pdo_sqlite, xdebug-${{ inputs.xdebug }}
+
+      - uses: ramsey/composer-install@v4
+
+      - name: Measure
+        env:
+          XDEBUG_MODE: coverage
+        run: php bin/measure-crash-rate.php '${{ inputs.target }}' '${{ inputs.runs }}'

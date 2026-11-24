@@ -74,16 +74,32 @@ final class TestShards
      * passed while the merge of the same content crashed. The first step with
      * a crash like this is to measure its rate, not to halve the history.
      *
-     * **And the shape alone is not enough to fall over.** Four more
-     * generators carry it — `CalendarQuery::matchesUnder()`,
-     * `FreeBusyQuery::objectsUnder()`, `AddressBookQuery::matchesUnder()` and
-     * `Serializer::lines()` — and none crashed in twelve runs each, so they
-     * were left alone. A resemblance is not a reproducer.
+     * **And the shape alone is not enough to fall over.** Three generators
+     * carry it and were cleared — `CalendarQuery::matchesUnder()`,
+     * `FreeBusyQuery::objectsUnder()` and `AddressBookQuery::matchesUnder()`,
+     * none of which crashed in twelve runs each, so they were left alone. A
+     * resemblance is not a reproducer.
+     *
+     * `Serializer::lines()` was on that list and is not on this one: it
+     * delegates and no longer yields in the same frame, so it does not carry
+     * the shape at all. **Two that do carry it have never been measured** —
+     * {@see \DavServices\VObject\Recur\ObjectSet::instances()} and
+     * {@see \DavServices\CalDav\Expander::instancesIn()}, both recurrence
+     * code. They are the list to start from the next time a shard crashes.
      *
      * **This is a flaky instrument, not a flaky measurement.** Every attempt
      * that finishes gives the same figures, and a shard whose *tests* fail
      * exits 1 or 2, is no crash, and is not tried again. The cure is upstream:
      * Xdebug bug 2252, open since March 2024.
+     *
+     * **Raising it was weighed again on 24.11.2026 and rejected.** Shard 4
+     * crashed five of five on main while the same tree's pull request run
+     * crashed once and passed, which looks like a coin and is not one: the
+     * eight jobs above were measured, and a job that crashes tends to crash
+     * every time. More attempts buy the rare mixed job a second time over,
+     * not a crashing job. What a crashing job needs is still the trigger
+     * gone, and what that needs is a reproducer — which is what
+     * `bin/measure-crash-rate.php` is for.
      */
     public const ATTEMPTS = 5;
 
