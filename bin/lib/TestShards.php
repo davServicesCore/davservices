@@ -30,6 +30,39 @@ declare(strict_types=1);
 final class TestShards
 {
     /**
+     * Test files that have been measured to crash the coverage collector when
+     * they share a process, and are therefore packed into different shards.
+     *
+     * **One pair, found by measuring rather than by reasoning.** Xdebug bug
+     * 2252 is open since March 2024 and nothing here can cure it; what can be
+     * done is to not hand it the one combination this suite is known to fall
+     * over on. The figures are in {@see self::ATTEMPTS}: 14 of 20 runs
+     * together, 0 of 20 for each on its own, and 0 of 20 for either of them
+     * beside `SchedulingMessageTest`, `PropPatchResultTest`, `TimeRangeTest`,
+     * `Recur\IteratorTest` or `Recur\ObjectSetTest`.
+     *
+     * **Nothing explains it, and that is said rather than dressed up.** Five
+     * explanations were measured and fell, the last of them being the code the
+     * two drive in common — the recurrence engine, which a third test drives
+     * harder without crashing. So this list is a workaround with a measurement
+     * behind it, not a theory.
+     *
+     * **It is a list of files, not of pairs**, because one pair is all there
+     * is and a structure for more would be a structure for a problem nobody
+     * has. Every file named here lands in a shard of its own as far as the
+     * other names go; add a third and all three are kept apart.
+     *
+     * **And it is a mitigation, not a promise.** Asked for one shard, the
+     * split hands back one shard — see {@see self::split()}.
+     *
+     * @var list<string>
+     */
+    public const KEPT_APART = [
+        'CalDav/Filter/CompFilterTest.php',
+        'CalDav/Report/FreeBusyQueryTest.php',
+    ];
+
+    /**
      * How many bytes of test code one shard takes on.
      *
      * Measured on 05.10.2026: a shard of this size runs in well under a minute
@@ -308,7 +341,7 @@ final class TestShards
         $weights = array_fill(0, $count, 0);
 
         foreach ($files as $file) {
-            $lightest = self::lightest($weights);
+            $lightest = self::lightest($weights, self::wouldShareAProcess($shards, $file['file']));
             $shards[$lightest][] = $file['file'];
             $weights[$lightest] = ($weights[$lightest] ?? 0) + $file['size'];
         }
@@ -320,19 +353,50 @@ final class TestShards
      * The number of the first shard that carries the least so far.
      *
      * @param array<int, int> $weights
+     * @param list<int> $avoiding Shards this file may not join, which
+     *                            {@see self::wouldShareAProcess()} works out
      */
-    private static function lightest(array $weights): int
+    private static function lightest(array $weights, array $avoiding = []): int
     {
         $lightest = 0;
         $least = PHP_INT_MAX;
 
         foreach ($weights as $index => $weight) {
-            if ($weight < $least) {
+            if ($weight < $least && !in_array($index, $avoiding, true)) {
                 $lightest = $index;
                 $least = $weight;
             }
         }
 
-        return $lightest;
+        // **Where every shard is to be avoided, the lightest wins anyway.**
+        // {@see self::KEPT_APART} is a mitigation and not a promise: asked for
+        // one shard, this hands back one shard rather than refusing a split it
+        // was asked for.
+        return $least === PHP_INT_MAX ? self::lightest($weights) : $lightest;
+    }
+
+    /**
+     * The shards this file may not join, because one of them already holds a
+     * file {@see self::KEPT_APART} keeps it away from.
+     *
+     * @param list<list<string>> $shards
+     *
+     * @return list<int>
+     */
+    private static function wouldShareAProcess(array $shards, string $file): array
+    {
+        if (!in_array($file, self::KEPT_APART, true)) {
+            return [];
+        }
+
+        $avoid = [];
+
+        foreach ($shards as $number => $files) {
+            if (array_intersect($files, self::KEPT_APART) !== []) {
+                $avoid[] = $number;
+            }
+        }
+
+        return $avoid;
     }
 }

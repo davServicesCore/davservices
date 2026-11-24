@@ -201,6 +201,89 @@ final class TestShardsTest extends TestCase
         self::assertSame($expected, $assigned);
     }
 
+    /**
+     * **Two files measured to crash the collector together do not share a
+     * process.**
+     *
+     * The packing below would put them together without the rule: one heavy
+     * file takes the first shard, and the two light ones then both go to the
+     * lighter of the two. {@see TestShards::KEPT_APART} says which pair and
+     * why — on 24.11.2026 `CompFilterTest` with `FreeBusyQueryTest` crashed
+     * 14 of 20 runs, while each on its own and either of them beside four
+     * other files went 20 of 20 clean.
+     */
+    public function testAMeasuredPairDoesNotShareAShard(): void
+    {
+        $shards = TestShards::split([
+            'zHeavyTest.php' => 100,
+            'CalDav/Filter/CompFilterTest.php' => 10,
+            'CalDav/Report/FreeBusyQueryTest.php' => 10,
+        ], 2);
+
+        self::assertSame(
+            ['zHeavyTest.php', 'CalDav/Report/FreeBusyQueryTest.php'],
+            $shards[0] ?? self::fail('No first shard.'),
+        );
+        self::assertSame(['CalDav/Filter/CompFilterTest.php'], $shards[1] ?? self::fail('No second shard.'));
+    }
+
+    /**
+     * **And a pair the rule says nothing about is packed as before**, which
+     * is what keeps this a rule about one measured pair rather than about
+     * light files in general.
+     */
+    public function testAnyOtherPairIsPackedAsBefore(): void
+    {
+        $shards = TestShards::split([
+            'zHeavyTest.php' => 100,
+            'a/OneTest.php' => 10,
+            'b/TwoTest.php' => 10,
+        ], 2);
+
+        self::assertSame(['zHeavyTest.php'], $shards[0] ?? self::fail('No first shard.'));
+        self::assertSame(['a/OneTest.php', 'b/TwoTest.php'], $shards[1] ?? self::fail('No second shard.'));
+    }
+
+    /**
+     * **With one shard there is nowhere to keep them apart**, and a split that
+     * refused would be a split that cannot answer. One process is what
+     * somebody asks for by name, and this rule is a mitigation rather than a
+     * promise.
+     */
+    public function testWithOneShardTheyShareItAfterAll(): void
+    {
+        $shards = TestShards::split([
+            'CalDav/Filter/CompFilterTest.php' => 10,
+            'CalDav/Report/FreeBusyQueryTest.php' => 10,
+        ], 1);
+
+        self::assertCount(2, $shards[0] ?? self::fail('No shard at all.'));
+    }
+
+    /**
+     * **And the pair is apart in the split this suite actually produces**,
+     * which is the thing the rule is for: the figures above were measured on
+     * shard 4 as `TestShards` packed it, and a rule that held only for made-up
+     * sizes would not have moved them.
+     */
+    public function testThePairIsApartInThisSuitesOwnSplit(): void
+    {
+        $sizes = TestShards::testFiles(__DIR__ . '/../../../tests/unit');
+        $shards = TestShards::split($sizes, TestShards::countFor($sizes));
+        $holders = [];
+
+        foreach (TestShards::KEPT_APART as $file) {
+            foreach ($shards as $number => $files) {
+                if (in_array($file, $files, true)) {
+                    $holders[$file] = $number;
+                }
+            }
+        }
+
+        self::assertCount(count(TestShards::KEPT_APART), $holders);
+        self::assertSame(array_values($holders), array_unique(array_values($holders)));
+    }
+
     public function testShardsComeOutAboutEquallyHeavy(): void
     {
         $sizes = ['ATest.php' => 9, 'BTest.php' => 7, 'CTest.php' => 6, 'DTest.php' => 5, 'ETest.php' => 4, 'FTest.php' => 3];
