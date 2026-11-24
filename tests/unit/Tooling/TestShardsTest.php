@@ -209,8 +209,8 @@ final class TestShardsTest extends TestCase
      * file takes the first shard, and the two light ones then both go to the
      * lighter of the two. {@see TestShards::KEPT_APART} says which pair and
      * why — on 24.11.2026 `CompFilterTest` with `FreeBusyQueryTest` crashed
-     * 14 of 20 runs, while each on its own and either of them beside four
-     * other files went 20 of 20 clean.
+     * 14 of 20 runs, while each of them alone, and in ten pairings with five
+     * other files, crashed once in those twelve measurements of twenty.
      */
     public function testAMeasuredPairDoesNotShareAShard(): void
     {

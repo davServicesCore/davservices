@@ -36,16 +36,32 @@ final class TestShards
      * **One pair, found by measuring rather than by reasoning.** Xdebug bug
      * 2252 is open since March 2024 and nothing here can cure it; what can be
      * done is to not hand it the one combination this suite is known to fall
-     * over on. The figures are in {@see self::ATTEMPTS}: 14 of 20 runs
-     * together, 0 of 20 for each on its own, and 0 of 20 for either of them
-     * beside `SchedulingMessageTest`, `PropPatchResultTest`, `TimeRangeTest`,
-     * `Recur\IteratorTest` or `Recur\ObjectSetTest`.
+     * over on. {@see self::ATTEMPTS} carries the narrowing that found it: the
+     * whole of shard 4 crashed 18 of 20 runs, these two files alone 14 of 20.
+     *
+     * **And it is the pair that crashes, not either file.** Each of them was
+     * measured on its own and beside five others, twenty runs each on Linux
+     * with Xdebug 3.4.7 on 24.11.2026:
+     *
+     * | Sharing the process with | `CompFilterTest` | `FreeBusyQueryTest` |
+     * |---|---|---|
+     * | nothing — the file alone | 0 of 20 | 0 of 20 |
+     * | `SchedulingMessageTest` | 0 of 20 | **1 of 20** |
+     * | `PropPatchResultTest` | 0 of 20 | 0 of 20 |
+     * | `TimeRangeTest` | 0 of 20 | 0 of 20 |
+     * | `Recur\IteratorTest` | 0 of 20 | 0 of 20 |
+     * | `Recur\ObjectSetTest` | 0 of 20 | 0 of 20 |
+     * | **each other** | **14 of 20** | **14 of 20** |
+     *
+     * The one stray crash is left in the table rather than rounded away: it
+     * says the collector can fall over elsewhere, and that this list cures one
+     * pair and not the bug.
      *
      * **Nothing explains it, and that is said rather than dressed up.** Five
-     * explanations were measured and fell, the last of them being the code the
-     * two drive in common — the recurrence engine, which a third test drives
-     * harder without crashing. So this list is a workaround with a measurement
-     * behind it, not a theory.
+     * explanations were measured and fell — the three in ATTEMPTS, a shared
+     * `TimeRange`, and the code the two drive in common, the recurrence
+     * engine, whose own two tests drive it harder and crash beside neither. So
+     * this list is a workaround with a measurement behind it, not a theory.
      *
      * **It is a list of files, not of pairs**, because one pair is all there
      * is and a structure for more would be a structure for a problem nobody
