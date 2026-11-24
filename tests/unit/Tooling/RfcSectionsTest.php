@@ -150,11 +150,33 @@ final class RfcSectionsTest extends TestCase
         }
     }
 
+    /**
+     * **Skipped where the memo is not here, rather than failed.**
+     * `docs/referenzen/README.md` says why the texts are not committed — "sie
+     * mitzuliefern hieße, fremde Dokumente zu verteilen" — and
+     * `download-rfcs.sh` fetches them on demand. So a clean checkout has none
+     * of them, and a case that insisted would fail the build over a file the
+     * repository deliberately does not carry.
+     *
+     * What does not depend on the memo is what matters: the rules above are
+     * asked of text written out in the case, and the gate is held against
+     * `docs/rfc-sections/`, which **is** committed. These two cases are the
+     * sanity check that the rules describe the real thing, and they run
+     * wherever somebody has fetched it.
+     */
     private static function theMemo(): string
     {
         $path = __DIR__ . '/../../../docs/referenzen/rfc/rfc6638.txt';
+
+        // Asked before it is read, not caught afterwards: this suite has
+        // `failOnWarning`, so a read of a file that is not there would fail
+        // the case it was meant to skip.
+        if (!is_file($path)) {
+            self::markTestSkipped('No copy of RFC 6638 here; see docs/referenzen/README.md.');
+        }
+
         $text = file_get_contents($path);
 
-        return is_string($text) ? $text : self::fail('No copy of RFC 6638 here.');
+        return is_string($text) ? $text : self::fail('The copy of RFC 6638 here cannot be read.');
     }
 }

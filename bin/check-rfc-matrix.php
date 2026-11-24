@@ -12,7 +12,9 @@
 /**
  * Fails if the conformance matrix has stopped describing the memos it covers.
  *
- * R-CODE-12 wants `docs/rfc-compliance.md` to name, per section, the state and the test. A matrix with gaps is worse than none: it reads as a statement about every section and is one about some of them. So this asks the memo — the only authority on which sections there are — and both directions of the comparison.
+ * R-CODE-12 wants `docs/rfc-compliance.md` to name, per section, the state and the test. A matrix with gaps is worse than none: it reads as a statement about every section and is one about some of them. So this asks for the memo's own list of sections, and both directions of the comparison.
+ *
+ * **The list is carried, the memo is not.** `docs/referenzen/README.md` says why the texts are not committed — "sie mitzuliefern hieße, fremde Dokumente zu verteilen" — and `download-rfcs.sh` fetches them on demand. A gate that read the text would pass or fail by whether somebody had run that script, which is no gate at all. `bin/build-rfc-sections.php` writes the numbers to `docs/rfc-sections/`, once per memo, and this reads those.
  *
  * A section with no row means the matrix has stopped being complete. A row naming a section the memo does not have means a typo nobody would ever notice, since nothing else in the repository reads these numbers.
  *
@@ -25,7 +27,6 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/lib/RfcSections.php';
 require __DIR__ . '/lib/Scanner.php';
 
 /**
@@ -42,6 +43,35 @@ const COVERED = [
 ];
 
 const MATRIX = __DIR__ . '/../docs/rfc-compliance.md';
+
+/**
+ * The sections of one memo, as `bin/build-rfc-sections.php` wrote them down.
+ *
+ * Comments and blank lines are skipped, so the file can say what it is.
+ *
+ * @return list<string>|null Null where the list has not been written yet
+ */
+function sectionsOf(string $rfc): ?array
+{
+    $list = __DIR__ . '/../docs/rfc-sections/rfc' . $rfc . '.txt';
+    $text = file_get_contents($list);
+
+    if (!is_string($text)) {
+        return null;
+    }
+
+    $sections = [];
+
+    foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $line) {
+        $number = trim($line);
+
+        if ($number !== '' && !str_starts_with($number, '#')) {
+            $sections[] = $number;
+        }
+    }
+
+    return $sections;
+}
 
 /**
  * The part of the matrix that speaks for one memo: everything under its
@@ -136,11 +166,15 @@ foreach (COVERED as $number => $title) {
     // it was written. The RFC number is text here — it is printed and
     // matched, never counted with.
     $rfc = (string) $number;
-    $memo = __DIR__ . '/../docs/referenzen/rfc/rfc' . $rfc . '.txt';
-    $text = file_get_contents($memo);
+    $sections = sectionsOf($rfc);
 
-    if (!is_string($text)) {
-        $violations[] = sprintf('RFC %s (%s): no copy of the memo at %s', $rfc, $title, Scanner::rel($memo));
+    if ($sections === null) {
+        $violations[] = sprintf(
+            'RFC %s (%s): no section list; run php bin/build-rfc-sections.php %s',
+            $rfc,
+            $title,
+            $rfc,
+        );
 
         continue;
     }
@@ -153,7 +187,6 @@ foreach (COVERED as $number => $title) {
         continue;
     }
 
-    $sections = RfcSections::of($text);
     $rows = rowsIn($block);
 
     foreach (array_diff($sections, $rows) as $missing) {
