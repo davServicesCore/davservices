@@ -208,23 +208,25 @@ final class TestShardsTest extends TestCase
      * The packing below would put them together without the rule: one heavy
      * file takes the first shard, and the two light ones then both go to the
      * lighter of the two. {@see TestShards::KEPT_APART} says which pair and
-     * why — on 24.11.2026 `CompFilterTest` with `FreeBusyQueryTest` crashed
-     * 14 of 20 runs, while each of them alone, and in ten pairings with five
-     * other files, crashed once in those twelve measurements of twenty.
+     * why — on 24.11.2026 `SchedulingCancelTest` with `FreeBusyQueryTest`
+     * crashed 13 of 20 runs, while each of them alone went 0 of 20.
      */
     public function testAMeasuredPairDoesNotShareAShard(): void
     {
         $shards = TestShards::split([
             'zHeavyTest.php' => 100,
-            'CalDav/Filter/CompFilterTest.php' => 10,
             'CalDav/Report/FreeBusyQueryTest.php' => 10,
+            'Plugin/SchedulingCancelTest.php' => 10,
         ], 2);
 
         self::assertSame(
-            ['zHeavyTest.php', 'CalDav/Report/FreeBusyQueryTest.php'],
+            ['zHeavyTest.php', 'Plugin/SchedulingCancelTest.php'],
             $shards[0] ?? self::fail('No first shard.'),
         );
-        self::assertSame(['CalDav/Filter/CompFilterTest.php'], $shards[1] ?? self::fail('No second shard.'));
+        self::assertSame(
+            ['CalDav/Report/FreeBusyQueryTest.php'],
+            $shards[1] ?? self::fail('No second shard.'),
+        );
     }
 
     /**
@@ -253,8 +255,8 @@ final class TestShardsTest extends TestCase
     public function testWithOneShardTheyShareItAfterAll(): void
     {
         $shards = TestShards::split([
-            'CalDav/Filter/CompFilterTest.php' => 10,
             'CalDav/Report/FreeBusyQueryTest.php' => 10,
+            'Plugin/SchedulingCancelTest.php' => 10,
         ], 1);
 
         self::assertCount(2, $shards[0] ?? self::fail('No shard at all.'));
@@ -262,9 +264,16 @@ final class TestShardsTest extends TestCase
 
     /**
      * **And the pair is apart in the split this suite actually produces**,
-     * which is the thing the rule is for: the figures above were measured on
-     * shard 4 as `TestShards` packed it, and a rule that held only for made-up
-     * sizes would not have moved them.
+     * which is the thing the rule is for — a rule that held only for made-up
+     * sizes would prove nothing about the shards that run.
+     *
+     * **It also holds the names to account.** Every file in
+     * {@see TestShards::KEPT_APART} has to turn up in some shard, so renaming
+     * or deleting one fails here instead of quietly turning the rule into a
+     * list of names nothing matches. That is not a hypothetical: the list
+     * named the wrong file for an afternoon on 24.11.2026, because a shard
+     * number was read as if it were a file name and the packing had since
+     * moved.
      */
     public function testThePairIsApartInThisSuitesOwnSplit(): void
     {

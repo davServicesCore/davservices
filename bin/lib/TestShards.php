@@ -37,31 +37,43 @@ final class TestShards
      * 2252 is open since March 2024 and nothing here can cure it; what can be
      * done is to not hand it the one combination this suite is known to fall
      * over on. {@see self::ATTEMPTS} carries the narrowing that found it: the
-     * whole of shard 4 crashed 18 of 20 runs, these two files alone 14 of 20.
+     * whole of shard 4 crashed 18 of 20 runs, and halving it twice came down
+     * to two files.
      *
-     * **And it is the pair that crashes, not either file.** Each of them was
-     * measured on its own and beside five others, twenty runs each on Linux
-     * with Xdebug 3.4.7 on 24.11.2026:
+     * **It is the pair that crashes, not either file.** Twenty runs each on
+     * Linux with Xdebug 3.4.7 on 24.11.2026, every target named by path:
      *
-     * | Sharing the process with | `CompFilterTest` | `FreeBusyQueryTest` |
-     * |---|---|---|
-     * | nothing — the file alone | 0 of 20 | 0 of 20 |
-     * | `SchedulingMessageTest` | 0 of 20 | **1 of 20** |
-     * | `PropPatchResultTest` | 0 of 20 | 0 of 20 |
-     * | `TimeRangeTest` | 0 of 20 | 0 of 20 |
-     * | `Recur\IteratorTest` | 0 of 20 | 0 of 20 |
-     * | `Recur\ObjectSetTest` | 0 of 20 | 0 of 20 |
-     * | **each other** | **14 of 20** | **14 of 20** |
+     * | Sharing one process | Crashed |
+     * |---|---|
+     * | `FreeBusyQueryTest` alone | 0 of 20 |
+     * | `SchedulingCancelTest` alone | 0 of 20 |
+     * | `FreeBusyQueryTest` + `PropPatchResultTest` | 0 of 20 |
+     * | `FreeBusyQueryTest` + `TimeRangeTest` | 0 of 20 |
+     * | `FreeBusyQueryTest` + `Recur\IteratorTest` | 0 of 20 |
+     * | `FreeBusyQueryTest` + `Recur\ObjectSetTest` | 0 of 20 |
+     * | `SchedulingCancelTest` + `SchedulingMessageTest` | 0 of 20 |
+     * | `FreeBusyQueryTest` + `SchedulingMessageTest` | **1 of 20** |
+     * | **`FreeBusyQueryTest` + `SchedulingCancelTest`** | **13 of 20** |
      *
-     * The one stray crash is left in the table rather than rounded away: it
-     * says the collector can fall over elsewhere, and that this list cures one
-     * pair and not the bug.
+     * The stray single crash stays in the table rather than being rounded
+     * away: it says the collector can fall over elsewhere, and that this list
+     * avoids one pair rather than fixing the bug.
+     *
+     * **The pair was named wrong first, and that is recorded rather than
+     * tidied away.** The narrowing measured `4:2-3` — places in a shard, not
+     * names — and the first version of this list read those places off a
+     * working tree whose own test files had grown since. Packing is by file
+     * size, so any such change reshuffles every shard: the list named
+     * `CompFilterTest`, which is harmless, the rule moved a file that was
+     * never in the way, and shard 4 went on crashing 16 of 20. Measure by
+     * number if it is quicker; name by path, resolved in the tree the
+     * measurement ran on.
      *
      * **Nothing explains it, and that is said rather than dressed up.** Five
      * explanations were measured and fell — the three in ATTEMPTS, a shared
-     * `TimeRange`, and the code the two drive in common, the recurrence
-     * engine, whose own two tests drive it harder and crash beside neither. So
-     * this list is a workaround with a measurement behind it, not a theory.
+     * `TimeRange`, and the recurrence engine, which both files drive and whose
+     * own tests drive it harder beside either without crashing. So this list
+     * is a workaround with a measurement behind it, not a theory.
      *
      * **It is a list of files, not of pairs**, because one pair is all there
      * is and a structure for more would be a structure for a problem nobody
@@ -74,8 +86,8 @@ final class TestShards
      * @var list<string>
      */
     public const KEPT_APART = [
-        'CalDav/Filter/CompFilterTest.php',
         'CalDav/Report/FreeBusyQueryTest.php',
+        'Plugin/SchedulingCancelTest.php',
     ];
 
     /**
