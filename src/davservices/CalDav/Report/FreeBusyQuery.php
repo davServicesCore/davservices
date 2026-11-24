@@ -19,9 +19,11 @@ use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\FreeBusy;
 use DavServices\CalDav\Limits;
 use DavServices\CalDav\Moments;
+use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\TimeRange;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
+use DavServices\Dav\IResourceType;
 use DavServices\Dav\ReportDepth;
 use DavServices\Dav\Server;
 use DavServices\Dav\VisibleMembers;
@@ -166,6 +168,12 @@ final class FreeBusyQuery
      */
     public const PRODUCT = '-//davServices//CalDAV Server//EN';
 
+    /**
+     * RFC 3253 §3.1.5's precondition for a report a resource does not
+     * support, which is what RFC 6638 §2.3 makes of this one on an Inbox.
+     */
+    private const SUPPORTED_REPORT = '{DAV:}supported-report';
+
     private const WITHIN_LIMITS = '{DAV:}number-of-matches-within-limits';
 
     private const CALENDAR = 'VCALENDAR';
@@ -224,6 +232,27 @@ final class FreeBusyQuery
         if (!$node instanceof ICollection) {
             throw new Forbidden(
                 'A CALDAV:free-busy-query "can only be run against a collection (either a regular collection or a calendar collection)" (RFC 4791 §7.10), and this is neither.',
+            );
+        }
+
+        // **RFC 6638 §2.3's last sentence**: "Note that the
+        // CALDAV:free-busy-query REPORT is not supported on scheduling Inbox
+        // collections."
+        //
+        // A note, and it still says what the protocol is: the report has no
+        // meaning there. §2.2 has an Inbox hold iTIP messages — somebody
+        // else's invitations and replies — so busy time worked out from them
+        // would report the owner busy at every hour anybody had ever proposed
+        // to them, which is worse than refusing: it would be an answer, and a
+        // wrong one.
+        //
+        // Refused the way RFC 3253 §3.1.5 refuses a report a resource does not
+        // support. The same shape {@see \DavServices\Dav\Method\Report} uses
+        // for a name it does not know — this one it does know, and not here.
+        if ($node instanceof IResourceType && in_array(Inbox::INBOX, $node->resourceTypes(), true)) {
+            throw new Forbidden(
+                'RFC 6638 §2.3: "the CALDAV:free-busy-query REPORT is not supported on scheduling Inbox collections".',
+                self::SUPPORTED_REPORT,
             );
         }
 

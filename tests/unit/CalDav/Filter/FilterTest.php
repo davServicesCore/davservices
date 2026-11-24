@@ -101,6 +101,62 @@ final class FilterTest extends TestCase
         Filter::of($element);
     }
 
+    /**
+     * **RFC 6638 §2.3's rule is handed down by the filter that reads the
+     * body**, so that the `comp-filter` inside it can apply it. Asked here
+     * because `Filter` is what a report builds, and a flag that stopped at
+     * this class would be a rule nobody applied.
+     */
+    public function testItHandsTheInboxRuleDownToTheComponentFilter(): void
+    {
+        self::assertTrue($this->holdsAnUndatedEvent(true));
+    }
+
+    /**
+     * **And told nothing it hands nothing down**, which is what makes the
+     * rule a property of the collection a report targets rather than of every
+     * query.
+     */
+    public function testToldNothingItHandsNothingDown(): void
+    {
+        self::assertFalse($this->holdsAnUndatedEvent(false));
+    }
+
+    /**
+     * **And the default is to hand nothing down**, which every caller but a
+     * report on an Inbox relies on.
+     */
+    public function testTheDefaultHandsNothingDown(): void
+    {
+        self::assertFalse($this->holdsAnUndatedEvent(null));
+    }
+
+    /**
+     * Whether a filter over a year lets a `VEVENT` with no `DTSTART` through.
+     *
+     * @param bool|null $inAnInbox Null leaves the parameter off, which is what
+     *                             asks after the default
+     */
+    private function holdsAnUndatedEvent(?bool $inAnInbox): bool
+    {
+        $element = new Element(Filter::NAME);
+
+        $element->append($this->comp(
+            'VCALENDAR',
+            $this->comp('VEVENT', new Element(
+                '{urn:ietf:params:xml:ns:caldav}time-range',
+                ['start' => '20260101T000000Z', 'end' => '20270101T000000Z'],
+            )),
+        ));
+
+        $filter = $inAnInbox === null ? Filter::of($element) : Filter::of($element, $inAnInbox);
+        $object = $this->objectOf(
+            "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20260101T000000Z\r\nSUMMARY:An iTIP reply\r\nEND:VEVENT\r\n",
+        );
+
+        return $filter->holds($object, new Moments($object, new DateTimeZone('UTC')));
+    }
+
     private function filter(Element $comp): Filter
     {
         $element = new Element(Filter::NAME);

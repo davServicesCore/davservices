@@ -46,6 +46,13 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(CompFilter::class)]
 final class CompFilterTest extends TestCase
 {
+    /**
+     * An iTIP `REPLY`'s component, which RFC 5546 §3.2.3 allows to carry
+     * no `DTSTART` — the one RFC 6638 §2.3 is about.
+     */
+    private const UNDATED = "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20260101T000000Z\r\n"
+        . "SUMMARY:An iTIP reply\r\nEND:VEVENT\r\n";
+
     private const MEETING = "BEGIN:VEVENT\r\nUID:1@example.com\r\nDTSTAMP:20260101T000000Z\r\n"
         . "DTSTART:20260105T120000Z\r\nDTEND:20260105T130000Z\r\nSUMMARY:A Meeting\r\nEND:VEVENT\r\n";
 
@@ -628,6 +635,86 @@ final class CompFilterTest extends TestCase
         );
 
         self::assertTrue($this->holds($filter, $never));
+    }
+
+    /**
+     * **RFC 6638 §2.3: told that it is reading a scheduling Inbox collection,
+     * a filter lets an undated `VEVENT` through whatever the range is.**
+     *
+     * > if any calendar object resources contain "VEVENT" calendar components
+     * > that do not include a "DTSTART" iCalendar property (as allowed by iTIP
+     * > [RFC5546]) then such components MUST always match the time-range query
+     * > test.
+     *
+     * Asked of the filter itself, because that is where the rule lives: a
+     * reading only ever exercised through a report is a reading nothing here
+     * checks.
+     */
+    public function testAnUndatedEventMatchesWhereTheRuleApplies(): void
+    {
+        self::assertTrue($this->holds($this->inAnInbox(), self::UNDATED));
+    }
+
+    /**
+     * **And matches nothing where it does not**, which is the same sentence
+     * read the other way: §2.3 ties its rule to the collection the report
+     * targets, so an ordinary filter is unchanged.
+     */
+    public function testAnUndatedEventMatchesNothingWhereTheRuleDoesNot(): void
+    {
+        self::assertFalse($this->holds($this->filter(
+            'VCALENDAR',
+            $this->comp('VEVENT', $this->range('20260101T000000Z', '20270101T000000Z')),
+        ), self::UNDATED));
+    }
+
+    /**
+     * **A dated component is still asked as it stands**, so the rule reaches
+     * the components the sentence describes and no others.
+     */
+    public function testADatedEventIsStillAskedWhereTheRuleApplies(): void
+    {
+        self::assertFalse($this->holds(
+            $this->inAnInbox(),
+            "BEGIN:VEVENT\r\nUID:1\r\nDTSTAMP:20260101T000000Z\r\n"
+            . "DTSTART:20300602T100000Z\r\nDTEND:20300602T110000Z\r\nEND:VEVENT\r\n",
+        ));
+    }
+
+    /**
+     * **§2.3 names `VEVENT`, so a `VTODO` keeps its own table.** RFC 4791
+     * §9.9 has four rows for a task with no `DTSTART`, and the one that
+     * applies here — nothing dated but a `CREATED` after the range — answers
+     * `(end > CREATED)`, which is no.
+     */
+    public function testAnUndatedTaskKeepsItsOwnTableWhereTheRuleApplies(): void
+    {
+        $filter = CompFilter::of(
+            $this->comp('VCALENDAR', $this->comp('VTODO', $this->range('20260101T000000Z', '20270101T000000Z'))),
+            true,
+        );
+
+        self::assertFalse($this->holds(
+            $filter,
+            "BEGIN:VTODO\r\nUID:1\r\nDTSTAMP:20260101T000000Z\r\n"
+            . "CREATED:20280101T000000Z\r\nEND:VTODO\r\n",
+        ));
+    }
+
+    /**
+     * A filter over a year that has been told it is reading a scheduling
+     * Inbox collection.
+     *
+     * **The outermost filter is the one told**, and it is about the
+     * `VCALENDAR`: §9.7.1 nests them, so the rule has to reach the one inside
+     * that actually holds the range.
+     */
+    private function inAnInbox(): CompFilter
+    {
+        return CompFilter::of(
+            $this->comp('VCALENDAR', $this->comp('VEVENT', $this->range('20260101T000000Z', '20270101T000000Z'))),
+            true,
+        );
     }
 
     /**

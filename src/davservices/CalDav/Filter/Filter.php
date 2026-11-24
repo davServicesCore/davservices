@@ -70,7 +70,7 @@ final readonly class Filter
      * @throws Forbidden If what is inside it cannot be answered, which is the
      *                   precondition {@see self::VALID} is for
      */
-    public static function of(Element $element): self
+    public static function of(Element $element, bool $everyUndatedEvent = false): self
     {
         $children = $element->children();
 
@@ -89,7 +89,7 @@ final readonly class Filter
             ));
         }
 
-        return new self(CompFilter::of($child));
+        return new self(CompFilter::of($child, $everyUndatedEvent));
     }
 
     /**
