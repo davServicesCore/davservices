@@ -158,6 +158,9 @@ final readonly class CompFilter
     /**
      * @param list<PropFilter> $props
      * @param list<self> $comps
+     * @param bool $everyUndatedEvent RFC 6638 §2.3's rule for a scheduling
+     *                                Inbox collection; see
+     *                                {@see self::isAnUndatedEvent()}
      */
     private function __construct(
         private string $name,
@@ -165,17 +168,24 @@ final readonly class CompFilter
         private array $props,
         private array $comps,
         private bool $mustBeAbsent,
+        private bool $everyUndatedEvent,
     ) {
     }
 
     /**
+     * @param bool $everyUndatedEvent Whether RFC 6638 §2.3's rule applies,
+     *                                which is a property of the collection
+     *                                the report targets rather than of the
+     *                                element: it is handed down from
+     *                                {@see \DavServices\CalDav\Report\CalendarQuery}
+     *
      * @throws BadRequest If the `name` attribute is missing, or the children
      *                    are not what the DTD admits in the order it writes
      *                    them
      * @throws Forbidden If a nested filter is about a component RFC 5545 puts
      *                   nowhere inside this one (§7.8's `CALDAV:valid-filter`)
      */
-    public static function of(Element $element): self
+    public static function of(Element $element, bool $everyUndatedEvent = false): self
     {
         $name = $element->attribute('name') ?? throw new BadRequest(
             'A CALDAV:comp-filter says which component it is about: RFC 4791 §9.7.1 makes "name" #REQUIRED.',
@@ -190,7 +200,7 @@ final readonly class CompFilter
                 );
             }
 
-            return new self($name, null, [], [], true);
+            return new self($name, null, [], [], true, $everyUndatedEvent);
         }
 
         $range = null;
@@ -201,7 +211,7 @@ final readonly class CompFilter
             match ($child->name()) {
                 TimeRange::NAME => $range = self::theOnlyRange($range, $child, $props, $comps),
                 PropFilter::NAME => $props[] = self::aPropFilter($child, $comps),
-                self::NAME => $comps[] = self::nestedIn($name, $child),
+                self::NAME => $comps[] = self::nestedIn($name, $child, $everyUndatedEvent),
                 default => throw new BadRequest(sprintf(
                     '%s has no place in a CALDAV:comp-filter of RFC 4791 §9.7.1.',
                     $child->name(),
@@ -209,7 +219,7 @@ final readonly class CompFilter
             };
         }
 
-        return new self($name, $range, $props, $comps, false);
+        return new self($name, $range, $props, $comps, false, $everyUndatedEvent);
     }
 
     /**
@@ -223,7 +233,7 @@ final readonly class CompFilter
      * @throws BadRequest If the nested filter is not one §9.7.1's DTD admits
      * @throws Forbidden If RFC 5545 puts no such component inside that one
      */
-    private static function nestedIn(string $enclosing, Element $element): self
+    private static function nestedIn(string $enclosing, Element $element, bool $everyUndatedEvent): self
     {
         $inner = $element->attribute('name') ?? '';
         $held = self::HOLDS[strtoupper($enclosing)] ?? null;
@@ -241,7 +251,7 @@ final readonly class CompFilter
             );
         }
 
-        return self::of($element);
+        return self::of($element, $everyUndatedEvent);
     }
 
     /**
@@ -301,7 +311,47 @@ final readonly class CompFilter
             }
         }
 
-        return $this->range === null || self::anInstanceOverlaps($this->range, $component, $object, $moments);
+        if ($this->range === null) {
+            return true;
+        }
+
+        // **RFC 6638 §2.3, and only in a scheduling Inbox collection**: such a
+        // component "MUST always match the time-range query test". Asked here
+        // rather than of the range itself, because what the rule turns on is
+        // the component in front of it — and asked after the property and the
+        // nested filters above, because the sentence is about "the time-range
+        // query test" and not about the filter as a whole.
+        if ($this->everyUndatedEvent && self::isAnUndatedEvent($component)) {
+            return true;
+        }
+
+        return self::anInstanceOverlaps($this->range, $component, $object, $moments);
+    }
+
+    /**
+     * Whether this is one of the components RFC 6638 §2.3 speaks of: a
+     * `VEVENT` with no `DTSTART`.
+     *
+     * **Ordinary in an Inbox and nowhere else.** RFC 5545 §3.6.1 makes
+     * `DTSTART` mandatory in a `VEVENT` only "if the iCalendar object does not
+     * specify a 'METHOD' property", and an Inbox holds nothing but iTIP
+     * messages, every one of which specifies one. RFC 5546 §3.2.3 then has a
+     * `REPLY` carry `DTSTART` as optional: an attendee answering says who they
+     * are and what they answer, not when the meeting is.
+     *
+     * **Without the rule such a message matches nothing at all**, §9.9's
+     * `VEVENT` table reading `DTSTART` first — so a client asking its Inbox
+     * for this week would be answered with silence about every reply it had
+     * received.
+     *
+     * The name is compared without regard to case, RFC 5545 §3.1 making
+     * component names case-insensitive. A `VTODO` without a `DTSTART` is not
+     * this rule's business: §9.9's own table has four rows for one.
+     */
+    private static function isAnUndatedEvent(Component $component): bool
+    {
+        return strcasecmp($component->name(), 'VEVENT') === 0
+            && $component->property('DTSTART') === null;
     }
 
     /**

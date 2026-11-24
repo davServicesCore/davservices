@@ -18,9 +18,11 @@ use DavServices\CalDav\CalendarObject;
 use DavServices\CalDav\Filter\Filter;
 use DavServices\CalDav\Limits;
 use DavServices\CalDav\Moments;
+use DavServices\CalDav\Schedule\Inbox;
 use DavServices\CalDav\TimeZone;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\INode;
+use DavServices\Dav\IResourceType;
 use DavServices\Dav\Property\Answers;
 use DavServices\Dav\ReportDepth;
 use DavServices\Dav\Server;
@@ -205,17 +207,33 @@ final class CalendarQuery
     public function __invoke(Request $request, Element $asked): Response
     {
         $depth = ReportDepth::of($request);
-        $filter = Filter::of($asked->child(Filter::NAME) ?? throw new BadRequest(
-            'A CALDAV:calendar-query carries a CALDAV:filter: RFC 4791 §9.5 has it outside the optional group, so there is no query without one.',
-        ));
+        $path = $this->server->path($request);
+        $node = $this->server->tree()->node($path);
+
+        // **RFC 6638 §2.3 is decided by what the report targets**, so the node
+        // is found before the filter is read: "When a CALDAV:calendar-query
+        // REPORT includes a time-range query and targets a scheduling Inbox
+        // collection, if any calendar object resources contain 'VEVENT'
+        // calendar components that do not include a 'DTSTART' iCalendar
+        // property (as allowed by iTIP) then such components MUST always match
+        // the time-range query test."
+        //
+        // **Nothing a client can see moved with it.** A report on a path that
+        // holds nothing is a `404` before this method is reached at all —
+        // {@see \DavServices\Dav\Method\Report} looks the node up to decide
+        // which report to dispatch — so the order of the two below is this
+        // method's own business.
+        $filter = Filter::of(
+            $asked->child(Filter::NAME) ?? throw new BadRequest(
+                'A CALDAV:calendar-query carries a CALDAV:filter: RFC 4791 §9.5 has it outside the optional group, so there is no query without one.',
+            ),
+            self::isASchedulingInbox($node),
+        );
 
         $this->limits->mustTakeTheRangesIn($asked);
 
         $returning = WhatToReturn::of($this->server, $asked);
         $zone = FloatingZone::of($this->server, $asked);
-
-        $path = $this->server->path($request);
-        $node = $this->server->tree()->node($path);
 
         $report = new MultiStatus();
         $reported = 0;
@@ -245,6 +263,22 @@ final class CalendarQuery
 
         return (new Response(207, body: $this->server->writer()->write($report->toElement())))
             ->withHeader('Content-Type', 'application/xml; charset=utf-8');
+    }
+
+    /**
+     * Whether this is a scheduling Inbox collection, which is what RFC 6638
+     * §2.3's rule turns on.
+     *
+     * **Asked of the resource type rather than of the class**, the way
+     * everything else in this library asks it: a deployment publishes
+     * `CALDAV:schedule-inbox` on whatever node it keeps an Inbox in, and
+     * {@see \DavServices\CalDav\Schedule\Inbox} is this library's own answer
+     * rather than the only one. An Outbox is not an Inbox, and neither is a
+     * calendar collection.
+     */
+    private static function isASchedulingInbox(INode $node): bool
+    {
+        return $node instanceof IResourceType && in_array(Inbox::INBOX, $node->resourceTypes(), true);
     }
 
     /**
