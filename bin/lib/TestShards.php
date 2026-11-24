@@ -82,10 +82,55 @@ final class TestShards
      *
      * `Serializer::lines()` was on that list and is not on this one: it
      * delegates and no longer yields in the same frame, so it does not carry
-     * the shape at all. **Two that do carry it have never been measured** —
+     * the shape at all.
+     *
+     * ## What twenty runs each said on 24.11.2026
+     *
+     * Measured with `bin/measure-crash-rate.php` on Linux, which exists
+     * because none of this can be measured on Windows: the pair below went
+     * twelve runs there without a murmur.
+     *
+     * | Target | Xdebug | Crashed |
+     * |---|---|---|
+     * | shard 4, all 13 files | 3.4.7 | 18 of 20 |
+     * | shard 4, all 13 files | 3.4.0 | 13 of 20 |
+     * | files 1-6 | 3.4.7 | 16 of 20 |
+     * | files 7-13 | 3.4.7 | **0 of 20** |
+     * | files 1-3 | 3.4.7 | 18 of 20 |
+     * | file 1, `SchedulingMessageTest` | 3.4.7 | **0 of 20** |
+     * | file 2, `CompFilterTest` | 3.4.7 | **0 of 20** |
+     * | file 3, `FreeBusyQueryTest` | 3.4.7 | **0 of 20** |
+     * | files 1+2 | 3.4.7 | **0 of 20** |
+     * | files 1+3 | 3.4.7 | 1 of 20 |
+     * | **files 2+3** | 3.4.7 | **14 of 20** |
+     *
+     * **So there is a reproducer, and it is a pair rather than a file.**
+     * `4:2-3` crashes about seven runs in ten in some three minutes, and
+     * fourteen of the eighteen whole-shard crashes were SIGSEGV at exactly 63
+     * of 258 tests — the same point every time, which is the opposite of the
+     * moving point that ruled out a fixed test above.
+     *
+     * ## Three explanations fell against it
+     *
+     * **More attempts.** See ATTEMPTS: measured not to help, and the new rate
+     * makes it worse rather than better.
+     *
+     * **A smaller shard.** Two files crash as often as thirteen, so splitting
+     * would move the pair rather than break it. The file-size cost model is
+     * still wrong, and still about how long a measurement takes.
+     *
+     * **Two carriers of the shape in one process.** The pair drives
      * {@see \DavServices\VObject\Recur\ObjectSet::instances()} and
-     * {@see \DavServices\CalDav\Expander::instancesIn()}, both recurrence
-     * code. They are the list to start from the next time a shard crashes.
+     * `FreeBusyQuery::objectsUnder()`, one carrier each, which read like an
+     * answer. Taking the shape out of the first left the pair at 15 of 20 and
+     * the whole shard at 14 of 20 — no cure, and the experiment was taken
+     * back rather than kept as a false explanation.
+     *
+     * **What is still the list to try**, now against a reproducer rather than
+     * a resemblance: the other carrier of the pair, the two that remain
+     * untested at all ({@see \DavServices\CalDav\Expander::instancesIn()}
+     * and `CalendarQuery::matchesUnder()`), and halving the tests inside the
+     * two files.
      *
      * **This is a flaky instrument, not a flaky measurement.** Every attempt
      * that finishes gives the same figures, and a shard whose *tests* fail
