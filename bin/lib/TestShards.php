@@ -30,6 +30,77 @@ declare(strict_types=1);
 final class TestShards
 {
     /**
+     * Test files measured to crash the coverage collector as soon as anything
+     * else shares their process, and which therefore get a shard to
+     * themselves.
+     *
+     * **One file, found by measuring rather than by reasoning.** Xdebug bug
+     * 2252 is open since March 2024 and nothing here can cure it; what can be
+     * done is to stop handing it the company it falls over in.
+     * {@see self::ATTEMPTS} carries the narrowing that got here.
+     *
+     * **It is this file that crashes, whatever it is next to.** Twenty runs
+     * each on Linux with Xdebug 3.4.7 on 24.11.2026, every target named by
+     * path, and `FreeBusyQueryTest` is in every crash and in no clean run of
+     * more than one file:
+     *
+     * | One process held | Crashed |
+     * |---|---|
+     * | `FreeBusyQueryTest` alone | **0 of 20** |
+     * | it + `PropPatchResultTest` | 0 of 20 |
+     * | it + `TimeRangeTest` | 0 of 20 |
+     * | it + `Recur\IteratorTest` | 0 of 20 |
+     * | it + `Recur\ObjectSetTest` | 0 of 20 |
+     * | it + `AddressBookQueryTest` | 0 of 20 |
+     * | it + `SchedulingMessageTest` | 1 of 20 |
+     * | it + `SchedulingCancelTest` | **13 of 20** |
+     * | it + six others (half of shard 2) | **6 of 20** |
+     * | it + the other seven of shard 2 | 0 of 20 |
+     * | it + twelve others (shard 2 whole) | **10 of 20** |
+     * | it + twelve others, one of them `SchedulingCancelTest` (shard 4) | **18, 16 and 14 of 20** |
+     * | `SchedulingCancelTest` alone | 0 of 20 |
+     * | `SchedulingMessageTest` alone, `CompFilterTest` alone | 0 of 20 |
+     * | `SchedulingMessageTest` + `SchedulingCancelTest` | 0 of 20 |
+     * | twelve files of shard 4 without it | 0 of 20 |
+     * | thirteen files of shard 11 | 0 of 20 |
+     * | shards 2, 4, 5 and 8 of this split, which hold every file above | 0 of 20 each |
+     *
+     * **A pair was the first reading of that table, and it was wrong twice
+     * over.** The narrowing measured `4:2-3` — places in a shard, not names —
+     * and places move: packing is by file size, so any test file that grows
+     * reshuffles every shard. The list first named `CompFilterTest`, which is
+     * harmless, so the rule moved a file that was never in the way and shard 4
+     * went on crashing 16 of 20. Named correctly, the rule separated the
+     * measured pair and shard 4 went clean — and the shard that `FreeBusyQuery`
+     * had moved to started crashing 10 of 20 instead. One pair was what had
+     * been measured; one file is what the measurements have in common.
+     *
+     * **Nothing explains it, and that is said rather than dressed up.** Six
+     * explanations were measured and fell: the three in ATTEMPTS, a shared
+     * `TimeRange`, the recurrence engine that the pair drove in common, and
+     * the pair itself. What is left is a file and a process, with no account of
+     * why the company matters, so this is a workaround with a measurement
+     * behind it rather than a theory.
+     *
+     * **Two things are left open, and saying so is part of the measurement.**
+     * The second partner has a name and it is not written here: it is one of
+     * five files, `AddressBookQueryTest` having been the obvious guess and gone
+     * clean, and halving further would not change a rule that no longer depends
+     * on which it is. And a full proof would be nineteen shards times twenty
+     * runs; what was measured is the four shards that between them hold every
+     * file this bug has ever crashed beside.
+     *
+     * **It is a mitigation, not a promise.** Isolating a file needs a shard
+     * for it and one for the rest; asked for fewer, the split answers with the
+     * packing it was asked for — see {@see self::split()}.
+     *
+     * @var list<string>
+     */
+    public const ALONE_IN_A_PROCESS = [
+        'CalDav/Report/FreeBusyQueryTest.php',
+    ];
+
+    /**
      * How many bytes of test code one shard takes on.
      *
      * Measured on 05.10.2026: a shard of this size runs in well under a minute
@@ -275,7 +346,13 @@ final class TestShards
             throw new InvalidArgumentException('A shard has to take on at least one byte.');
         }
 
-        $wanted = (int) ceil(array_sum($sizes) / $bytesPerShard);
+        // **A shard apiece for the isolated files, and the rest divided by
+        // what is left.** They carry none of the load the division is about,
+        // so counting their bytes in would quietly make every other shard
+        // heavier — see {@see self::ALONE_IN_A_PROCESS}.
+        $alone = self::aloneIn($sizes);
+        $shared = array_diff_key($sizes, array_flip($alone));
+        $wanted = (int) ceil(array_sum($shared) / $bytesPerShard) + count($alone);
 
         return max(1, min($wanted, count($sizes)));
     }
@@ -296,16 +373,27 @@ final class TestShards
             throw new InvalidArgumentException('There has to be at least one shard.');
         }
 
+        $alone = self::aloneIn($sizes);
+
+        // **A mitigation, not a promise.** Isolating a file needs a shard for
+        // it and one for everything else; asked for fewer shards than that,
+        // this answers with the packing it was asked for rather than refusing.
+        if (count($alone) >= $count) {
+            $alone = [];
+        }
+
         $files = [];
 
         foreach ($sizes as $file => $size) {
-            $files[] = ['file' => $file, 'size' => $size];
+            if (!in_array($file, $alone, true)) {
+                $files[] = ['file' => $file, 'size' => $size];
+            }
         }
 
         usort($files, static fn (array $a, array $b): int => [$b['size'], $a['file']] <=> [$a['size'], $b['file']]);
 
-        $shards = array_fill(0, $count, []);
-        $weights = array_fill(0, $count, 0);
+        $shards = array_fill(0, $count - count($alone), []);
+        $weights = array_fill(0, $count - count($alone), 0);
 
         foreach ($files as $file) {
             $lightest = self::lightest($weights);
@@ -313,7 +401,37 @@ final class TestShards
             $weights[$lightest] = ($weights[$lightest] ?? 0) + $file['size'];
         }
 
+        // The isolated files take the last shards, one each, so that the
+        // packed shards keep the numbers they would have had without them.
+        foreach ($alone as $file) {
+            $shards[] = [$file];
+        }
+
         return $shards;
+    }
+
+    /**
+     * The files of {@see self::ALONE_IN_A_PROCESS} that are in this suite at
+     * all, in the order the list names them.
+     *
+     * A name that matches nothing is no error here: the split still has to
+     * answer, and it is `TestShardsTest` that holds the list to account.
+     *
+     * @param array<string, int> $sizes
+     *
+     * @return list<string>
+     */
+    private static function aloneIn(array $sizes): array
+    {
+        $alone = [];
+
+        foreach (self::ALONE_IN_A_PROCESS as $file) {
+            if (array_key_exists($file, $sizes)) {
+                $alone[] = $file;
+            }
+        }
+
+        return $alone;
     }
 
     /**

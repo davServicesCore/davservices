@@ -201,6 +201,108 @@ final class TestShardsTest extends TestCase
         self::assertSame($expected, $assigned);
     }
 
+    /**
+     * **A file measured to crash the collector beside anything at all gets a
+     * shard to itself.**
+     *
+     * The packing below would give it a neighbour without the rule: the heavy
+     * file takes the first shard, and the two light ones then both go to the
+     * lighter of the two. {@see TestShards::ALONE_IN_A_PROCESS} says which
+     * file and why — on 24.11.2026 `FreeBusyQueryTest` went 0 of 20 runs on
+     * its own, 13 of 20 beside `SchedulingCancelTest` and 10 of 20 in a shard
+     * of thirteen, while every process it was not in went 0 of 20.
+     */
+    public function testAFileThatCrashesBesideAnythingGetsItsOwnShard(): void
+    {
+        $shards = TestShards::split([
+            'zHeavyTest.php' => 100,
+            'CalDav/Report/FreeBusyQueryTest.php' => 10,
+            'a/OneTest.php' => 10,
+        ], 2);
+
+        self::assertSame(
+            ['zHeavyTest.php', 'a/OneTest.php'],
+            $shards[0] ?? self::fail('No first shard.'),
+        );
+        self::assertSame(
+            ['CalDav/Report/FreeBusyQueryTest.php'],
+            $shards[1] ?? self::fail('No second shard.'),
+        );
+    }
+
+    /**
+     * **And everything the rule says nothing about is packed as before**,
+     * which is what keeps this a rule about one measured file rather than
+     * about light files in general.
+     */
+    public function testEverythingElseIsPackedAsBefore(): void
+    {
+        $shards = TestShards::split([
+            'zHeavyTest.php' => 100,
+            'a/OneTest.php' => 10,
+            'b/TwoTest.php' => 10,
+        ], 2);
+
+        self::assertSame(['zHeavyTest.php'], $shards[0] ?? self::fail('No first shard.'));
+        self::assertSame(['a/OneTest.php', 'b/TwoTest.php'], $shards[1] ?? self::fail('No second shard.'));
+    }
+
+    /**
+     * **The count asks for a shard per isolated file**, because a file that
+     * takes a process to itself is not carrying any of the load the rest is
+     * divided by. Without that the other shards would quietly grow.
+     */
+    public function testTheCountAsksForAShardPerIsolatedFile(): void
+    {
+        $sizes = ['ATest.php' => 400, 'BTest.php' => 100];
+
+        self::assertSame(2, TestShards::countFor($sizes, 250));
+        self::assertSame(
+            3,
+            TestShards::countFor($sizes + ['CalDav/Report/FreeBusyQueryTest.php' => 100], 250),
+        );
+    }
+
+    /**
+     * **Asked for one shard, it hands back one shard.** Isolating a file needs
+     * a shard for it and one for everything else, and a split that refused
+     * would be a split that cannot answer what it was asked. One process is
+     * something somebody asks for by name, and this rule is a mitigation
+     * rather than a promise.
+     */
+    public function testWithOneShardItSharesItAfterAll(): void
+    {
+        $shards = TestShards::split([
+            'CalDav/Report/FreeBusyQueryTest.php' => 10,
+            'a/OneTest.php' => 10,
+        ], 1);
+
+        self::assertCount(2, $shards[0] ?? self::fail('No shard at all.'));
+    }
+
+    /**
+     * **And the file is alone in the split this suite actually produces**,
+     * which is the thing the rule is for — a rule that held only for made-up
+     * sizes would prove nothing about the shards that run.
+     *
+     * **It also holds the names to account.** Every file in
+     * {@see TestShards::ALONE_IN_A_PROCESS} has to be a shard of its own, so
+     * renaming or deleting one fails here instead of quietly turning the rule
+     * into a list of names nothing matches. That is not a hypothetical: the
+     * list named the wrong file for an afternoon on 24.11.2026, because a
+     * shard number was read as if it were a file name and the packing had
+     * since moved.
+     */
+    public function testTheIsolatedFilesAreAloneInThisSuitesOwnSplit(): void
+    {
+        $sizes = TestShards::testFiles(__DIR__ . '/../../../tests/unit');
+        $shards = TestShards::split($sizes, TestShards::countFor($sizes));
+
+        foreach (TestShards::ALONE_IN_A_PROCESS as $file) {
+            self::assertContains([$file], $shards, sprintf('%s shares a process.', $file));
+        }
+    }
+
     public function testShardsComeOutAboutEquallyHeavy(): void
     {
         $sizes = ['ATest.php' => 9, 'BTest.php' => 7, 'CTest.php' => 6, 'DTest.php' => 5, 'ETest.php' => 4, 'FTest.php' => 3];
