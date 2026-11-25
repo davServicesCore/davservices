@@ -51,15 +51,19 @@ final class TestShards
      * | it + `TimeRangeTest` | 0 of 20 |
      * | it + `Recur\IteratorTest` | 0 of 20 |
      * | it + `Recur\ObjectSetTest` | 0 of 20 |
+     * | it + `AddressBookQueryTest` | 0 of 20 |
      * | it + `SchedulingMessageTest` | 1 of 20 |
      * | it + `SchedulingCancelTest` | **13 of 20** |
-     * | it + twelve others (shard 2) | **10 of 20** |
+     * | it + six others (half of shard 2) | **6 of 20** |
+     * | it + the other seven of shard 2 | 0 of 20 |
+     * | it + twelve others (shard 2 whole) | **10 of 20** |
      * | it + twelve others, one of them `SchedulingCancelTest` (shard 4) | **18, 16 and 14 of 20** |
      * | `SchedulingCancelTest` alone | 0 of 20 |
      * | `SchedulingMessageTest` alone, `CompFilterTest` alone | 0 of 20 |
      * | `SchedulingMessageTest` + `SchedulingCancelTest` | 0 of 20 |
      * | twelve files of shard 4 without it | 0 of 20 |
      * | thirteen files of shard 11 | 0 of 20 |
+     * | shards 2, 4, 5 and 8 of this split, which hold every file above | 0 of 20 each |
      *
      * **A pair was the first reading of that table, and it was wrong twice
      * over.** The narrowing measured `4:2-3` — places in a shard, not names —
@@ -77,6 +81,14 @@ final class TestShards
      * the pair itself. What is left is a file and a process, with no account of
      * why the company matters, so this is a workaround with a measurement
      * behind it rather than a theory.
+     *
+     * **Two things are left open, and saying so is part of the measurement.**
+     * The second partner has a name and it is not written here: it is one of
+     * five files, `AddressBookQueryTest` having been the obvious guess and gone
+     * clean, and halving further would not change a rule that no longer depends
+     * on which it is. And a full proof would be nineteen shards times twenty
+     * runs; what was measured is the four shards that between them hold every
+     * file this bug has ever crashed beside.
      *
      * **It is a mitigation, not a promise.** Isolating a file needs a shard
      * for it and one for the rest; asked for fewer, the split answers with the
