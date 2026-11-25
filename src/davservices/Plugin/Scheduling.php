@@ -43,6 +43,7 @@ use DavServices\Dav\Event\BeforeCreateFile;
 use DavServices\Dav\Event\BeforeUnbind;
 use DavServices\Dav\Event\BeforeWriteContent;
 use DavServices\Dav\Event\PrivilegeNeeded;
+use DavServices\Dav\Event\PropertiesChanging;
 use DavServices\Dav\Event\PropertiesRequested;
 use DavServices\Dav\ICollection;
 use DavServices\Dav\IFile;
@@ -345,6 +346,13 @@ final class Scheduling
      */
     private const DEFAULT_CALENDAR_NEEDED = '{urn:ietf:params:xml:ns:caldav}default-calendar-needed';
 
+    /**
+     * §4.3.1.2's precondition, "Apply to: PROPPATCH", "Use with: 403
+     * Forbidden" — for a value that "doesn't reference a valid calendar
+     * collection".
+     */
+    private const VALID_DEFAULT_CALENDAR = '{urn:ietf:params:xml:ns:caldav}valid-schedule-default-calendar-URL';
+
     private const OWNER = '{DAV:}owner';
 
     private const HREF = '{DAV:}href';
@@ -453,6 +461,7 @@ final class Scheduling
         $events = $this->server->events();
 
         $events->on(PropertiesRequested::class, $this->describe(...));
+        $events->on(PropertiesChanging::class, $this->guardTheDefaultCalendarURL(...));
         $events->on(BeforeUnbind::class, $this->guardTheCollections(...));
         $events->on(BeforeUnbind::class, $this->readWhatIsGoing(...));
         $events->on(AfterUnbind::class, $this->cancelOnRemove(...));
@@ -2517,6 +2526,100 @@ final class Scheduling
         }
 
         $this->guardTheDefaultCalendar($event->path(), $node);
+    }
+
+    /**
+     * §4.3's MUST on a value a client sends, with §4.3.1.2's name for the
+     * refusal.
+     *
+     * > Servers **MAY** allow clients to change the default calendar
+     * > collection by changing the value of the
+     * > CALDAV:schedule-default-calendar-URL WebDAV property on the scheduling
+     * > Inbox collection. However, the server **MUST** ensure that any new
+     * > value for that property refers to a valid calendar collection
+     * > belonging to the owner of the scheduling Inbox collection.
+     *
+     * **The MAY is a deployment's to answer and the MUST is this library's.**
+     * Whether a client may choose at all is said elsewhere — a deployment that
+     * says no hands the name to {@see DeadProperties}, which refuses it with
+     * RFC 4918 §16's `DAV:cannot-modify-protected-property`, exactly as
+     * §4.3.1.2's own note describes. What is left here is the one thing a
+     * deployment cannot answer for itself: whether the value is any good.
+     *
+     * **One question answers the whole sentence**: is this one of the owner's
+     * calendars? Nothing there, no calendar there, somebody else's calendar,
+     * no `DAV:href` at all, another server's URL — each of them fails it, and
+     * none of them needs a rule of its own.
+     *
+     * **It is the same question {@see self::whereANewOneGoes()} asks**, which
+     * is what keeps the two halves of §4.3 from disagreeing: a value accepted
+     * here is one the delivery will honour. Were this guard the more generous
+     * of the two, the server would have "ensured" a value it then passes over.
+     *
+     * **A removal is §4.3.1.1's question, not this one** — "attempted to
+     * remove the CALDAV:schedule-default-calendar-URL property on the
+     * scheduling Inbox collection on a server that doesn't allow such
+     * operations" — so it goes by untouched here.
+     */
+    private function guardTheDefaultCalendarURL(PropertiesChanging $event): void
+    {
+        $result = $event->result();
+        $mutations = $result->mutations();
+
+        if (!array_key_exists(self::DEFAULT_CALENDAR, $mutations)) {
+            return;
+        }
+
+        $wanted = $mutations[self::DEFAULT_CALENDAR];
+
+        if ($wanted === null || $this->isACalendarOfTheOwner($result->path(), $event->node(), $wanted)) {
+            return;
+        }
+
+        $result->set(self::DEFAULT_CALENDAR, 403, self::VALID_DEFAULT_CALENDAR);
+    }
+
+    /**
+     * Whether that value names one of the calendars of whoever owns this node.
+     *
+     * **Whose calendars those are is the calendar home set's answer**, and
+     * that is a decision at the wording. RFC 4791 §6.2.1 defines the property
+     * as naming "the URL of any WebDAV collections that contain calendar
+     * collections **owned by** the associated principal resource", so a
+     * deployment that answers a home set has already said where the owner's
+     * calendars are. A calendar that `DAV:owner` calls theirs while no home
+     * set of theirs holds it is a deployment contradicting itself, and
+     * {@see self::whereANewOneGoes()} passes such a default over.
+     *
+     * **And where no owner is answered, nothing is valid.** A server that
+     * cannot tell whose Inbox this is cannot ensure what §4.3 tells it to, and
+     * writing the value would promise a client a default that can never take
+     * effect.
+     */
+    private function isACalendarOfTheOwner(string $path, INode $node, Element|string $wanted): bool
+    {
+        $href = self::hrefsIn($wanted)[0] ?? null;
+        $owner = $this->ownerAt($path, $node);
+
+        if ($href === null || $owner === null) {
+            return false;
+        }
+
+        [$principal, $who] = $owner;
+
+        // **An href this server cannot resolve matches no calendar of
+        // theirs**, which is the answer without a guard of its own: a path is
+        // what the comparison below has on the other side, and null is not
+        // one. The same reading {@see self::whereANewOneGoes()} makes.
+        $named = $this->pathOf($href);
+
+        foreach ($this->collectionsOf(Calendar::CALENDAR, $principal, $who) as [$calendar]) {
+            if ($calendar === $named) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

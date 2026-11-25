@@ -77,10 +77,10 @@ the chunk that found it.
 | 4 | Incoming messages are processed before they appear in the Inbox | ✔ | `Plugin\Scheduling::processedForTheRecipient()` | `SchedulingProcessingTest` |
 | 4.1 | An organizer's message updates the recipient's copy | ✔ | `Plugin\Scheduling::copyForTheRecipient()` | `SchedulingProcessingTest` |
 | 4.2 | An attendee's reply updates the organizer's copy. **Its last SHOULD is open** — telling the other attendees of a reply, which brings RFC 5546 §3.2.2.5 with it | ⚠ | `CalDav\Schedule\Reply` keeps the MUSTs | `ReplyTest`, `SchedulingAnsweredTest` |
-| 4.3 | The default calendar collection | ✔ | `Plugin\Scheduling::defaultCalendarAt()` | `SchedulingProcessingTest` |
-| 4.3.1 | The two preconditions of this section | ✔ | `Plugin\Scheduling::guardTheDefaultCalendar()` — the first of them | `SchedulingTest` |
-| 4.3.1.1 | `CALDAV:default-calendar-needed` | ✔ | `Plugin\Scheduling::guardTheDefaultCalendar()` | `SchedulingTest` |
-| 4.3.1.2 | `CALDAV:valid-schedule-default-calendar-URL` | ⚠ | Open: the property is read, never written, so nothing validates a `PROPPATCH` of it | — |
+| 4.3 | The default calendar collection, and the MUST on a value a client sends | ✔ | `Plugin\Scheduling::defaultCalendarAt()` reads it, `guardTheDefaultCalendarURL()` holds a change to "a valid calendar collection belonging to the owner" | `SchedulingProcessingTest`, `SchedulingDefaultCalendarTest` |
+| 4.3.1 | The two preconditions of this section | ✔ | `Plugin\Scheduling::guardTheDefaultCalendar()` and `guardTheDefaultCalendarURL()` | `SchedulingProcessingTest`, `SchedulingDefaultCalendarTest` |
+| 4.3.1.1 | `CALDAV:default-calendar-needed` | ✔ | `Plugin\Scheduling::guardTheDefaultCalendar()` | `SchedulingProcessingTest` |
+| 4.3.1.2 | `CALDAV:valid-schedule-default-calendar-URL` | ✔ | `Plugin\Scheduling::guardTheDefaultCalendarURL()` — a value is written only where it names one of the owner's calendars, which the calendar home set decides (RFC 4791 §6.2.1) | `SchedulingDefaultCalendarTest` |
 | 5 | A `POST` on an Outbox answers busy time | ✔ | `Plugin\Scheduling::busyTime()` | `SchedulingFreeBusyTest` |
 | 5.1 | Its status codes | ✔ | `Plugin\Scheduling::busyTime()` | `SchedulingFreeBusyTest`, `SchedulingFreeBusyPrivilegesTest` |
 | 5.2 | The reused and the new preconditions | ✔ | `Plugin\Scheduling::busyTime()` | `SchedulingFreeBusyTest` |
